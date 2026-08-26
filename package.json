@@ -1,0 +1,40 @@
+{
+  "name": "tutorial",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev:04": "pi -e .",
+    "dev:voclengine": "pnpm --filter pi-volcengine dev",
+    "dev:pi-chat-web": "pnpm --filter @warjiang/pi-chat-web dev",
+    "build:pi-chat-web": "pnpm --filter @warjiang/pi-chat-web build",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "^11.22.0",
+      "onFail": "download"
+    }
+  },
+  "type": "module",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "axios": "^1.19.0",
+    "dotenv": "^17.4.2",
+    "typebox": "^1.3.16",
+    "zod": "^4.4.3"
+  },
+  "pi": {
+    "extensions": [
+      "./04-tui.ts"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2"
+  }
+}
