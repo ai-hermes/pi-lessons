@@ -8,6 +8,8 @@
     "dev:voclengine": "pnpm --filter pi-volcengine dev",
     "dev:pi-chat-web": "pnpm --filter @warjiang/pi-chat-web dev",
     "build:pi-chat-web": "pnpm --filter @warjiang/pi-chat-web build",
+    "dev:pi-chat": "pnpm --filter pi-chat dev",
+    "build:pi-chat": "pnpm --filter pi-chat build",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

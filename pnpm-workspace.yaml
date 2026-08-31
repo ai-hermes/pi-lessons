@@ -2,6 +2,7 @@ packages:
   - '.'
   - 'extensions/*'
   - 'pi-chat-web'
+  - 'apps/*'
 allowBuilds:
   '@google/genai': true
   esbuild: true
