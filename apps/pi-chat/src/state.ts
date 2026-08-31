@@ -170,6 +170,15 @@ export function conversationReducer(
           }
           : item,
       );
+    case "thinking.completed":
+      return updateItem(items, id, (item) =>
+        item.kind === "thinking"
+          ? {
+            ...item,
+            thinking: { ...item.thinking, completed: true },
+          }
+          : item,
+      );
     case "tool.started":
       return addOrUpdateTool(items, {
         id,

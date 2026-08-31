@@ -32,7 +32,7 @@ export function connectEvents(
   onError: () => void,
   onOpen?: () => void,
 ): EventSource {
-  const query = new URLSearchParams({ after: "latest" });
+  const query = new URLSearchParams({ after: "0" });
   const source = new EventSource(
     "/api/conversation/" + encodeURIComponent(id) + "/stream?" + query,
   );

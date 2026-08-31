@@ -1,30 +1,64 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ArrowUp, Plus } from "lucide-react";
 import { EmptyConversation } from "@components/EmptyConversation";
+import { LoadingIndicator } from "@components/LoadingIndicator";
 import { MessageItem } from "@components/MessageItem";
 import { PiLogo } from "@components/PiLogo";
 import { useConversationStream } from "@hooks/useConversationStream";
 import "./App.css";
+import { createConversation } from "./api";
 
 export default function App() {
   const { conversationId } = useParams<{ conversationId: string }>();
   const navigate = useNavigate();
   const [input, setInput] = useState("");
+  const messageBottomRef = useRef<HTMLDivElement>(null);
+  const scrollAfterSubmitRef = useRef(false);
   const {
     messageItems,
     loading,
     error: connectionError,
     send,
   } = useConversationStream(conversationId);
+  const streamedContentLength = messageItems.reduce((total, item) => {
+    if (item.kind === "message") return total + item.message.text.length;
+    if (item.kind === "thinking") return total + item.thinking.text.length;
+    return total;
+  }, 0);
+
+  useEffect(() => {
+    if (!scrollAfterSubmitRef.current || messageItems.length === 0) return;
+
+    scrollAfterSubmitRef.current = false;
+    const frame = window.requestAnimationFrame(() => {
+      messageBottomRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "end",
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [conversationId, messageItems.length]);
+
+  useEffect(() => {
+    if (!loading) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      messageBottomRef.current?.scrollIntoView({ block: "end" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [loading, streamedContentLength]);
+
   const submit = (value = input) => {
     const text = value.trim();
     if (!text) return;
+    scrollAfterSubmitRef.current = true;
     setInput("");
     void send(text);
   };
-  const startNew = () => {
-    navigate("/conversation/" + crypto.randomUUID());
+  const startNew = async() => {
+    const created = await createConversation();
+    navigate("/conversation/" + created.conversation.id);
   };
   const title = "新会话";
   const isEmpty = !conversationId || messageItems.length === 0;
@@ -54,6 +88,12 @@ export default function App() {
                 showActions={item.kind === "message"}
               />
             ))}
+            {loading && <LoadingIndicator />}
+            <div
+              className="message-bottom-spacer"
+              ref={messageBottomRef}
+              aria-hidden
+            />
           </div>
         )}
         {connectionError && (

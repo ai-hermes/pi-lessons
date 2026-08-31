@@ -26,9 +26,11 @@ https://finetunedb.com/tools/jsonl-viewer
 
 wrapper:
 - persistence: ConversationRecord(conversationId)
-- pi session/runtime
+- pi session/runtime(sdk)
 - channel(sse) 
 
+conversationId=faab890b-3429-4058-83ed-8e161e94e44f
+root_dir
 ├── app-settings.json
 ├── exports
 ├── records
@@ -46,3 +48,39 @@ wrapper:
 createAgentSession
     |
 createAgentSessionRuntime
+
+
+
+curl -X POST http://localhost:4328/api/conversation
+
+{
+	"conversation": {
+		"id": "7590e3b3-6f8e-4248-bf76-2e8367415927",
+		"title": "New Conversation",
+		"createdAt": "2026-08-31T07:03:46.380Z",
+		"updatedAt": "2026-08-31T07:03:46.380Z",
+		"workspaceDir": "/Users/aholic/.pi/agent/pi-chat/workspaces/7590e3b3-6f8e-4248-bf76-2e8367415927",
+		"status": "ready"
+	},
+	"messageList": [],
+	"model": {
+		"provider": "kimi-coding",
+		"id": "kimi-for-coding"
+	},
+	"thinkingLevel": "medium",
+	"availableThinkingLevels": ["off", "minimal", "low", "medium", "high"],
+	"status": "ready",
+	"stream": {
+		"id": "f2bbde78-8c23-49e9-813b-e177cdf51370",
+		"lastEventId": 0
+	},
+	"diagnostics": []
+}
+
+
+curl -X POST http://localhost:4328/api/conversation/7590e3b3-6f8e-4248-bf76-2e8367415927/messages \
+    -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data-urlencode 'text=hi'
+
+
+curl -X GET http://localhost:4328/api/conversation/7590e3b3-6f8e-4248-bf76-2e8367415927/stream

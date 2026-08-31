@@ -44,6 +44,7 @@ export interface ToolRun {
 export interface ThinkingBlock {
     id: string;
     text: string;
+    completed?: boolean;
 }
 
 export type MessageListToolItem = {

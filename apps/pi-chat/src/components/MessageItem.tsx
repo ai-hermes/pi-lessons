@@ -12,7 +12,12 @@ export function MessageItem({
   showActions: boolean;
 }) {
   if (item.kind === "thinking") {
-    return <ThinkingItem text={item.thinking.text} />;
+    return (
+      <ThinkingItem
+        text={item.thinking.text}
+        completed={item.thinking.completed}
+      />
+    );
   }
   if (item.kind === "tool") {
     return <ToolCard tool={item.tool} />;

@@ -141,6 +141,70 @@ button {
 .messages {
   display: flex;
   flex-direction: column;
+  /* Streaming output must not change the reader's viewport position. */
+  overflow-anchor: none;
+}
+.message-bottom-spacer {
+  flex: 0 0 110px;
+}
+.message-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 38px;
+  padding: 0 10px;
+  color: #252525;
+}
+
+.loading-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 4px);
+  flex: 0 0 auto;
+  gap: 1.5px;
+}
+.loading-pixel {
+  width: 4px;
+  height: 4px;
+  border-radius: 1px;
+  background: currentColor;
+  opacity: 0.15;
+  animation: pixel-on 650ms ease-in-out infinite;
+}
+.loading-label {
+  background: linear-gradient(90deg, #999 35%, #252525 50%, #999 65%);
+  background-clip: text;
+  background-size: 200% 100%;
+  color: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  animation: shimmer-text 1.4s linear infinite;
+}
+.loading-elapsed {
+  color: #999;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+@keyframes pixel-on {
+  0%,
+  60%,
+  100% {
+    opacity: 0.15;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+@keyframes shimmer-text {
+  to {
+    background-position: -200% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .loading-pixel,
+  .loading-label {
+    animation: none;
+  }
 }
 .message-row {
   display: flex;
@@ -231,14 +295,24 @@ button {
 }
 .thinking-content {
   margin-left: 21px;
-}
-.thinking-content p {
-  margin: 3px 0 0;
-  padding: 8px 10px;
+  padding-left: 10px;
   border-left: 2px solid #e5e5e5;
   color: #777;
   font-size: 12px;
   line-height: 1.6;
+}
+.thinking-content .markdown > * {
+  margin: 3px 0 0;
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+.thinking-content .markdown > ul,
+.thinking-content .markdown > ol {
+  padding-left: 21px;
+}
+.thinking-content .markdown > blockquote {
+  border-left-color: #ccc;
 }
 .tool-card {
   margin-top: 4px;
