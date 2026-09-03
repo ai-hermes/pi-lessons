@@ -1,7 +1,16 @@
 import { serve } from '@hono/node-server';
 import { createApp } from '@server/app';
+import { getGlobalConfig } from './config';
+import { ModelRuntime } from '@earendil-works/pi-coding-agent';
+import { ConversationService } from '@server/conversation/service';
 
-const app = createApp();
+
+const globalConfig = getGlobalConfig();
+const modelRuntime = await ModelRuntime.create();
+const service = new ConversationService(globalConfig, modelRuntime);
+
+
+const app = createApp(service);
 const host = process.env.PI_CHAT_HOST ?? '127.0.0.1';
 const port = Number(process.env.PI_CHAT_PORT ?? 4328);
 const server = serve(
