@@ -1,12 +1,18 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import type {
   ChatMessage,
   MessageListItem,
-  StreamEvent,
 } from "@shared/types";
-import { playMockConversation } from "../mock/conversation";
 import { conversationReducer } from "../state";
+import { createConversation, sendMessage, connectEvents, getConversation } from '../api'
+
+interface PendingSend {
+  conversationId: string;
+  text: string;
+  message: ChatMessage;
+}
+
 
 export function useConversationStream(conversationId?: string) {
   const navigate = useNavigate();
@@ -14,56 +20,142 @@ export function useConversationStream(conversationId?: string) {
     conversationId?: string;
     items: MessageListItem[];
   }>({ items: [] });
+  const [historyMessageList, setHistoryMessageList] = useState<MessageListItem[]>([])
+  const [errorState, setErrorState] = useState<{
+    conversationId?: string;
+    message: string;
+  }>({ message: "" });
   const [loading, setLoading] = useState(false);
-  const runId = useRef(0);
+  const pendingSend = useRef<PendingSend | null>(null);
 
-  const messageItems =
-    messageState.conversationId === conversationId ? messageState.items : [];
+  const messageItems = [
+    ...historyMessageList,
+    ...(messageState.conversationId === conversationId ? messageState.items : [])
+  ]
+    
 
-  function appendEvent(id: string, event: StreamEvent) {
-    setMessageState((current) => ({
-      conversationId: id,
-      items: conversationReducer(
-        current.conversationId === id ? current.items : [],
-        { type: "event", event },
-      ),
-    }));
+  useEffect(() => {
+    if (!conversationId) return;
+
+    (async () => {
+      const conversation = await getConversation(conversationId)
+      setHistoryMessageList(conversation.messageList)
+      connectEvents(
+        conversationId,
+        (event) => {
+          setMessageState(current => {
+            return {
+              conversationId,
+              items: conversationReducer(
+                current.conversationId === conversationId ? current.items : [],
+                {
+                  type: 'event',
+                  event,
+                }
+              ),
+            }
+          })
+        },
+        () => {
+          setErrorState({
+            conversationId,
+            message: "Connection error",
+          })
+        },
+        () => {
+          // Handle connection open event
+          const pending = pendingSend.current;
+          if (!pending || pending.conversationId !== conversationId) return;
+          pendingSend.current = null;
+
+
+          setMessageState((current) => ({
+            conversationId,
+            items: conversationReducer(
+              current.conversationId === conversationId ? current.items : [],
+              { type: "optimistic-user", message: pending.message },
+            ),
+          }));
+
+          send(conversationId, pending.text)
+        }
+      )
+
+    })();
+
+
+  }, [conversationId])
+
+
+  async function send(conversationId: string, text: string) {
+    setLoading(true);
+    setErrorState({
+      conversationId,
+      message: "",
+    })
+
+    try {
+      await sendMessage(conversationId, text)
+    } catch (error) {
+      setErrorState({
+        conversationId,
+        message: (error as Error)?.message || "Unknown error",
+      });
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function submit(value: string) {
     const text = value.trim();
     if (!text || loading) return;
 
-    const id = conversationId ?? crypto.randomUUID();
-    const currentRun = ++runId.current;
     const message: ChatMessage = {
-      id: "pending-" + currentRun,
+      id: "pending-" + Date.now(),
       role: "user",
       text,
       images: [],
       pending: true,
     };
+    if (!conversationId) {
+      setLoading(true);
+      setErrorState({
+        message: '',
+      })
+      try {
+        const created = await createConversation()
+        const conversationId = created.conversation.id;
+        pendingSend.current = {
+          conversationId,
+          text,
+          message,
+        }
+        navigate(`/conversation/${conversationId}`)
+
+      } catch (error) {
+        setErrorState({
+          message: (error as Error)?.message || "Unknown error",
+        })
+      } finally {
+        setLoading(false);
+      }
+
+
+      return
+    }
+
+
 
     setMessageState((current) => ({
-      conversationId: id,
+      conversationId,
       items: conversationReducer(
-        current.conversationId === id ? current.items : [],
+        current.conversationId === conversationId ? current.items : [],
         { type: "optimistic-user", message },
       ),
     }));
-    setLoading(true);
-    if (!conversationId) navigate("/conversation/" + id);
 
-    try {
-      await playMockConversation(
-        text,
-        (event) => appendEvent(id, event),
-        () => currentRun !== runId.current,
-      );
-    } finally {
-      if (currentRun === runId.current) setLoading(false);
-    }
+    await send(conversationId, text)
   }
 
-  return { messageItems, loading, error: "", send: submit };
+  return { messageItems, loading, error: errorState.message, send: submit };
 }

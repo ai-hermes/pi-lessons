@@ -1,4 +1,4 @@
-import type { CreateConversationResponse, StreamEvent } from "../shared/types";
+import type { CreateConversationResponse, StreamEvent, ConversationSnapshot } from "../shared/types";
 
 async function readResponse<T>(request: Promise<Response>): Promise<T> {
   const response = await request;
@@ -24,6 +24,10 @@ export function sendMessage(id: string, text: string): Promise<unknown> {
       body: form,
     }),
   );
+}
+
+export function getConversation(id: string): Promise<ConversationSnapshot> {
+  return readResponse(fetch("/api/conversation/" + encodeURIComponent(id)));
 }
 
 export function connectEvents(
