@@ -1,0 +1,12 @@
+{
+  "name": "pi-lessons",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Pi Chat learning workspace",
+  "scripts": {
+    "dev:pi-chat": "pnpm --filter pi-chat dev",
+    "build:pi-chat": "pnpm --filter pi-chat build"
+  },
+  "license": "ISC",
+  "packageManager": "pnpm@11.22.0"
+}
