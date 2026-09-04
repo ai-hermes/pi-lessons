@@ -4,7 +4,7 @@ import type {
   StreamEvent,
   ThinkingBlock,
   ToolRun,
-} from "../shared/types";
+} from "@shared/types";
 
 export type ConversationAction =
   | { type: "event"; event: StreamEvent }

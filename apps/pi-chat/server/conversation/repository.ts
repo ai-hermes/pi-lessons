@@ -25,7 +25,7 @@ export class ConversationRepository {
         try {
             const data = await readFile(conversationRecordPath, 'utf-8');
             return JSON.parse(data) as ConversationRecord;
-        } catch (error) {
+        } catch {
             return null;
         }
     }

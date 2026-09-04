@@ -1,8 +1,8 @@
-import type { MessageListItem } from "../../shared/types";
-import { Markdown } from "./Markdown";
-import { MessageActions } from "./MessageActions";
-import { ThinkingItem } from "./ThinkingItem";
-import { ToolCard } from "./ToolCard";
+import type { MessageListItem } from "@shared/types";
+import { Markdown } from "@components/Markdown";
+import { MessageActions } from "@components/MessageActions";
+import { ThinkingItem } from "@components/ThinkingItem";
+import { ToolCard } from "@components/ToolCard";
 
 export function MessageItem({
   item,

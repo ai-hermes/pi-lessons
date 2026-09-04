@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Brain, ChevronDown, ChevronRight } from "lucide-react";
-import { Markdown } from "./Markdown";
+import { Markdown } from "@components/Markdown";
+import { Button } from "@components/ui/button";
 
 export function ThinkingItem({
   text,
@@ -15,11 +16,11 @@ export function ThinkingItem({
   }, [completed]);
   return (
     <div className="thinking">
-      <button onClick={() => setOpen(!open)}>
+      <Button variant="ghost" onClick={() => setOpen(!open)}>
         <Brain size={16} />
         <span>思考过程</span>
         {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-      </button>
+      </Button>
       {open && (
         <div className="thinking-content">
           <Markdown content={text || "正在思考…"} />

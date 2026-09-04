@@ -7,8 +7,10 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
       '@components': fileURLToPath(new URL('./src/components', import.meta.url)),
       '@hooks': fileURLToPath(new URL('./src/hooks', import.meta.url)),
+      '@shared': fileURLToPath(new URL('./shared', import.meta.url)),
     },
   },
   server: {

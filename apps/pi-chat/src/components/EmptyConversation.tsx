@@ -1,4 +1,5 @@
 import { ChevronRight, Sparkles } from "lucide-react";
+import { Button } from "@components/ui/button";
 
 export function EmptyConversation({
   onPrompt,
@@ -19,10 +20,10 @@ export function EmptyConversation({
       <p>输入问题，或从下面的建议开始一段新对话。</p>
       <div className="prompt-list">
         {prompts.map((prompt) => (
-          <button key={prompt} onClick={() => onPrompt(prompt)}>
+          <Button variant="outline" key={prompt} onClick={() => onPrompt(prompt)}>
             {prompt}
             <ChevronRight size={15} />
-          </button>
+          </Button>
         ))}
       </div>
     </section>

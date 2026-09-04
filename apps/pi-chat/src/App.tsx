@@ -1,18 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowUp, Plus } from "lucide-react";
+import { Menu } from "lucide-react";
+import type { BootstrapData, ConversationSummary, ThinkingLevel } from "@shared/types";
 import { EmptyConversation } from "@components/EmptyConversation";
 import { LoadingIndicator } from "@components/LoadingIndicator";
 import { MessageItem } from "@components/MessageItem";
-import { PiLogo } from "@components/PiLogo";
+import { Button } from "@components/ui/button";
+import { Composer } from "@components/Composer";
+import { ConversationSidebar } from "@components/ConversationSidebar";
 import { useConversationStream } from "@hooks/useConversationStream";
+import {
+  createConversation,
+} from "@/api";
 import "./App.css";
-import { createConversation } from "./api";
 
 export default function App() {
   const { conversationId } = useParams<{ conversationId: string }>();
   const navigate = useNavigate();
-  const [input, setInput] = useState("");
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [bootstrap, setBootstrap] = useState<BootstrapData>({ models: [] });
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const messageBottomRef = useRef<HTMLDivElement>(null);
   const scrollAfterSubmitRef = useRef(false);
   const {
@@ -21,11 +28,18 @@ export default function App() {
     error: connectionError,
     send,
   } = useConversationStream(conversationId);
+  const [input, setInput] = useState("");
+  const busy = status === "running" || status === "stopping" || status === "compacting";
   const streamedContentLength = messageItems.reduce((total, item) => {
     if (item.kind === "message") return total + item.message.text.length;
     if (item.kind === "thinking") return total + item.thinking.text.length;
     return total;
   }, 0);
+
+
+  useEffect(() => {
+    
+  }, []);
 
   useEffect(() => {
     if (!scrollAfterSubmitRef.current || messageItems.length === 0) return;
@@ -56,78 +70,78 @@ export default function App() {
     setInput("");
     void send(text);
   };
-  const startNew = async() => {
+
+  const startNew = async () => {
     const created = await createConversation();
     navigate("/conversation/" + created.conversation.id);
   };
-  const title = "新会话";
+
+  const changeModel = async (value: string) => {
+    
+  };
+
+  const changeThinking = async (level: ThinkingLevel) => {
+    
+  };
+
   const isEmpty = !conversationId || messageItems.length === 0;
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <div className="brand">
-          <div className="brand-mark">
-            <PiLogo size={18} />
-          </div>
-          <span className="conversation-title">{title}</span>
-        </div>
-        <button className="new-chat" onClick={() => void startNew()}>
-          <Plus size={16} />
-          新会话
-        </button>
-      </header>
-      <main className={"chat-area " + (isEmpty ? "empty-chat-area" : "")}>
-        {isEmpty ? (
-          <EmptyConversation onPrompt={(text) => void submit(text)} />
-        ) : (
-          <div className="messages">
-            {messageItems.map((item) => (
-              <MessageItem
+      <ConversationSidebar
+        conversations={conversations}
+        selectedId={conversationId}
+        open={sidebarOpen}
+        onOpenChange={setSidebarOpen}
+        onNew={startNew}
+        onSelect={(id) => {
+          navigate("/conversation/" + id);
+          setSidebarOpen(false);
+        }}
+      />
+      <section className="chat-shell">
+        <header className="topbar">
+          <Button className="sidebar-trigger" variant="ghost" size="icon" onClick={() => setSidebarOpen(true)} aria-label="打开会话列表">
+            <Menu size={18} />
+          </Button>
+          <span className="conversation-title">{"新会话"}</span>
+        </header>
+        <main className={"chat-area " + (isEmpty ? "empty-chat-area" : "")}>
+          {isEmpty ? (
+            <EmptyConversation onPrompt={submit} />
+          ) : (
+            <div className="messages">
+              {messageItems.map((item) => (
+                <MessageItem 
                 key={item.id}
                 item={item}
                 showActions={item.kind === "message"}
               />
-            ))}
-            {loading && <LoadingIndicator />}
+              ))}
+              {loading && <LoadingIndicator />}
             <div
               className="message-bottom-spacer"
               ref={messageBottomRef}
               aria-hidden
             />
-          </div>
-        )}
+            </div>
+          )}
         {connectionError && (
           <div className="connection-error">{connectionError}</div>
         )}
-      </main>
-      <footer className="composer-wrap">
-        <div className="composer">
-          <textarea
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                void submit();
-              }
-            }}
-            placeholder="输入消息，按 Enter 发送…"
-            rows={1}
-          />
-          <button
-            className="send-button"
-            onClick={() => void submit()}
-            disabled={!input.trim() || loading}
-            aria-label="发送"
-          >
-            <ArrowUp size={18} />
-          </button>
-        </div>
-        <div className="composer-hint">
-          <span className="composer-model">deepseek-v4-flash</span>
-          <span>Enter 发送 · Shift + Enter 换行</span>
-        </div>
-      </footer>
+        </main>
+        <Composer
+          busy={busy}
+          model={{provider: '', id: '' }}
+          models={bootstrap.models}
+          thinkingLevel={'off'}
+          thinkingLevels={['off']}
+          onSend={submit}
+          onAbort={async () => {
+          }}
+          onModelChange={changeModel}
+          onThinkingChange={changeThinking}
+        />
+      </section>
     </div>
   );
 }
