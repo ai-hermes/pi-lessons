@@ -1,7 +1,7 @@
 import type { GlobalConfig } from "@server/config";
 import type { ConversationRecord } from "./types";
 import { join } from "node:path";
-import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdir, writeFile, readFile, rm, readdir } from "node:fs/promises";
 
 export class ConversationRepository {
   private readonly globalConfig: GlobalConfig;
@@ -47,10 +47,30 @@ export class ConversationRepository {
       updatedAt: new Date(),
     };
     await this.save(mergedConversationRecord);
+    return mergedConversationRecord;
   }
 
   async delete(conversationId: string) {
     const conversationRecordPath = this.recordPath(conversationId);
     await rm(conversationRecordPath, { force: true });
+  }
+
+  async list(): Promise<ConversationRecord[]> {
+    const originFiles = await readdir(this.globalConfig.recordsDir);
+    const files = originFiles.filter((file) => file.endsWith(".json"));
+    const conversationRecords = await Promise.all(
+      files.map(async (file) => {
+        try {
+          const rawData = await readFile(
+            join(this.globalConfig.recordsDir, file),
+            "utf8",
+          );
+          return JSON.parse(rawData) as ConversationRecord;
+        } catch {
+          return undefined;
+        }
+      }),
+    );
+    return conversationRecords.filter(record => record !== undefined);
   }
 }

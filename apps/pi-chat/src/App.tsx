@@ -13,30 +13,13 @@ import { Button } from "@components/ui/button";
 import { Composer } from "@components/Composer";
 import { ConversationSidebar } from "@components/ConversationSidebar";
 import { useConversationStream } from "@hooks/useConversationStream";
-import { createConversation } from "@/api";
+import { createConversation, deleteConversation, listConversations, renameConversation } from "@/api";
 import "./App.css";
 
 export default function App() {
   const { conversationId } = useParams<{ conversationId: string }>();
   const navigate = useNavigate();
-  const [conversations, setConversations] = useState<ConversationSummary[]>([
-    {
-      "id": "7590e3b3-6f8e-4248-bf76-2e8367415927",
-      "title": "New Conversation",
-      "workspaceDir": "/Users/aholic/.pi/agent/pi-chat/workspaces/7590e3b3-6f8e-4248-bf76-2e8367415927",
-      "createdAt": "2026-08-31T07:03:46.380Z",
-      "updatedAt": "2026-08-31T07:03:46.380Z",
-      "status": 'ready'
-    },
-    {
-      "id": "284e3258-07d1-4e48-93aa-06230b2a4b4d",
-      "title": "New Conversation",
-      "workspaceDir": "/Users/aholic/.pi/agent/pi-chat/workspaces/284e3258-07d1-4e48-93aa-06230b2a4b4d",
-      "createdAt": "2026-08-31T08:56:44.142Z",
-      "updatedAt": "2026-08-31T08:56:44.142Z",
-      "status": 'ready'
-    }
-  ]);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [bootstrap, setBootstrap] = useState<BootstrapData>({ models: [] });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -48,6 +31,7 @@ export default function App() {
     error: connectionError,
     status,
     send,
+    abort,
   } = useConversationStream(conversationId);
   const [input, setInput] = useState("");
   const busy =
@@ -62,7 +46,12 @@ export default function App() {
     window.scrollTo(0, 0);
   }, [conversationId]);
 
-  useEffect(() => { }, []);
+  useEffect(() => {
+    (async () => {
+      const conversationList = await listConversations();
+      setConversations(conversationList);
+    })()
+  }, []);
 
   useEffect(() => {
     if (!scrollAfterSubmitRef.current || messageItems.length === 0) return;
@@ -112,13 +101,18 @@ export default function App() {
         onCollapse={() => setSidebarCollapsed(true)}
         onNew={startNew}
         onSelect={(id) => {
-          console.log('switch', id)
+          navigate("/conversation/" + id);
+          setSidebarOpen(false);
         }}
         onRename={async (id, title) => {
-          console.log('rename', id, title);
+          const updated = await renameConversation(id, title);
+          setConversations((items) =>
+            items.map((item) => (item.id === id ? updated : item)),
+          );
         }}
         onDelete={async (id) => {
-          console.log('delete', id);
+          await deleteConversation(id);
+          setConversations((items) => items.filter((item) => item.id !== id));
         }}
       />
       <section className="chat-shell">
@@ -180,7 +174,7 @@ export default function App() {
           thinkingLevel={"off"}
           thinkingLevels={["off", "minimal", "low", "medium", "high", "xhigh", "max"]}
           onSend={submit}
-          onAbort={async () => { }}
+          onAbort={abort}
           onModelChange={changeModel}
           onThinkingChange={changeThinking}
         />

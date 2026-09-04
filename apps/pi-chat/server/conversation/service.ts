@@ -1,6 +1,6 @@
 import type { GlobalConfig } from "@server/config";
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ConversationRecord, ManagedSession } from "./types";
@@ -108,7 +108,59 @@ export class ConversationService {
     };
   }
 
-  public async abort(conversationId: string) {}
+  async list(): Promise<ConversationSummary[]> {
+    const conversationRecords = await this.conversationRepository.list();
+    return conversationRecords
+      .map((record) =>
+        this.summary(
+          record,
+          this.managedSessions.get(record.id)?.status ?? "cold",
+        ),
+      )
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  async delete(id: string) {
+    const conversationRecord = await this.conversationRepository.get(id);
+    if (!conversationRecord) return
+
+    const managedSesson = this.managedSessions.get(id);
+    if (managedSesson && this.isBusy(managedSesson)) {
+      throw new Error(`Cannot delete conversation ${id} because it is busy.`);
+    }
+
+    if (existsSync(conversationRecord.sessionFile)) {
+      await rm(conversationRecord.sessionFile, {
+        force: true
+      });
+    }
+
+    await rm(conversationRecord.workspaceDir, {
+      force: true,
+      recursive: true
+    });
+    await this.conversationRepository.delete(id);
+  }
+
+  public async rename(conversationId: string, title: string,): Promise<ConversationSummary> {
+    const cleanedTitle = title.trim();
+    if (!cleanedTitle) throw Error("Title cannot be empty.");
+    const newConversationRecord = await this.conversationRepository.update(conversationId, {
+      title: cleanedTitle,
+    })
+    return this.summary(
+      newConversationRecord,
+      this.managedSessions.get(conversationId)?.status ?? "cold",
+    );
+  }
+
+  public async abort(conversationId: string) {
+    const managedSession = await this.ensureManagedSession(conversationId);
+    if (!this.isBusy(managedSession)) return;
+    this.setStatus(managedSession, "stopping");
+    managedSession.runtime.session.abort();
+    this.setStatus(managedSession, "ready");
+  }
 
   private summary(
     record: ConversationRecord,
@@ -293,5 +345,24 @@ export class ConversationService {
     }
 
     return this.createManagedSession(conversationRecord, sessionManager);
+  }
+
+
+  private isBusy(managedSession: ManagedSession): boolean {
+    return (
+      managedSession.runtime.session.agent.state.isStreaming ||
+      managedSession.status === "running" ||
+      managedSession.status === "stopping" ||
+      managedSession.status === "compacting"
+    );
+  }
+
+  private async release(id: string) {
+    const managedSession = this.managedSessions.get(id);
+    if (!managedSession) return;
+    managedSession.unsubscribe?.();
+    managedSession.runtime.session.dispose();
+    this.channels.delete(id);
+    this.managedSessions.delete(id);
   }
 }

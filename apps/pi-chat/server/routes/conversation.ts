@@ -1,3 +1,4 @@
+import { jsonBody } from '@server/utils'
 import type { ConversationService } from "@server/conversation/service";
 import type { StreamEvent } from "@shared/types";
 import { Hono } from "hono";
@@ -12,11 +13,44 @@ export function createConversationRoutes(
     return ctx.json(snapshot);
   });
 
-  conversationApp.get("/:id", async (ctx) => {
-    const { id } = ctx.req.param();
-    const conversationSnapshot = await conversationService.snapshot(id);
+  conversationApp.get("/", async (ctx) => {
+    const conversationList = await conversationService.list();
+    return ctx.json(conversationList)
+  });
+
+  conversationApp.get("/:conversationId", async (ctx) => {
+    const { conversationId } = ctx.req.param();
+    const conversationSnapshot = await conversationService.snapshot(conversationId);
     return ctx.json(conversationSnapshot);
   });
+
+  conversationApp.delete("/:conversationId", async (ctx) => {
+    const { conversationId } = ctx.req.param();
+    await conversationService.delete(conversationId);
+    return ctx.json({
+      deleted: true
+    });
+  });
+
+  conversationApp.patch("/:conversationId", async (ctx) => {
+    const { conversationId } = ctx.req.param();
+    const body = await jsonBody<{ title?: unknown }>(ctx.req.raw);
+    if (typeof body.title !== "string") {
+      throw new Error("Title should be a valid string");
+    }
+    const patchedConversation = await conversationService.rename(conversationId, body.title);
+    return ctx.json(patchedConversation);
+  });
+
+  conversationApp.post("/:conversationId/abort", async (ctx) => {
+    const { conversationId } = ctx.req.param();
+    await conversationService.abort(conversationId);
+    return ctx.json({
+      aborted: true
+    });
+  });
+
+
 
   conversationApp.post("/:conversationId/messages", async (ctx) => {
     const formData = await ctx.req.formData();

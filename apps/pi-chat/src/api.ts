@@ -2,6 +2,7 @@ import type {
   CreateConversationResponse,
   StreamEvent,
   ConversationSnapshot,
+  ConversationSummary,
 } from "@shared/types";
 
 async function readResponse<T>(request: Promise<Response>): Promise<T> {
@@ -54,4 +55,40 @@ export function connectEvents(
   source.onerror = onError;
   source.onopen = () => onOpen?.();
   return source;
+}
+
+export function listConversations(): Promise<ConversationSummary[]> {
+  return readResponse(fetch("/api/conversation"));
+}
+
+
+export function deleteConversation(id: string): Promise<{ deleted: true }> {
+  return readResponse(
+    fetch("/api/conversation/" + encodeURIComponent(id), {
+      method: "DELETE",
+    }),
+  );
+}
+
+
+export function renameConversation(
+  id: string,
+  title: string,
+): Promise<ConversationSummary> {
+  return readResponse(
+    fetch("/api/conversation/" + encodeURIComponent(id), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    }),
+  );
+}
+
+
+export function abortConversation(id: string): Promise<{ aborted: true }> {
+  return readResponse(
+    fetch("/api/conversation/" + encodeURIComponent(id) + "/abort", {
+      method: "POST",
+    }),
+  );
 }
