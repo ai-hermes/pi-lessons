@@ -607,7 +607,9 @@ button {
   border: 1px solid transparent;
   border-radius: 7px;
   font-weight: 500;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
 .ui-button:disabled {
   pointer-events: none;

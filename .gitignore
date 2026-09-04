@@ -38,7 +38,8 @@ bakup/
 
 # ---- 编辑器 / IDE ----
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
 *.swp
 *.swo
 *~

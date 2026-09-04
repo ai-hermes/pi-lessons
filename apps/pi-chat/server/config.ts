@@ -1,6 +1,6 @@
-import { join, resolve, relative, isAbsolute } from 'node:path'
-import { mkdir } from 'node:fs/promises'
-import { getAgentDir } from '@earendil-works/pi-coding-agent'
+import { join, resolve, relative, isAbsolute } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 /*
 $HOME/.pi/agent/pi-chat
 ├── app-settings.json
@@ -14,41 +14,39 @@ $HOME/.pi/agent/pi-chat
     └── README.md
 */
 export interface GlobalConfig {
-    rootDir: string;
-    recordsDir: string;
-    sessionsDir: string;
-    workspacesDir: string;
+  rootDir: string;
+  recordsDir: string;
+  sessionsDir: string;
+  workspacesDir: string;
 }
 
-export function getGlobalConfig(rootDir = process.env.PI_CHAT_ROOT_DIR): GlobalConfig {
-    const resolvedRootDir = rootDir ?? join(getAgentDir(), 'pi-chat');
-    return {
-        rootDir: resolvedRootDir,
-        recordsDir: join(resolvedRootDir, 'records'),
-        sessionsDir: join(resolvedRootDir, 'sessions'),
-        workspacesDir: join(resolvedRootDir, 'workspaces'),
-    };
+export function getGlobalConfig(
+  rootDir = process.env.PI_CHAT_ROOT_DIR,
+): GlobalConfig {
+  const resolvedRootDir = rootDir ?? join(getAgentDir(), "pi-chat");
+  return {
+    rootDir: resolvedRootDir,
+    recordsDir: join(resolvedRootDir, "records"),
+    sessionsDir: join(resolvedRootDir, "sessions"),
+    workspacesDir: join(resolvedRootDir, "workspaces"),
+  };
 }
-
 
 export async function ensureDir(paths: string[]) {
-    return Promise.all(
-        paths.map(path => 
-            mkdir(path, { recursive: true })
-        )
-    );
+  return Promise.all(paths.map((path) => mkdir(path, { recursive: true })));
 }
 
 export function assertInside(parentDir: string, candidateDir: string) {
-    const safeRootDir = resolve(parentDir);
-    const safeCandidateDir = resolve(candidateDir);
-    const child = relative(safeRootDir, safeCandidateDir);
-    if (
-        !child || child == '' ||  // candidateDir equals rootDir
-        child.startsWith('..') || // candicateDir is outside rootDir
-        isAbsolute(child) // absolute path is not allowed
-    ) {
-        throw new Error(`Directory ${candidateDir} is not inside ${parentDir}`);
-    }
-    return safeCandidateDir;
+  const safeRootDir = resolve(parentDir);
+  const safeCandidateDir = resolve(candidateDir);
+  const child = relative(safeRootDir, safeCandidateDir);
+  if (
+    !child ||
+    child == "" || // candidateDir equals rootDir
+    child.startsWith("..") || // candicateDir is outside rootDir
+    isAbsolute(child) // absolute path is not allowed
+  ) {
+    throw new Error(`Directory ${candidateDir} is not inside ${parentDir}`);
+  }
+  return safeCandidateDir;
 }

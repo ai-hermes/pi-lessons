@@ -1,11 +1,13 @@
 import { useRef, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import type {
-  ChatMessage,
-  MessageListItem,
-} from "@shared/types";
+import type { ChatMessage, MessageListItem } from "@shared/types";
 import { conversationReducer } from "@/state";
-import { connectEvents, createConversation, getConversation, sendMessage } from "@/api";
+import {
+  connectEvents,
+  createConversation,
+  getConversation,
+  sendMessage,
+} from "@/api";
 
 interface PendingSend {
   conversationId: string;
@@ -13,14 +15,15 @@ interface PendingSend {
   message: ChatMessage;
 }
 
-
 export function useConversationStream(conversationId?: string) {
   const navigate = useNavigate();
   const [messageState, setMessageState] = useState<{
     conversationId?: string;
     items: MessageListItem[];
   }>({ items: [] });
-  const [historyMessageList, setHistoryMessageList] = useState<MessageListItem[]>([])
+  const [historyMessageList, setHistoryMessageList] = useState<
+    MessageListItem[]
+  >([]);
   const [errorState, setErrorState] = useState<{
     conversationId?: string;
     message: string;
@@ -30,44 +33,44 @@ export function useConversationStream(conversationId?: string) {
 
   const messageItems = [
     ...historyMessageList,
-    ...(messageState.conversationId === conversationId ? messageState.items : [])
-  ]
-    
+    ...(messageState.conversationId === conversationId
+      ? messageState.items
+      : []),
+  ];
 
   useEffect(() => {
     if (!conversationId) return;
 
     (async () => {
-      const conversation = await getConversation(conversationId)
-      setHistoryMessageList(conversation.messageList)
+      const conversation = await getConversation(conversationId);
+      setHistoryMessageList(conversation.messageList);
       connectEvents(
         conversationId,
         (event) => {
-          setMessageState(current => {
+          setMessageState((current) => {
             return {
               conversationId,
               items: conversationReducer(
                 current.conversationId === conversationId ? current.items : [],
                 {
-                  type: 'event',
+                  type: "event",
                   event,
-                }
+                },
               ),
-            }
-          })
+            };
+          });
         },
         () => {
           setErrorState({
             conversationId,
             message: "Connection error",
-          })
+          });
         },
         () => {
           // Handle connection open event
           const pending = pendingSend.current;
           if (!pending || pending.conversationId !== conversationId) return;
           pendingSend.current = null;
-
 
           setMessageState((current) => ({
             conversationId,
@@ -77,25 +80,21 @@ export function useConversationStream(conversationId?: string) {
             ),
           }));
 
-          send(conversationId, pending.text)
-        }
-      )
-
+          send(conversationId, pending.text);
+        },
+      );
     })();
-
-
-  }, [conversationId])
-
+  }, [conversationId]);
 
   async function send(conversationId: string, text: string) {
     setLoading(true);
     setErrorState({
       conversationId,
       message: "",
-    })
+    });
 
     try {
-      await sendMessage(conversationId, text)
+      await sendMessage(conversationId, text);
     } catch (error) {
       setErrorState({
         conversationId,
@@ -120,31 +119,27 @@ export function useConversationStream(conversationId?: string) {
     if (!conversationId) {
       setLoading(true);
       setErrorState({
-        message: '',
-      })
+        message: "",
+      });
       try {
-        const created = await createConversation()
+        const created = await createConversation();
         const conversationId = created.conversation.id;
         pendingSend.current = {
           conversationId,
           text,
           message,
-        }
-        navigate(`/conversation/${conversationId}`)
-
+        };
+        navigate(`/conversation/${conversationId}`);
       } catch (error) {
         setErrorState({
           message: (error as Error)?.message || "Unknown error",
-        })
+        });
       } finally {
         setLoading(false);
       }
 
-
-      return
+      return;
     }
-
-
 
     setMessageState((current) => ({
       conversationId,
@@ -154,7 +149,7 @@ export function useConversationStream(conversationId?: string) {
       ),
     }));
 
-    await send(conversationId, text)
+    await send(conversationId, text);
   }
 
   return { messageItems, loading, error: errorState.message, send: submit };
