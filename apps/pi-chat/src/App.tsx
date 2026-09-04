@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Menu } from "lucide-react";
+import { Menu, PanelLeftOpen } from "lucide-react";
 import type {
   BootstrapData,
   ConversationSummary,
@@ -39,6 +39,7 @@ export default function App() {
   ]);
   const [bootstrap, setBootstrap] = useState<BootstrapData>({ models: [] });
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const messageBottomRef = useRef<HTMLDivElement>(null);
   const scrollAfterSubmitRef = useRef(false);
   const {
@@ -105,7 +106,9 @@ export default function App() {
         conversations={conversations}
         selectedId={conversationId}
         open={sidebarOpen}
+        collapsed={sidebarCollapsed}
         onOpenChange={setSidebarOpen}
+        onCollapse={() => setSidebarCollapsed(true)}
         onNew={startNew}
         onSelect={(id) => {
           scrollAfterSubmitRef.current = false;
@@ -115,6 +118,17 @@ export default function App() {
       />
       <section className="chat-shell">
         <header className="topbar">
+          {sidebarCollapsed && (
+            <Button
+              className="sidebar-expand"
+              variant="ghost"
+              size="icon"
+              onClick={() => setSidebarCollapsed(false)}
+              aria-label="展开侧边栏"
+            >
+              <PanelLeftOpen size={18} />
+            </Button>
+          )}
           <Button
             className="sidebar-trigger"
             variant="ghost"

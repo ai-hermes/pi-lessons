@@ -43,3 +43,6 @@ bakup/
 *.swp
 *.swo
 *~
+.agents
+screenshots
+skills-lock.json

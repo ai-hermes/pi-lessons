@@ -41,7 +41,19 @@ button {
   padding: 12px;
   border-right: 1px solid #e5e5e5;
   background: #fafafa;
+  overflow: hidden;
+  transition:
+    width 0.2s ease,
+    flex-basis 0.2s ease,
+    padding 0.2s ease,
+    border-color 0.2s ease;
   z-index: 20;
+}
+.sidebar-content {
+  width: 235px;
+  transition:
+    opacity 0.14s ease,
+    visibility 0.14s ease;
 }
 .sidebar-brand {
   height: 40px;
@@ -53,9 +65,29 @@ button {
 .sidebar-brand strong {
   font-size: 14px;
 }
+.sidebar-collapse {
+  margin-left: auto;
+}
 .sidebar-close,
-.sidebar-trigger {
+.sidebar-trigger,
+.sidebar-expand {
   display: none !important;
+}
+@media (min-width: 641px) {
+  .conversation-sidebar.sidebar-collapsed {
+    width: 0;
+    flex-basis: 0;
+    padding-right: 0;
+    padding-left: 0;
+    border-right-width: 0;
+  }
+  .conversation-sidebar.sidebar-collapsed .sidebar-content {
+    visibility: hidden;
+    opacity: 0;
+  }
+  .sidebar-expand {
+    display: inline-flex !important;
+  }
 }
 .conversation-list {
   margin-top: 16px;
@@ -937,6 +969,10 @@ button {
   .conversation-sidebar.sidebar-open {
     transform: translateX(0);
   }
+  .sidebar-content {
+    visibility: visible;
+    opacity: 1;
+  }
   .sidebar-backdrop {
     position: fixed;
     inset: 0;
@@ -946,6 +982,9 @@ button {
   .sidebar-close,
   .sidebar-trigger {
     display: inline-flex !important;
+  }
+  .sidebar-collapse {
+    display: none !important;
   }
   .sidebar-close {
     margin-left: auto;
