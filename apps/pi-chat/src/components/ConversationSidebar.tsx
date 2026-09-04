@@ -1,4 +1,6 @@
-import { PanelLeftClose, Plus, X } from "lucide-react";
+import { useState } from "react";
+import { PanelLeftClose, Pencil, Plus, Trash2, X } from "lucide-react";
+import { AlertDialog as AlertDialogPrimitive } from "radix-ui";
 import type { ConversationSummary } from "@shared/types";
 import { PiLogo } from "@components/PiLogo";
 import { Button } from "@components/ui/button";
@@ -12,6 +14,8 @@ export function ConversationSidebar({
   onCollapse,
   onNew,
   onSelect,
+  onRename,
+  onDelete,
 }: {
   conversations: ConversationSummary[];
   selectedId?: string;
@@ -21,10 +25,25 @@ export function ConversationSidebar({
   onCollapse(): void;
   onNew(): Promise<void>;
   onSelect(id: string): void;
+  onRename(id: string, title: string): Promise<void>;
+  onDelete(id: string): Promise<void>;
 }) {
+  const [editingId, setEditingId] = useState<string>();
+  const [editingTitle, setEditingTitle] = useState("");
   const selectedIndex = conversations.findIndex(
     (item) => item.id === selectedId,
   );
+
+  const saveTitle = async (item: ConversationSummary) => {
+    const title = editingTitle.trim();
+    setEditingId(undefined);
+    if (!title || title === item.title) return;
+    try {
+      await onRename(item.id, title);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "编辑会话失败");
+    }
+  };
 
   return (
     <>
@@ -83,19 +102,101 @@ export function ConversationSidebar({
                 />
               )}
               {conversations.map((item) => (
-                <Button
-                  key={item.id}
-                  variant="ghost"
-                  className={
-                    "conversation-item " +
-                    (item.id === selectedId ? "conversation-item-active" : "")
-                  }
-                  onClick={() => onSelect(item.id)}
-                  title={item.title}
-                  aria-current={item.id === selectedId ? "page" : undefined}
-                >
-                  <span>{item.title}</span>
-                </Button>
+                <div className="conversation-item-row" key={item.id}>
+                  {editingId === item.id ? (
+                    <input
+                      className="conversation-title-input"
+                      value={editingTitle}
+                      maxLength={120}
+                      autoFocus
+                      aria-label="会话名称"
+                      onChange={(event) => setEditingTitle(event.target.value)}
+                      onBlur={() => void saveTitle(item)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") event.currentTarget.blur();
+                        if (event.key === "Escape") setEditingId(undefined);
+                      }}
+                    />
+                  ) : (
+                    <>
+                      <Button
+                        variant="ghost"
+                        className={
+                          "conversation-item " +
+                          (item.id === selectedId
+                            ? "conversation-item-active"
+                            : "")
+                        }
+                        onClick={() => onSelect(item.id)}
+                        title={item.title}
+                        aria-current={
+                          item.id === selectedId ? "page" : undefined
+                        }
+                      >
+                        <span>{item.title}</span>
+                      </Button>
+                      <span className="conversation-item-actions">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title="编辑会话名称"
+                          aria-label={`编辑 ${item.title}`}
+                          onClick={() => {
+                            setEditingId(item.id);
+                            setEditingTitle(item.title);
+                          }}
+                        >
+                          <Pencil size={14} />
+                        </Button>
+                        <AlertDialogPrimitive.Root>
+                          <AlertDialogPrimitive.Trigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="conversation-delete"
+                              title="删除会话"
+                              aria-label={`删除 ${item.title}`}
+                            >
+                              <Trash2 size={14} />
+                            </Button>
+                          </AlertDialogPrimitive.Trigger>
+                          <AlertDialogPrimitive.Portal>
+                            <AlertDialogPrimitive.Overlay className="alert-dialog-overlay" />
+                            <AlertDialogPrimitive.Content className="alert-dialog-content">
+                              <AlertDialogPrimitive.Title className="alert-dialog-title">
+                                删除会话？
+                              </AlertDialogPrimitive.Title>
+                              <AlertDialogPrimitive.Description className="alert-dialog-description">
+                                “{item.title}”及其消息记录将被永久删除。
+                              </AlertDialogPrimitive.Description>
+                              <div className="alert-dialog-actions">
+                                <AlertDialogPrimitive.Cancel asChild>
+                                  <Button variant="outline">取消</Button>
+                                </AlertDialogPrimitive.Cancel>
+                                <AlertDialogPrimitive.Action asChild>
+                                  <Button
+                                    className="alert-dialog-delete"
+                                    onClick={() => {
+                                      void onDelete(item.id).catch((error) =>
+                                        window.alert(
+                                          error instanceof Error
+                                            ? error.message
+                                            : "删除会话失败",
+                                        ),
+                                      );
+                                    }}
+                                  >
+                                    删除
+                                  </Button>
+                                </AlertDialogPrimitive.Action>
+                              </div>
+                            </AlertDialogPrimitive.Content>
+                          </AlertDialogPrimitive.Portal>
+                        </AlertDialogPrimitive.Root>
+                      </span>
+                    </>
+                  )}
+                </div>
               ))}
             </div>
             {conversations.length === 0 && (

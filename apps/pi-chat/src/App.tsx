@@ -46,6 +46,7 @@ export default function App() {
     messageItems,
     loading,
     error: connectionError,
+    status,
     send,
   } = useConversationStream(conversationId);
   const [input, setInput] = useState("");
@@ -111,9 +112,13 @@ export default function App() {
         onCollapse={() => setSidebarCollapsed(true)}
         onNew={startNew}
         onSelect={(id) => {
-          scrollAfterSubmitRef.current = false;
-          navigate("/conversation/" + id);
-          setSidebarOpen(false);
+          console.log('switch', id)
+        }}
+        onRename={async (id, title) => {
+          console.log('rename', id, title);
+        }}
+        onDelete={async (id) => {
+          console.log('delete', id);
         }}
       />
       <section className="chat-shell">
