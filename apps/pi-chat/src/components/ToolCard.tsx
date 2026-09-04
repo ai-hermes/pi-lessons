@@ -7,7 +7,8 @@ import {
   LoaderCircle,
   XCircle,
 } from "lucide-react";
-import type { ToolRun } from "../../shared/types";
+import type { ToolRun } from "@shared/types";
+import { Button } from "@components/ui/button";
 
 export function ToolCard({ tool }: { tool: ToolRun }) {
   const [open, setOpen] = useState(false);
@@ -21,13 +22,13 @@ export function ToolCard({ tool }: { tool: ToolRun }) {
     );
   return (
     <div className="tool-card">
-      <button className="tool-summary" onClick={() => setOpen(!open)}>
+      <Button variant="ghost" className="tool-summary" onClick={() => setOpen(!open)}>
         <FileText size={16} />
         <strong>{tool.name}</strong>
         <span>{tool.result ?? "工具调用"}</span>
         {statusIcon}
         {open ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
-      </button>
+      </Button>
       {open && (
         <div className="tool-details">
           <label>参数</label>

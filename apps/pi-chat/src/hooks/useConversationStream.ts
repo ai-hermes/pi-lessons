@@ -4,8 +4,8 @@ import type {
   ChatMessage,
   MessageListItem,
 } from "@shared/types";
-import { conversationReducer } from "../state";
-import { createConversation, sendMessage, connectEvents, getConversation } from '../api'
+import { conversationReducer } from "@/state";
+import { connectEvents, createConversation, getConversation, sendMessage } from "@/api";
 
 interface PendingSend {
   conversationId: string;

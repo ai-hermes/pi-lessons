@@ -88,3 +88,23 @@ export interface CreateConversationResponse {
   stream: { id: string; lastEventId: number };
   diagnostics: string[];
 }
+
+export interface ModelOption {
+  provider: string;
+  id: string;
+  name: string;
+  contextWindow: number;
+  reasoning: boolean;
+  imageInput: boolean;
+}
+
+
+export interface RepositoryInfo {
+  branch: string;
+  commit: string;
+}
+
+export interface BootstrapData {
+  models: ModelOption[];
+  repository?: RepositoryInfo;
+}

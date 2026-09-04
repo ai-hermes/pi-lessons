@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Copy } from "lucide-react";
-import type { ChatMessage } from "../../shared/types";
+import type { ChatMessage } from "@shared/types";
+import { Button } from "@components/ui/button";
 
 function relativeTime(value: number | string) {
   const time = typeof value === "string" ? Date.parse(value) : value;
@@ -32,14 +33,16 @@ export function MessageActions({
   return (
     <div className="message-actions">
       <span>{timestamp ? relativeTime(timestamp) : "刚刚"}</span>
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={() => void copy()}
         aria-label="复制消息"
         title="复制消息"
       >
         <Copy size={13} />
         {copied && <span>已复制</span>}
-      </button>
+      </Button>
     </div>
   );
 }
