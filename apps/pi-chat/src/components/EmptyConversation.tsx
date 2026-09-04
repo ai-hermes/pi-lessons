@@ -1,4 +1,5 @@
-import { ChevronRight, Sparkles } from "lucide-react";
+import { ChevronRight } from "lucide-react";
+import { PiLogo } from "@components/PiLogo";
 import { Button } from "@components/ui/button";
 
 export function EmptyConversation({
@@ -14,10 +15,10 @@ export function EmptyConversation({
   return (
     <section className="empty-conversation">
       <div className="empty-icon">
-        <Sparkles size={22} />
+        <PiLogo size={66} />
       </div>
       <h1>有什么我可以帮你？</h1>
-      <p>输入问题，或从下面的建议开始一段新对话。</p>
+      <p>输入你的问题，或者从试试推荐问题</p>
       <div className="prompt-list">
         {prompts.map((prompt) => (
           <Button
