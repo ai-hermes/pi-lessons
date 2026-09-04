@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import type { ChatMessage, MessageListItem } from "@shared/types";
+import type { ChatMessage, MessageListItem, RuntimeStatus } from "@shared/types";
 import { conversationReducer } from "@/state";
 import {
   connectEvents,
@@ -30,6 +30,10 @@ export function useConversationStream(conversationId?: string) {
     message: string;
   }>({ message: "" });
   const [loading, setLoading] = useState(false);
+  const [statusState, setStatusState] = useState<{
+    conversationId?: string;
+    status: RuntimeStatus;
+  }>({ status: "cold" });
   const pendingSend = useRef<PendingSend | null>(null);
 
   const messageItems = [
@@ -55,10 +59,15 @@ export function useConversationStream(conversationId?: string) {
         conversationId,
         items: conversation.messageList,
       });
+      setStatusState({ conversationId, status: conversation.status });
       eventSource = connectEvents(
         conversationId,
         (event) => {
           if (disposed) return;
+          if (event.type === "runtime.status") {
+            const { status } = event.payload as { status: RuntimeStatus };
+            setStatusState({ conversationId, status });
+          }
           setMessageState((current) => {
             return {
               conversationId,
@@ -170,6 +179,9 @@ export function useConversationStream(conversationId?: string) {
 
     await send(conversationId, text);
   }
-
-  return { messageItems, loading, error: errorState.message, send: submit };
+  const status =
+    statusState.conversationId === conversationId
+      ? statusState.status
+      : "cold";
+  return { messageItems, loading, error: errorState.message, send: submit, status };
 }

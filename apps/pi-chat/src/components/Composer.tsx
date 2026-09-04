@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { ArrowUp, ChevronDown, ChevronRight, Square } from "lucide-react";
 import { Popover as PopoverPrimitive } from "radix-ui";
 import type { ModelOption, ThinkingLevel } from "@shared/types";
@@ -41,27 +41,17 @@ export function Composer({
   const [settingsView, setSettingsView] = useState<"effort" | "models">(
     "effort",
   );
-  const [selectedModel, setSelectedModel] = useState(model);
-  const [selectedThinking, setSelectedThinking] = useState(thinkingLevel);
-  const modelValue = selectedModel
-    ? `${selectedModel.provider}/${selectedModel.id}`
+  const modelValue = model
+    ? `${model.provider}/${model.id}`
     : "";
   const thinkingIndex = Math.max(
     0,
-    thinkingLevels.indexOf(selectedThinking ?? thinkingLevels[0]),
+    thinkingLevels.indexOf(thinkingLevel ?? thinkingLevels[0]),
   );
   const thinkingProgress =
     thinkingLevels.length > 1
       ? (thinkingIndex / (thinkingLevels.length - 1)) * 100
       : 0;
-
-  useEffect(() => {
-    setSelectedModel(model);
-  }, [model?.id, model?.provider]);
-
-  useEffect(() => {
-    setSelectedThinking(thinkingLevel);
-  }, [thinkingLevel]);
 
   const submit = () => {
     const text = input.trim();
@@ -107,8 +97,8 @@ export function Composer({
                     {modelValue || "Select model"}
                   </span>
                   <span className="model-selector-effort">
-                    {selectedThinking
-                      ? thinkingNames[selectedThinking]
+                    {thinkingLevel
+                      ? thinkingNames[thinkingLevel]
                       : "Select effort"}
                   </span>
                   <ChevronDown size={15} />
@@ -129,8 +119,8 @@ export function Composer({
                         onClick={() => setSettingsView("models")}
                       >
                         <strong>
-                          {selectedThinking
-                            ? thinkingNames[selectedThinking]
+                          {thinkingLevel
+                            ? thinkingNames[thinkingLevel]
                             : "Select effort"}
                         </strong>
                         <ChevronRight size={18} />
@@ -169,8 +159,7 @@ export function Composer({
                             const level =
                               thinkingLevels[Number(event.currentTarget.value)];
                             if (!level) return;
-                            setSelectedThinking(level);
-                            void onThinkingChange(level);
+                            onThinkingChange(level).catch(console.error);
                           }}
                         />
                       </div>
@@ -191,9 +180,8 @@ export function Composer({
                             type="button"
                             key={value}
                             onClick={() => {
-                              setSelectedModel(item);
                               setSettingsOpen(false);
-                              void onModelChange(value);
+                              onModelChange(value).catch(console.error);
                             }}
                           >
                             {value}
