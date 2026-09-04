@@ -21,9 +21,10 @@ export function useConversationStream(conversationId?: string) {
     conversationId?: string;
     items: MessageListItem[];
   }>({ items: [] });
-  const [historyMessageList, setHistoryMessageList] = useState<
-    MessageListItem[]
-  >([]);
+  const [historyState, setHistoryState] = useState<{
+    conversationId?: string;
+    items: MessageListItem[];
+  }>({ items: [] });
   const [errorState, setErrorState] = useState<{
     conversationId?: string;
     message: string;
@@ -32,7 +33,9 @@ export function useConversationStream(conversationId?: string) {
   const pendingSend = useRef<PendingSend | null>(null);
 
   const messageItems = [
-    ...historyMessageList,
+    ...(historyState.conversationId === conversationId
+      ? historyState.items
+      : []),
     ...(messageState.conversationId === conversationId
       ? messageState.items
       : []),
@@ -41,12 +44,21 @@ export function useConversationStream(conversationId?: string) {
   useEffect(() => {
     if (!conversationId) return;
 
-    (async () => {
+    let disposed = false;
+    let eventSource: EventSource | undefined;
+
+    void (async () => {
       const conversation = await getConversation(conversationId);
-      setHistoryMessageList(conversation.messageList);
-      connectEvents(
+      if (disposed) return;
+
+      setHistoryState({
+        conversationId,
+        items: conversation.messageList,
+      });
+      eventSource = connectEvents(
         conversationId,
         (event) => {
+          if (disposed) return;
           setMessageState((current) => {
             return {
               conversationId,
@@ -61,12 +73,14 @@ export function useConversationStream(conversationId?: string) {
           });
         },
         () => {
+          if (disposed) return;
           setErrorState({
             conversationId,
             message: "Connection error",
           });
         },
         () => {
+          if (disposed) return;
           // Handle connection open event
           const pending = pendingSend.current;
           if (!pending || pending.conversationId !== conversationId) return;
@@ -84,6 +98,11 @@ export function useConversationStream(conversationId?: string) {
         },
       );
     })();
+
+    return () => {
+      disposed = true;
+      eventSource?.close();
+    };
   }, [conversationId]);
 
   async function send(conversationId: string, text: string) {

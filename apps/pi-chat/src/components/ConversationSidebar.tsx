@@ -1,4 +1,4 @@
-import { MessageSquare, Plus, X } from "lucide-react";
+import { Plus, X } from "lucide-react";
 import type { ConversationSummary } from "@shared/types";
 import { PiLogo } from "@components/PiLogo";
 import { Button } from "@components/ui/button";
@@ -18,6 +18,10 @@ export function ConversationSidebar({
   onNew(): Promise<void>;
   onSelect(id: string): void;
 }) {
+  const selectedIndex = conversations.findIndex(
+    (item) => item.id === selectedId,
+  );
+
   return (
     <>
       {open && (
@@ -50,21 +54,30 @@ export function ConversationSidebar({
         </Button>
         <div className="conversation-list">
           <span className="conversation-list-label">会话历史</span>
-          {conversations.map((item) => (
-            <Button
-              key={item.id}
-              variant="ghost"
-              className={
-                "conversation-item " +
-                (item.id === selectedId ? "conversation-item-active" : "")
-              }
-              onClick={() => onSelect(item.id)}
-              title={item.title}
-            >
-              <MessageSquare />
-              <span>{item.title}</span>
-            </Button>
-          ))}
+          <div className="conversation-items">
+            {selectedIndex >= 0 && (
+              <span
+                className="conversation-active-indicator"
+                style={{ transform: `translateY(${selectedIndex * 36}px)` }}
+                aria-hidden
+              />
+            )}
+            {conversations.map((item) => (
+              <Button
+                key={item.id}
+                variant="ghost"
+                className={
+                  "conversation-item " +
+                  (item.id === selectedId ? "conversation-item-active" : "")
+                }
+                onClick={() => onSelect(item.id)}
+                title={item.title}
+                aria-current={item.id === selectedId ? "page" : undefined}
+              >
+                <span>{item.title}</span>
+              </Button>
+            ))}
+          </div>
           {conversations.length === 0 && (
             <p className="conversation-empty">还没有会话</p>
           )}

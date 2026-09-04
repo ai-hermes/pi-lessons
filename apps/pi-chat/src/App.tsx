@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Menu } from "lucide-react";
 import type {
@@ -19,7 +19,24 @@ import "./App.css";
 export default function App() {
   const { conversationId } = useParams<{ conversationId: string }>();
   const navigate = useNavigate();
-  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([
+    {
+      "id": "7590e3b3-6f8e-4248-bf76-2e8367415927",
+      "title": "New Conversation",
+      "workspaceDir": "/Users/aholic/.pi/agent/pi-chat/workspaces/7590e3b3-6f8e-4248-bf76-2e8367415927",
+      "createdAt": "2026-08-31T07:03:46.380Z",
+      "updatedAt": "2026-08-31T07:03:46.380Z",
+      "status": 'ready'
+    },
+    {
+      "id": "284e3258-07d1-4e48-93aa-06230b2a4b4d",
+      "title": "New Conversation",
+      "workspaceDir": "/Users/aholic/.pi/agent/pi-chat/workspaces/284e3258-07d1-4e48-93aa-06230b2a4b4d",
+      "createdAt": "2026-08-31T08:56:44.142Z",
+      "updatedAt": "2026-08-31T08:56:44.142Z",
+      "status": 'ready'
+    }
+  ]);
   const [bootstrap, setBootstrap] = useState<BootstrapData>({ models: [] });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const messageBottomRef = useRef<HTMLDivElement>(null);
@@ -39,17 +56,18 @@ export default function App() {
     return total;
   }, 0);
 
-  useEffect(() => {}, []);
+  useLayoutEffect(() => {
+    window.scrollTo(0, 0);
+  }, [conversationId]);
+
+  useEffect(() => { }, []);
 
   useEffect(() => {
     if (!scrollAfterSubmitRef.current || messageItems.length === 0) return;
 
     scrollAfterSubmitRef.current = false;
     const frame = window.requestAnimationFrame(() => {
-      messageBottomRef.current?.scrollIntoView({
-        behavior: "smooth",
-        block: "end",
-      });
+      messageBottomRef.current?.scrollIntoView({ block: "end" });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [conversationId, messageItems.length]);
@@ -76,9 +94,9 @@ export default function App() {
     navigate("/conversation/" + created.conversation.id);
   };
 
-  const changeModel = async (value: string) => {};
+  const changeModel = async (value: string) => { };
 
-  const changeThinking = async (level: ThinkingLevel) => {};
+  const changeThinking = async (level: ThinkingLevel) => { };
 
   const isEmpty = !conversationId || messageItems.length === 0;
   return (
@@ -90,6 +108,7 @@ export default function App() {
         onOpenChange={setSidebarOpen}
         onNew={startNew}
         onSelect={(id) => {
+          scrollAfterSubmitRef.current = false;
           navigate("/conversation/" + id);
           setSidebarOpen(false);
         }}
@@ -133,12 +152,16 @@ export default function App() {
         </main>
         <Composer
           busy={busy}
-          model={{ provider: "", id: "" }}
-          models={bootstrap.models}
+          model={{ provider: "kimi-coding", id: "kimi-for-coding" }}
+          models={[
+            { provider: "kimi-coding", id: "kimi-for-coding", name: 'kimi-for-coding', contextWindow: 268_435_456, reasoning: true, imageInput: true },
+            { provider: "kimi-coding", id: "kimi-for-coding-highspeed", name: 'kimi-for-coding-highspeed', contextWindow: 1_073_741_824, reasoning: true, imageInput: true },
+            { provider: "kimi-coding", id: "k3", name: 'k3', contextWindow: 1_073_741_824, reasoning: true, imageInput: true },
+          ]}
           thinkingLevel={"off"}
-          thinkingLevels={["off"]}
+          thinkingLevels={["off", "minimal", "low", "medium", "high", "xhigh", "max"]}
           onSend={submit}
-          onAbort={async () => {}}
+          onAbort={async () => { }}
           onModelChange={changeModel}
           onThinkingChange={changeThinking}
         />
