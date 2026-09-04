@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Menu } from "lucide-react";
-import type { BootstrapData, ConversationSummary, ThinkingLevel } from "@shared/types";
+import type {
+  BootstrapData,
+  ConversationSummary,
+  ThinkingLevel,
+} from "@shared/types";
 import { EmptyConversation } from "@components/EmptyConversation";
 import { LoadingIndicator } from "@components/LoadingIndicator";
 import { MessageItem } from "@components/MessageItem";
@@ -9,9 +13,7 @@ import { Button } from "@components/ui/button";
 import { Composer } from "@components/Composer";
 import { ConversationSidebar } from "@components/ConversationSidebar";
 import { useConversationStream } from "@hooks/useConversationStream";
-import {
-  createConversation,
-} from "@/api";
+import { createConversation } from "@/api";
 import "./App.css";
 
 export default function App() {
@@ -29,17 +31,15 @@ export default function App() {
     send,
   } = useConversationStream(conversationId);
   const [input, setInput] = useState("");
-  const busy = status === "running" || status === "stopping" || status === "compacting";
+  const busy =
+    status === "running" || status === "stopping" || status === "compacting";
   const streamedContentLength = messageItems.reduce((total, item) => {
     if (item.kind === "message") return total + item.message.text.length;
     if (item.kind === "thinking") return total + item.thinking.text.length;
     return total;
   }, 0);
 
-
-  useEffect(() => {
-    
-  }, []);
+  useEffect(() => {}, []);
 
   useEffect(() => {
     if (!scrollAfterSubmitRef.current || messageItems.length === 0) return;
@@ -76,13 +76,9 @@ export default function App() {
     navigate("/conversation/" + created.conversation.id);
   };
 
-  const changeModel = async (value: string) => {
-    
-  };
+  const changeModel = async (value: string) => {};
 
-  const changeThinking = async (level: ThinkingLevel) => {
-    
-  };
+  const changeThinking = async (level: ThinkingLevel) => {};
 
   const isEmpty = !conversationId || messageItems.length === 0;
   return (
@@ -100,7 +96,13 @@ export default function App() {
       />
       <section className="chat-shell">
         <header className="topbar">
-          <Button className="sidebar-trigger" variant="ghost" size="icon" onClick={() => setSidebarOpen(true)} aria-label="打开会话列表">
+          <Button
+            className="sidebar-trigger"
+            variant="ghost"
+            size="icon"
+            onClick={() => setSidebarOpen(true)}
+            aria-label="打开会话列表"
+          >
             <Menu size={18} />
           </Button>
           <span className="conversation-title">{"新会话"}</span>
@@ -111,33 +113,32 @@ export default function App() {
           ) : (
             <div className="messages">
               {messageItems.map((item) => (
-                <MessageItem 
-                key={item.id}
-                item={item}
-                showActions={item.kind === "message"}
-              />
+                <MessageItem
+                  key={item.id}
+                  item={item}
+                  showActions={item.kind === "message"}
+                />
               ))}
               {loading && <LoadingIndicator />}
-            <div
-              className="message-bottom-spacer"
-              ref={messageBottomRef}
-              aria-hidden
-            />
+              <div
+                className="message-bottom-spacer"
+                ref={messageBottomRef}
+                aria-hidden
+              />
             </div>
           )}
-        {connectionError && (
-          <div className="connection-error">{connectionError}</div>
-        )}
+          {connectionError && (
+            <div className="connection-error">{connectionError}</div>
+          )}
         </main>
         <Composer
           busy={busy}
-          model={{provider: '', id: '' }}
+          model={{ provider: "", id: "" }}
           models={bootstrap.models}
-          thinkingLevel={'off'}
-          thinkingLevels={['off']}
+          thinkingLevel={"off"}
+          thinkingLevels={["off"]}
           onSend={submit}
-          onAbort={async () => {
-          }}
+          onAbort={async () => {}}
           onModelChange={changeModel}
           onThinkingChange={changeThinking}
         />

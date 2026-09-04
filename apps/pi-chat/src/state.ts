@@ -44,10 +44,10 @@ function addUserMessage(
   return items.map((item, index) =>
     index === pendingIndex
       ? {
-        kind: "message",
-        id: message.id,
-        message: { ...message, pending: false },
-      }
+          kind: "message",
+          id: message.id,
+          message: { ...message, pending: false },
+        }
       : item,
   );
 }
@@ -115,13 +115,13 @@ export function conversationReducer(
       return updateItem(items, id, (current) =>
         current.kind === "message"
           ? {
-            ...current,
-            message: {
-              ...current.message,
-              text: current.message.text + delta,
-              streaming: true,
-            },
-          }
+              ...current,
+              message: {
+                ...current.message,
+                text: current.message.text + delta,
+                streaming: true,
+              },
+            }
           : current,
       );
     }
@@ -162,21 +162,21 @@ export function conversationReducer(
       return updateItem(items, id, (item) =>
         item.kind === "thinking"
           ? {
-            ...item,
-            thinking: {
-              ...item.thinking,
-              text: item.thinking.text + String(payload.delta ?? ""),
-            },
-          }
+              ...item,
+              thinking: {
+                ...item.thinking,
+                text: item.thinking.text + String(payload.delta ?? ""),
+              },
+            }
           : item,
       );
     case "thinking.completed":
       return updateItem(items, id, (item) =>
         item.kind === "thinking"
           ? {
-            ...item,
-            thinking: { ...item.thinking, completed: true },
-          }
+              ...item,
+              thinking: { ...item.thinking, completed: true },
+            }
           : item,
       );
     case "tool.started":

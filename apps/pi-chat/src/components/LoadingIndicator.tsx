@@ -10,7 +10,10 @@ function useElapsed() {
   const [tenths, setTenths] = useState(0);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setTenths((value) => value + 1), 100);
+    const timer = window.setInterval(
+      () => setTenths((value) => value + 1),
+      100,
+    );
     return () => window.clearInterval(timer);
   }, []);
 

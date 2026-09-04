@@ -11,7 +11,7 @@
       "@/*": ["./src/*"],
       "@components/*": ["./src/components/*"],
       "@hooks/*": ["./src/hooks/*"],
-      "@shared/*": ["./shared/*"],
+      "@shared/*": ["./shared/*"]
     },
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,

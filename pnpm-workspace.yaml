@@ -1,7 +1,7 @@
 packages:
-  - '.'
-  - 'apps/pi-chat'
+  - "."
+  - "apps/pi-chat"
 allowBuilds:
-  '@google/genai': true
+  "@google/genai": true
   esbuild: true
   protobufjs: true

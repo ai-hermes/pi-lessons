@@ -1,4 +1,8 @@
-import type { CreateConversationResponse, StreamEvent, ConversationSnapshot } from "@shared/types";
+import type {
+  CreateConversationResponse,
+  StreamEvent,
+  ConversationSnapshot,
+} from "@shared/types";
 
 async function readResponse<T>(request: Promise<Response>): Promise<T> {
   const response = await request;
