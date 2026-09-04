@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import type { ChatMessage, MessageListItem, RuntimeStatus } from "@shared/types";
 import { conversationReducer } from "@/state";
 import {
+  abortConversation,
   connectEvents,
   createConversation,
   getConversation,
@@ -183,5 +184,18 @@ export function useConversationStream(conversationId?: string) {
     statusState.conversationId === conversationId
       ? statusState.status
       : "cold";
-  return { messageItems, loading, error: errorState.message, send: submit, status };
+
+  async function abort() {
+    if (!conversationId) return;
+    setErrorState({ conversationId, message: "" });
+    try {
+      await abortConversation(conversationId);
+    } catch (error) {
+      setErrorState({
+        conversationId,
+        message: (error as Error)?.message || "Unknown error",
+      });
+    }
+  }
+  return { messageItems, loading, error: errorState.message, send: submit, status, abort };
 }
