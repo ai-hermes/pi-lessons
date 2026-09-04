@@ -47,7 +47,7 @@ export function useConversationStream(conversationId?: string) {
     let disposed = false;
     let eventSource: EventSource | undefined;
 
-    void (async () => {
+    (async () => {
       const conversation = await getConversation(conversationId);
       if (disposed) return;
 
