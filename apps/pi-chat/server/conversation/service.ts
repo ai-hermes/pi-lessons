@@ -8,6 +8,8 @@ import { ConversationRepository } from "./repository";
 import { createRuntime } from "./runtime";
 import { EventChannel } from "./channel";
 import type {
+  ConversationConfig,
+  ConversationConfigUpdate,
   ConversationSnapshot,
   ConversationSummary,
   RuntimeStatus,
@@ -160,6 +162,79 @@ export class ConversationService {
     this.setStatus(managedSession, "stopping");
     managedSession.runtime.session.abort();
     this.setStatus(managedSession, "ready");
+  }
+
+
+  async getConfig(conversationId: string): Promise<ConversationConfig> {
+    const managedSession = await this.ensureManagedSession(conversationId);
+    return this.config(managedSession);
+  }
+
+  async updateConfig(conversationId: string, update: ConversationConfigUpdate,): Promise<ConversationConfig> {
+    const managedSession = await this.ensureManagedSession(conversationId);
+    if (this.isBusy(managedSession)) {
+      throw new Error(`Cannot update config for conversation ${conversationId} because it is busy.`);
+    }
+
+
+    const session = managedSession.runtime.session;
+    if (update.model) {
+      // session.setModel();
+      const model = this.availableModels(managedSession).find(
+        (item) =>
+          item.provider === update.model?.provider &&
+          item.id === update.model.id,
+      );
+      if (!model) {
+        throw new Error(`Model ${update.model.provider}/${update.model.id} is not available.`);
+      }
+      await session.setModel(model);
+    }
+
+    if (update.thinkingLevel !== undefined) {
+      if (
+        !session
+          .getAvailableThinkingLevels()
+          .includes(update.thinkingLevel as ThinkingLevel)
+      ) {
+        throw new Error(
+          `Thinking level ${update.thinkingLevel} is not available`,
+        );
+      }
+      session.setThinkingLevel(update.thinkingLevel);
+    }
+
+    return this.config(managedSession);
+  }
+
+  private config(managedSession: ManagedSession): ConversationConfig {
+    const session = managedSession.runtime.session;
+    return {
+      model: {
+        provider: session.agent.state.model.provider,
+        id: session.agent.state.model.id,
+      },
+      models: this.availableModels(managedSession).map(model => {
+        return {
+          provider: model.provider,
+          id: model.id,
+          name: model.name,
+          contextWindow: model.contextWindow,
+          reasoning: model.reasoning,
+          imageInput: model.input.includes('image'),
+        }
+      }),
+      thinkingLevel: session.agent.state.thinkingLevel,
+      availableThinkingLevels: session.getAvailableThinkingLevels(),
+    }
+
+  }
+
+  private availableModels(managedSession: ManagedSession) {
+    const scopedModels = managedSession.runtime.session.scopedModels;
+    return scopedModels.length > 0
+      ? scopedModels.map((item) => item.model)
+      : this.modelRuntime.getAvailableSnapshot();
   }
 
   private summary(

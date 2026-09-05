@@ -116,3 +116,21 @@ export interface BootstrapData {
   models: ModelOption[];
   repository?: RepositoryInfo;
 }
+
+
+export interface ConversationConfig {
+  model: { provider: string; id: string };
+  models: ModelOption[];
+  thinkingLevel: ThinkingLevel;
+  availableThinkingLevels: ThinkingLevel[];
+}
+
+
+
+export interface ConversationConfigUpdate {
+  model?: {
+    provider: string;
+    id: string
+  };
+  thinkingLevel?: ThinkingLevel;
+}

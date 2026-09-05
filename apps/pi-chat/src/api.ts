@@ -3,6 +3,8 @@ import type {
   StreamEvent,
   ConversationSnapshot,
   ConversationSummary,
+  ConversationConfig,
+  ConversationConfigUpdate,
 } from "@shared/types";
 
 async function readResponse<T>(request: Promise<Response>): Promise<T> {
@@ -89,6 +91,28 @@ export function abortConversation(id: string): Promise<{ aborted: true }> {
   return readResponse(
     fetch("/api/conversation/" + encodeURIComponent(id) + "/abort", {
       method: "POST",
+    }),
+  );
+}
+
+
+export function getConversationConfig(
+  id: string,
+): Promise<ConversationConfig> {
+  return readResponse(
+    fetch("/api/conversation/" + encodeURIComponent(id) + "/config"),
+  );
+}
+
+export function updateConversationConfig(
+  id: string,
+  update: ConversationConfigUpdate,
+): Promise<ConversationConfig> {
+  return readResponse(
+    fetch("/api/conversation/" + encodeURIComponent(id) + "/config", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(update),
     }),
   );
 }

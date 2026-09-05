@@ -1,6 +1,6 @@
 import { jsonBody } from '@server/utils'
 import type { ConversationService } from "@server/conversation/service";
-import type { StreamEvent } from "@shared/types";
+import type { ConversationConfigUpdate, StreamEvent } from "@shared/types";
 import { Hono } from "hono";
 export function createConversationRoutes(
   conversationService: ConversationService,
@@ -23,6 +23,20 @@ export function createConversationRoutes(
     const conversationSnapshot = await conversationService.snapshot(conversationId);
     return ctx.json(conversationSnapshot);
   });
+
+  conversationApp.get("/:conversationId/config", async (ctx) => {
+    const { conversationId } = ctx.req.param();
+    const conversationConfig = await conversationService.getConfig(conversationId);
+    return ctx.json(conversationConfig);
+  });
+
+  conversationApp.patch("/:conversationId/config", async (ctx) => {
+    const { conversationId } = ctx.req.param();
+    const body = await jsonBody<ConversationConfigUpdate>(ctx.req.raw);
+    // zod
+    const patchedConversationConfig = await conversationService.updateConfig(conversationId, body);
+    return ctx.json(patchedConversationConfig);
+  })
 
   conversationApp.delete("/:conversationId", async (ctx) => {
     const { conversationId } = ctx.req.param();
