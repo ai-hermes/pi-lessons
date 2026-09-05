@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Menu, PanelLeftOpen } from "lucide-react";
 import type {
   BootstrapData,
+  ConversationConfig,
   ConversationSummary,
   ThinkingLevel,
 } from "@shared/types";
@@ -13,13 +14,17 @@ import { Button } from "@components/ui/button";
 import { Composer } from "@components/Composer";
 import { ConversationSidebar } from "@components/ConversationSidebar";
 import { useConversationStream } from "@hooks/useConversationStream";
-import { createConversation, deleteConversation, listConversations, renameConversation } from "@/api";
+import { createConversation, deleteConversation, getConversationConfig, listConversations, renameConversation, updateConversationConfig } from "@/api";
 import "./App.css";
 
 export default function App() {
   const { conversationId } = useParams<{ conversationId: string }>();
   const navigate = useNavigate();
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [configState, setConfigState] = useState<{
+    conversationId: string;
+    config: ConversationConfig;
+  }>();
   const [bootstrap, setBootstrap] = useState<BootstrapData>({ models: [] });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -33,6 +38,7 @@ export default function App() {
     send,
     abort,
   } = useConversationStream(conversationId);
+  console.log('busy', status)
   const [input, setInput] = useState("");
   const busy =
     status === "running" || status === "stopping" || status === "compacting";
@@ -45,6 +51,20 @@ export default function App() {
   useLayoutEffect(() => {
     window.scrollTo(0, 0);
   }, [conversationId]);
+
+  useEffect(() => {
+    if (!conversationId) return;
+
+
+    (async () => {
+      const conversationConfig = await getConversationConfig(conversationId);
+      setConfigState({
+        conversationId,
+        config: conversationConfig
+      });
+    })()
+
+  }, [conversationId])
 
   useEffect(() => {
     (async () => {
@@ -85,11 +105,40 @@ export default function App() {
     navigate("/conversation/" + created.conversation.id);
   };
 
-  const changeModel = async (value: string) => { };
+  const changeModel = async (value: string) => {
+    // value => ${provider_id}/${model_id}
+    if (!conversationId) return;
+    const separator = value.indexOf("/");
+    if (separator < 1) return;
+    const id = conversationId;
+    const config = await updateConversationConfig(id, {
+      model: {
+        provider: value.slice(0, separator),
+        id: value.slice(separator + 1),
+      },
+    });
+    setConfigState((current) => {
+      return current?.conversationId === id ? { conversationId: id, config } : current
+    });
+  };
 
-  const changeThinking = async (level: ThinkingLevel) => { };
+  const changeThinking = async (level: ThinkingLevel) => {
+    if (!conversationId) return;
+    const id = conversationId;
+    const config = await updateConversationConfig(id, {
+      thinkingLevel: level,
+    });
+    setConfigState((current) =>
+      current?.conversationId === id ? { conversationId: id, config } : current,
+    );
+  };
 
   const isEmpty = !conversationId || messageItems.length === 0;
+
+  const config =
+    configState && configState.conversationId === conversationId
+      ? configState.config
+      : undefined;
   return (
     <div className="app-shell">
       <ConversationSidebar
@@ -165,14 +214,10 @@ export default function App() {
         </main>
         <Composer
           busy={busy}
-          model={{ provider: "kimi-coding", id: "kimi-for-coding" }}
-          models={[
-            { provider: "kimi-coding", id: "kimi-for-coding", name: 'kimi-for-coding', contextWindow: 268_435_456, reasoning: true, imageInput: true },
-            { provider: "kimi-coding", id: "kimi-for-coding-highspeed", name: 'kimi-for-coding-highspeed', contextWindow: 1_073_741_824, reasoning: true, imageInput: true },
-            { provider: "kimi-coding", id: "k3", name: 'k3', contextWindow: 1_073_741_824, reasoning: true, imageInput: true },
-          ]}
-          thinkingLevel={"off"}
-          thinkingLevels={["off", "minimal", "low", "medium", "high", "xhigh", "max"]}
+          model={config?.model}
+          models={config?.models ?? []}
+          thinkingLevel={config?.thinkingLevel}
+          thinkingLevels={config?.availableThinkingLevels ?? []}
           onSend={submit}
           onAbort={abort}
           onModelChange={changeModel}

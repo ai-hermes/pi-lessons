@@ -79,3 +79,24 @@ curl -X POST http://localhost:4328/api/conversation/31c2c56c-8a5b-4f74-a379-4c38
 curl -X GET http://localhost:4328/api/conversation/31c2c56c-8a5b-4f74-a379-4c38df9ccdea/stream
 
 curl -X GET http://localhost:4328/api/conversation/31c2c56c-8a5b-4f74-a379-4c38df9ccdea
+
+
+会话列表
+会话切换
+会话删除
+会话编辑(标题)
+会话终止
+
+会话功能完善
+会话配置切换
+
+feat/pi-chat-0904
+
+
+会话配置
+    - model list
+    - thinking level list
+
+会话配置切换
+    - switch model
+    - switch thinking level
