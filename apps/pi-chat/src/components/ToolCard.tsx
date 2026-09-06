@@ -25,7 +25,6 @@ export function ToolCard({ tool }: { tool: ToolRun }) {
       <Button variant="ghost" className="tool-summary" onClick={() => setOpen(!open)}>
         <FileText size={16} />
         <strong>{tool.name}</strong>
-        <span>{tool.result ?? "工具调用"}</span>
         {statusIcon}
         {open ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
       </Button>
