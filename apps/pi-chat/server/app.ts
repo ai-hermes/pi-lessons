@@ -42,7 +42,7 @@ export function createApp(conversationService: ConversationService): Hono<HonoPi
 
   app.get("/", (c) => c.text("Hello, Hono!"));
   app.route("/api/conversation", createConversationRoutes(conversationService));
-  app.route("/api/system", createSystemRoutes());
+  app.route("/api/system", createSystemRoutes(conversationService));
 
   return app;
 }

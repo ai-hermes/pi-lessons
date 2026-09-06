@@ -1,8 +1,9 @@
 import { Button } from "@components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@components/ui/popover";
+import { Slider } from "@components/ui/slider";
 import { Textarea } from "@components/ui/textarea";
 import type { ModelOption, ThinkingLevel } from "@shared/types";
 import { ArrowUp, ChevronDown, ChevronRight, Square } from "lucide-react";
-import { Popover as PopoverPrimitive } from "radix-ui";
 import { useState } from "react";
 
 const thinkingNames: Record<ThinkingLevel, string> = {
@@ -41,8 +42,6 @@ export function Composer({
   const [settingsView, setSettingsView] = useState<"effort" | "models">("effort");
   const modelValue = model ? `${model.provider}/${model.id}` : "";
   const thinkingIndex = Math.max(0, thinkingLevels.indexOf(thinkingLevel ?? thinkingLevels[0]));
-  const thinkingProgress =
-    thinkingLevels.length > 1 ? (thinkingIndex / (thinkingLevels.length - 1)) * 100 : 0;
 
   const submit = () => {
     const text = input.trim();
@@ -68,16 +67,17 @@ export function Composer({
         />
         <div className="composer-toolbar">
           <div className="composer-settings">
-            <PopoverPrimitive.Root
+            <Popover
               open={settingsOpen}
               onOpenChange={(open) => {
                 setSettingsOpen(open);
                 if (!open) setSettingsView("effort");
               }}
             >
-              <PopoverPrimitive.Trigger asChild>
-                <button
+              <PopoverTrigger asChild>
+                <Button
                   className="model-selector-trigger"
+                  variant="ghost"
                   type="button"
                   disabled={busy}
                   aria-label="选择模型和思考强度"
@@ -87,92 +87,85 @@ export function Composer({
                     {thinkingLevel ? thinkingNames[thinkingLevel] : "Select effort"}
                   </span>
                   <ChevronDown size={15} />
-                </button>
-              </PopoverPrimitive.Trigger>
-              <PopoverPrimitive.Portal>
-                <PopoverPrimitive.Content
-                  className="model-selector-popover"
-                  side="top"
-                  align="end"
-                  sideOffset={12}
-                >
-                  {settingsView === "effort" ? (
-                    <div className="effort-selector">
-                      <button
-                        className="effort-selector-heading"
-                        type="button"
-                        onClick={() => setSettingsView("models")}
-                      >
-                        <strong>
-                          {thinkingLevel ? thinkingNames[thinkingLevel] : "Select effort"}
-                        </strong>
-                        <ChevronRight size={18} />
-                        <span>{modelValue || "Select model"}</span>
-                      </button>
-                      <div className="effort-slider-wrap">
-                        <span
-                          className="effort-slider-track"
-                          style={{
-                            background: `linear-gradient(to right, #555 ${thinkingProgress}%, #e5e5e5 ${thinkingProgress}%)`,
-                          }}
-                          aria-hidden
-                        />
-                        <div className="effort-marks" aria-hidden="true">
-                          {thinkingLevels.map((level, index) => (
-                            <span
-                              className={
-                                index <= thinkingIndex
-                                  ? "effort-mark effort-mark-active"
-                                  : "effort-mark"
-                              }
-                              key={level}
-                              title={thinkingNames[level]}
-                            />
-                          ))}
-                        </div>
-                        <input
-                          className="effort-slider"
-                          type="range"
-                          min={0}
-                          max={Math.max(0, thinkingLevels.length - 1)}
-                          value={thinkingIndex}
-                          disabled={thinkingLevels.length < 2}
-                          aria-label="思考强度"
-                          onChange={(event) => {
-                            const level = thinkingLevels[Number(event.currentTarget.value)];
-                            if (!level) return;
-                            onThinkingChange(level).catch(console.error);
-                          }}
-                        />
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="model-selector-list">
-                      <span className="model-selector-title">Select model</span>
-                      {models.map((item) => {
-                        const value = `${item.provider}/${item.id}`;
-                        return (
-                          <button
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent
+                className="model-selector-popover"
+                side="top"
+                align="end"
+                sideOffset={12}
+              >
+                {settingsView === "effort" ? (
+                  <div className="effort-selector">
+                    <Button
+                      className="effort-selector-heading"
+                      variant="ghost"
+                      type="button"
+                      onClick={() => setSettingsView("models")}
+                    >
+                      <strong>
+                        {thinkingLevel ? thinkingNames[thinkingLevel] : "Select effort"}
+                      </strong>
+                      <ChevronRight size={18} />
+                      <span>{modelValue || "Select model"}</span>
+                    </Button>
+                    <div className="effort-slider-wrap">
+                      <div className="effort-marks" aria-hidden="true">
+                        {thinkingLevels.map((level, index) => (
+                          <span
                             className={
-                              "model-selector-option " +
-                              (value === modelValue ? "model-selector-option-active" : "")
+                              index <= thinkingIndex
+                                ? "effort-mark effort-mark-active"
+                                : "effort-mark"
                             }
-                            type="button"
-                            key={value}
-                            onClick={() => {
-                              setSettingsOpen(false);
-                              onModelChange(value).catch(console.error);
-                            }}
-                          >
-                            {value}
-                          </button>
-                        );
-                      })}
+                            key={level}
+                            title={thinkingNames[level]}
+                          />
+                        ))}
+                      </div>
+                      <Slider
+                        className="effort-slider"
+                        min={0}
+                        max={Math.max(0, thinkingLevels.length - 1)}
+                        step={1}
+                        value={[thinkingIndex]}
+                        disabled={thinkingLevels.length < 2}
+                        aria-label="思考强度"
+                        onValueChange={([index]) => {
+                          const level = thinkingLevels[index];
+                          if (!level) return;
+                          onThinkingChange(level).catch(console.error);
+                        }}
+                      />
                     </div>
-                  )}
-                </PopoverPrimitive.Content>
-              </PopoverPrimitive.Portal>
-            </PopoverPrimitive.Root>
+                  </div>
+                ) : (
+                  <div className="model-selector-list">
+                    <span className="model-selector-title">Select model</span>
+                    {models.map((item) => {
+                      const value = `${item.provider}/${item.id}`;
+                      return (
+                        <Button
+                          className={
+                            "model-selector-option " +
+                            (value === modelValue ? "model-selector-option-active" : "")
+                          }
+                          variant="ghost"
+                          type="button"
+                          key={value}
+                          onClick={() => {
+                            setSettingsOpen(false);
+                            onModelChange(value).catch(console.error);
+                          }}
+                        >
+                          {value}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                )}
+              </PopoverContent>
+            </Popover>
           </div>
           <Button
             className={"send-button " + (busy ? "stop-button" : "")}

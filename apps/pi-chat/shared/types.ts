@@ -104,6 +104,7 @@ export interface ModelOption {
   contextWindow: number;
   reasoning: boolean;
   imageInput: boolean;
+  thinkingLevels: ThinkingLevel[];
 }
 
 export interface RepositoryInfo {
