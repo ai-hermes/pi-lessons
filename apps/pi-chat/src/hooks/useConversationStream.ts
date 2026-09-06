@@ -1,4 +1,9 @@
-import type { ChatMessage, MessageListItem, RuntimeStatus } from "@shared/types";
+import type {
+  ChatMessage,
+  ConversationConfigUpdate,
+  MessageListItem,
+  RuntimeStatus,
+} from "@shared/types";
 import { useRef, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -8,6 +13,7 @@ import {
   createConversation,
   getConversation,
   sendMessage,
+  updateConversationConfig,
 } from "@/api";
 import { conversationReducer } from "@/state";
 
@@ -134,7 +140,7 @@ export function useConversationStream(conversationId?: string) {
     }
   }
 
-  async function submit(value: string) {
+  async function submit(value: string, initialConfig?: ConversationConfigUpdate) {
     const text = value.trim();
     if (!text || loading) return;
 
@@ -153,6 +159,9 @@ export function useConversationStream(conversationId?: string) {
       try {
         const created = await createConversation();
         const conversationId = created.conversation.id;
+        if (initialConfig?.model || initialConfig?.thinkingLevel !== undefined) {
+          await updateConversationConfig(conversationId, initialConfig);
+        }
         pendingSend.current = {
           conversationId,
           text,

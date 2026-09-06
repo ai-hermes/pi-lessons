@@ -3,7 +3,12 @@ import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import type { TextContent, ImageContent, ThinkingLevel } from "@earendil-works/pi-ai";
+import {
+  getSupportedThinkingLevels,
+  type ImageContent,
+  type TextContent,
+  type ThinkingLevel,
+} from "@earendil-works/pi-ai";
 import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { GlobalConfig } from "@server/config";
 import type {
@@ -11,6 +16,7 @@ import type {
   ConversationConfigUpdate,
   ConversationSnapshot,
   ConversationSummary,
+  ModelOption,
   RuntimeStatus,
 } from "@shared/types";
 
@@ -156,6 +162,10 @@ export class ConversationService {
     return this.config(managedSession);
   }
 
+  getAvailableModels(): ModelOption[] {
+    return this.modelOptions();
+  }
+
   async updateConfig(
     conversationId: string,
     update: ConversationConfigUpdate,
@@ -196,19 +206,25 @@ export class ConversationService {
         provider: session.agent.state.model.provider,
         id: session.agent.state.model.id,
       },
-      models: this.availableModels(managedSession).map((model) => {
-        return {
-          provider: model.provider,
-          id: model.id,
-          name: model.name,
-          contextWindow: model.contextWindow,
-          reasoning: model.reasoning,
-          imageInput: model.input.includes("image"),
-        };
-      }),
+      models: this.modelOptions(managedSession),
       thinkingLevel: session.agent.state.thinkingLevel,
       availableThinkingLevels: session.getAvailableThinkingLevels(),
     };
+  }
+
+  private modelOptions(managedSession?: ManagedSession): ModelOption[] {
+    const models = managedSession
+      ? this.availableModels(managedSession)
+      : this.modelRuntime.getAvailableSnapshot();
+    return models.map((model) => ({
+      provider: model.provider,
+      id: model.id,
+      name: model.name,
+      contextWindow: model.contextWindow,
+      reasoning: model.reasoning,
+      imageInput: model.input.includes("image"),
+      thinkingLevels: getSupportedThinkingLevels(model),
+    }));
   }
 
   private availableModels(managedSession: ManagedSession) {

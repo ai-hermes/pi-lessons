@@ -1,10 +1,11 @@
 import type {
-  CreateConversationResponse,
-  StreamEvent,
-  ConversationSnapshot,
-  ConversationSummary,
+  BootstrapData,
   ConversationConfig,
   ConversationConfigUpdate,
+  ConversationSnapshot,
+  ConversationSummary,
+  CreateConversationResponse,
+  StreamEvent,
 } from "@shared/types";
 
 async function readResponse<T>(request: Promise<Response>): Promise<T> {
@@ -20,6 +21,10 @@ async function readResponse<T>(request: Promise<Response>): Promise<T> {
 
 export function createConversation(): Promise<CreateConversationResponse> {
   return readResponse(fetch("/api/conversation", { method: "POST" }));
+}
+
+export function getBootstrap(): Promise<BootstrapData> {
+  return readResponse(fetch("/api/system/bootstrap"));
 }
 
 export function sendMessage(id: string, text: string): Promise<unknown> {

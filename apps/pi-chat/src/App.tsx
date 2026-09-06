@@ -8,6 +8,7 @@ import { useConversationStream } from "@hooks/useConversationStream";
 import type {
   BootstrapData,
   ConversationConfig,
+  ConversationConfigUpdate,
   ConversationSummary,
   ThinkingLevel,
 } from "@shared/types";
@@ -18,6 +19,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import {
   createConversation,
   deleteConversation,
+  getBootstrap,
   getConversationConfig,
   listConversations,
   renameConversation,
@@ -35,6 +37,7 @@ export default function App() {
     config: ConversationConfig;
   }>();
   const [bootstrap, setBootstrap] = useState<BootstrapData>({ models: [] });
+  const [draftConfig, setDraftConfig] = useState<ConversationConfigUpdate>({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const messageBottomRef = useRef<HTMLDivElement>(null);
@@ -73,6 +76,13 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
+      const bootstrapData = await getBootstrap();
+      setBootstrap(bootstrapData);
+    })();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
       const conversationList = await listConversations();
       setConversations(conversationList);
     })();
@@ -102,7 +112,7 @@ export default function App() {
     if (!text) return;
     scrollAfterSubmitRef.current = true;
     setInput("");
-    void send(text);
+    void send(text, conversationId ? undefined : draftConfig);
   };
 
   const startNew = async () => {
@@ -112,15 +122,30 @@ export default function App() {
 
   const changeModel = async (value: string) => {
     // value => ${provider_id}/${model_id}
-    if (!conversationId) return;
     const separator = value.indexOf("/");
     if (separator < 1) return;
+    const model = {
+      provider: value.slice(0, separator),
+      id: value.slice(separator + 1),
+    };
+    if (!conversationId) {
+      const thinkingLevels =
+        bootstrap.models.find((item) => item.provider === model.provider && item.id === model.id)
+          ?.thinkingLevels ?? [];
+      setDraftConfig((current) => ({
+        model,
+        thinkingLevel:
+          current.thinkingLevel && thinkingLevels.includes(current.thinkingLevel)
+            ? current.thinkingLevel
+            : thinkingLevels.includes("medium")
+              ? "medium"
+              : thinkingLevels[0],
+      }));
+      return;
+    }
     const id = conversationId;
     const config = await updateConversationConfig(id, {
-      model: {
-        provider: value.slice(0, separator),
-        id: value.slice(separator + 1),
-      },
+      model,
     });
     setConfigState((current) => {
       return current?.conversationId === id ? { conversationId: id, config } : current;
@@ -128,7 +153,10 @@ export default function App() {
   };
 
   const changeThinking = async (level: ThinkingLevel) => {
-    if (!conversationId) return;
+    if (!conversationId) {
+      setDraftConfig((current) => ({ ...current, thinkingLevel: level }));
+      return;
+    }
     const id = conversationId;
     const config = await updateConversationConfig(id, {
       thinkingLevel: level,
@@ -142,6 +170,15 @@ export default function App() {
 
   const config =
     configState && configState.conversationId === conversationId ? configState.config : undefined;
+  const model = config?.model ?? (!conversationId ? draftConfig.model : undefined);
+  const models = config?.models ?? bootstrap.models;
+  const thinkingLevel =
+    config?.thinkingLevel ?? (!conversationId ? draftConfig.thinkingLevel : undefined);
+  const thinkingLevels =
+    config?.availableThinkingLevels ??
+    models.find((item) => item.provider === model?.provider && item.id === model.id)
+      ?.thinkingLevels ??
+    [];
   return (
     <div className="app-shell">
       <ConversationSidebar
@@ -205,10 +242,10 @@ export default function App() {
         </main>
         <Composer
           busy={busy}
-          model={config?.model}
-          models={config?.models ?? []}
-          thinkingLevel={config?.thinkingLevel}
-          thinkingLevels={config?.availableThinkingLevels ?? []}
+          model={model}
+          models={models}
+          thinkingLevel={thinkingLevel}
+          thinkingLevels={thinkingLevels}
           onSend={submit}
           onAbort={abort}
           onModelChange={changeModel}
