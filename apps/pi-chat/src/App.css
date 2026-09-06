@@ -378,7 +378,7 @@ button {
 }
 
 .message-bottom-spacer {
-  flex: 0 0 110px;
+  scroll-margin-bottom: 170px;
 }
 
 .message-loading {
@@ -1268,6 +1268,10 @@ button {
 
   .chat-area {
     padding: 26px 14px 150px;
+  }
+
+  .message-bottom-spacer {
+    scroll-margin-bottom: 150px;
   }
 
   .empty-chat-area {

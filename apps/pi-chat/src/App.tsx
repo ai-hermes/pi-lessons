@@ -42,6 +42,7 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const messageBottomRef = useRef<HTMLDivElement>(null);
   const scrollAfterSubmitRef = useRef(false);
+  const wasGeneratingRef = useRef(false);
   const {
     messageItems,
     loading,
@@ -98,14 +99,12 @@ export default function App() {
     return () => window.cancelAnimationFrame(frame);
   }, [conversationId, messageItems.length]);
 
-  useEffect(() => {
-    if (!loading) return;
-
-    const frame = window.requestAnimationFrame(() => {
-      messageBottomRef.current?.scrollIntoView({ block: "end" });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [loading, streamedContentLength]);
+  useLayoutEffect(() => {
+    const generating = loading || busy;
+    if (!generating && !wasGeneratingRef.current) return;
+    wasGeneratingRef.current = generating;
+    messageBottomRef.current?.scrollIntoView({ block: "end" });
+  }, [busy, loading, messageItems.length, streamedContentLength]);
 
   const submit = (value = input) => {
     const text = value.trim();
@@ -234,7 +233,7 @@ export default function App() {
               {messageItems.map((item) => (
                 <MessageItem key={item.id} item={item} showActions={item.kind === "message"} />
               ))}
-              {loading && <LoadingIndicator />}
+              {(loading || busy) && <LoadingIndicator />}
               <div className="message-bottom-spacer" ref={messageBottomRef} aria-hidden />
             </div>
           )}
