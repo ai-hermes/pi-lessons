@@ -313,6 +313,7 @@ export class ConversationService {
               role: message.role,
               text,
               images,
+              timestamp: message.timestamp,
             });
           }
           break;
@@ -321,6 +322,7 @@ export class ConversationService {
             managedSession.channel.publish("message.delta", {
               id: managedSession.streamMessageId,
               delta: event.assistantMessageEvent.delta,
+              timestamp: event.message.timestamp,
             });
           } else if (event.assistantMessageEvent.type === "thinking_start") {
             managedSession.streamThinkingId = randomUUID();

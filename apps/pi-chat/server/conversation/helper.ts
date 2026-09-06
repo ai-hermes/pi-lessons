@@ -105,6 +105,7 @@ export class ConversationViewBuilder {
       role: "user",
       text: extractText(content),
       images: extractImages(content),
+      timestamp: entry.timestamp,
     };
     this.messageList.push({
       kind: "message",
@@ -124,6 +125,7 @@ export class ConversationViewBuilder {
       role: "assistant",
       text,
       images: extractImages(content),
+      timestamp: entry.timestamp,
       ...(message.errorMessage ? { error: message.errorMessage } : {}),
     };
 

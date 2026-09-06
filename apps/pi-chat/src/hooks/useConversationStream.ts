@@ -112,6 +112,7 @@ export function useConversationStream(conversationId?: string) {
 
           send(conversationId, pending.text);
         },
+        conversation.stream.lastEventId,
       );
     })();
 
@@ -149,6 +150,7 @@ export function useConversationStream(conversationId?: string) {
       role: "user",
       text,
       images: [],
+      timestamp: Date.now(),
       pending: true,
     };
     if (!conversationId) {

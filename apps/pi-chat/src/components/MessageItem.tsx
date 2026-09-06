@@ -24,7 +24,9 @@ export function MessageItem({
         <div className={"bubble " + (user ? "user-bubble" : "assistant-bubble")}>
           <Markdown content={item.message.text} />
         </div>
-        {showActions && <MessageActions message={item.message} timestamp={undefined} />}
+        {showActions && (
+          <MessageActions message={item.message} timestamp={item.message.timestamp} />
+        )}
       </div>
     </article>
   );
