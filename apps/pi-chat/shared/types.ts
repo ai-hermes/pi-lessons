@@ -35,6 +35,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   text: string;
   images: ChatImage[];
+  timestamp?: number | string;
   streaming?: boolean;
   pending?: boolean;
   error?: string;

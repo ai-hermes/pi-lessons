@@ -88,6 +88,10 @@ export function conversationReducer(
           role: "assistant",
           text: delta,
           images: [],
+          timestamp:
+            typeof payload.timestamp === "number" || typeof payload.timestamp === "string"
+              ? payload.timestamp
+              : undefined,
           streaming: true,
         });
       }

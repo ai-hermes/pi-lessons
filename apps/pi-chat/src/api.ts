@@ -47,8 +47,9 @@ export function connectEvents(
   onEvent: (event: StreamEvent) => void,
   onError: () => void,
   onOpen?: () => void,
+  after = 0,
 ): EventSource {
-  const query = new URLSearchParams({ after: "0" });
+  const query = new URLSearchParams({ after: String(after) });
   const source = new EventSource(
     "/api/conversation/" + encodeURIComponent(id) + "/stream?" + query,
   );

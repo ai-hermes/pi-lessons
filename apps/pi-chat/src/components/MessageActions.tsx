@@ -22,7 +22,7 @@ export function MessageActions({
   timestamp,
 }: {
   message: ChatMessage;
-  timestamp?: number;
+  timestamp?: number | string;
 }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
@@ -32,7 +32,7 @@ export function MessageActions({
   };
   return (
     <div className="message-actions">
-      <span>{timestamp ? relativeTime(timestamp) : "刚刚"}</span>
+      <span>{timestamp !== undefined ? relativeTime(timestamp) : "刚刚"}</span>
       <Button
         variant="ghost"
         size="sm"
