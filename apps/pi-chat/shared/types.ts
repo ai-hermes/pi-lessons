@@ -1,5 +1,4 @@
-export type RuntimeStatus =
-  "ready" | "running" | "stopping" | "compacting" | "error" | "cold";
+export type RuntimeStatus = "ready" | "running" | "stopping" | "compacting" | "error" | "cold";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 export type { ThinkingLevel };
 
@@ -117,7 +116,6 @@ export interface BootstrapData {
   repository?: RepositoryInfo;
 }
 
-
 export interface ConversationConfig {
   model: { provider: string; id: string };
   models: ModelOption[];
@@ -125,12 +123,10 @@ export interface ConversationConfig {
   availableThinkingLevels: ThinkingLevel[];
 }
 
-
-
 export interface ConversationConfigUpdate {
   model?: {
     provider: string;
-    id: string
+    id: string;
   };
   thinkingLevel?: ThinkingLevel;
 }

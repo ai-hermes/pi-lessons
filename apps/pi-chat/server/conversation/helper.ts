@@ -1,13 +1,5 @@
-import type {
-  ImageContent,
-  TextContent,
-  ThinkingContent,
-  ToolCall,
-} from "@earendil-works/pi-ai";
-import {
-  type SessionEntry,
-  type SessionMessageEntry,
-} from "@earendil-works/pi-coding-agent";
+import type { ImageContent, TextContent, ThinkingContent, ToolCall } from "@earendil-works/pi-ai";
+import { type SessionEntry, type SessionMessageEntry } from "@earendil-works/pi-coding-agent";
 import type {
   ChatImage,
   ChatMessage,
@@ -19,10 +11,7 @@ import type {
 type ContentPart = TextContent | ThinkingContent | ImageContent | ToolCall;
 
 type SessionMessage = SessionMessageEntry["message"];
-type ConversationMessage = Extract<
-  SessionMessage,
-  { role: "user" | "assistant" }
->;
+type ConversationMessage = Extract<SessionMessage, { role: "user" | "assistant" }>;
 type AgentToolResultMessage = Extract<SessionMessage, { role: "toolResult" }>;
 
 /** Narrows a content part to an image with the required fields. */

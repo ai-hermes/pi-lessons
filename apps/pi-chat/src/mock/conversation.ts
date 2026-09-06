@@ -46,9 +46,7 @@ export async function playMockConversation(
     images: [],
   };
   const answer =
-    "我来帮你处理：**" +
-    text +
-    "**。\n\n我先梳理需求，再通过工具完成一次示例操作，最后给出结果。";
+    "我来帮你处理：**" + text + "**。\n\n我先梳理需求，再通过工具完成一次示例操作，最后给出结果。";
 
   await emit("runtime.status", { status: "running" });
   await emit("message.added", userMessage);

@@ -1,6 +1,6 @@
+import { Copy } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Copy } from "lucide-react";
 
 export function Markdown({ content }: { content: string }) {
   return (

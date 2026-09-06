@@ -1,5 +1,6 @@
-import { join, resolve, relative, isAbsolute } from "node:path";
 import { mkdir } from "node:fs/promises";
+import { join, resolve, relative, isAbsolute } from "node:path";
+
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 /*
 $HOME/.pi/agent/pi-chat
@@ -20,9 +21,7 @@ export interface GlobalConfig {
   workspacesDir: string;
 }
 
-export function getGlobalConfig(
-  rootDir = process.env.PI_CHAT_ROOT_DIR,
-): GlobalConfig {
+export function getGlobalConfig(rootDir = process.env.PI_CHAT_ROOT_DIR): GlobalConfig {
   const resolvedRootDir = rootDir ?? join(getAgentDir(), "pi-chat");
   return {
     rootDir: resolvedRootDir,

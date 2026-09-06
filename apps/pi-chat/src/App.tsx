@@ -1,20 +1,29 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import { Menu, PanelLeftOpen } from "lucide-react";
+import { Composer } from "@components/Composer";
+import { ConversationSidebar } from "@components/ConversationSidebar";
+import { EmptyConversation } from "@components/EmptyConversation";
+import { LoadingIndicator } from "@components/LoadingIndicator";
+import { MessageItem } from "@components/MessageItem";
+import { Button } from "@components/ui/button";
+import { useConversationStream } from "@hooks/useConversationStream";
 import type {
   BootstrapData,
   ConversationConfig,
   ConversationSummary,
   ThinkingLevel,
 } from "@shared/types";
-import { EmptyConversation } from "@components/EmptyConversation";
-import { LoadingIndicator } from "@components/LoadingIndicator";
-import { MessageItem } from "@components/MessageItem";
-import { Button } from "@components/ui/button";
-import { Composer } from "@components/Composer";
-import { ConversationSidebar } from "@components/ConversationSidebar";
-import { useConversationStream } from "@hooks/useConversationStream";
-import { createConversation, deleteConversation, getConversationConfig, listConversations, renameConversation, updateConversationConfig } from "@/api";
+import { Menu, PanelLeftOpen } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+
+import {
+  createConversation,
+  deleteConversation,
+  getConversationConfig,
+  listConversations,
+  renameConversation,
+  updateConversationConfig,
+} from "@/api";
+
 import "./App.css";
 
 export default function App() {
@@ -38,10 +47,8 @@ export default function App() {
     send,
     abort,
   } = useConversationStream(conversationId);
-  console.log('busy', status)
   const [input, setInput] = useState("");
-  const busy =
-    status === "running" || status === "stopping" || status === "compacting";
+  const busy = status === "running" || status === "stopping" || status === "compacting";
   const streamedContentLength = messageItems.reduce((total, item) => {
     if (item.kind === "message") return total + item.message.text.length;
     if (item.kind === "thinking") return total + item.thinking.text.length;
@@ -55,22 +62,20 @@ export default function App() {
   useEffect(() => {
     if (!conversationId) return;
 
-
     (async () => {
       const conversationConfig = await getConversationConfig(conversationId);
       setConfigState({
         conversationId,
-        config: conversationConfig
+        config: conversationConfig,
       });
-    })()
-
-  }, [conversationId])
+    })();
+  }, [conversationId]);
 
   useEffect(() => {
     (async () => {
       const conversationList = await listConversations();
       setConversations(conversationList);
-    })()
+    })();
   }, []);
 
   useEffect(() => {
@@ -118,7 +123,7 @@ export default function App() {
       },
     });
     setConfigState((current) => {
-      return current?.conversationId === id ? { conversationId: id, config } : current
+      return current?.conversationId === id ? { conversationId: id, config } : current;
     });
   };
 
@@ -136,9 +141,7 @@ export default function App() {
   const isEmpty = !conversationId || messageItems.length === 0;
 
   const config =
-    configState && configState.conversationId === conversationId
-      ? configState.config
-      : undefined;
+    configState && configState.conversationId === conversationId ? configState.config : undefined;
   return (
     <div className="app-shell">
       <ConversationSidebar
@@ -155,9 +158,7 @@ export default function App() {
         }}
         onRename={async (id, title) => {
           const updated = await renameConversation(id, title);
-          setConversations((items) =>
-            items.map((item) => (item.id === id ? updated : item)),
-          );
+          setConversations((items) => items.map((item) => (item.id === id ? updated : item)));
         }}
         onDelete={async (id) => {
           await deleteConversation(id);
@@ -194,23 +195,13 @@ export default function App() {
           ) : (
             <div className="messages">
               {messageItems.map((item) => (
-                <MessageItem
-                  key={item.id}
-                  item={item}
-                  showActions={item.kind === "message"}
-                />
+                <MessageItem key={item.id} item={item} showActions={item.kind === "message"} />
               ))}
               {loading && <LoadingIndicator />}
-              <div
-                className="message-bottom-spacer"
-                ref={messageBottomRef}
-                aria-hidden
-              />
+              <div className="message-bottom-spacer" ref={messageBottomRef} aria-hidden />
             </div>
           )}
-          {connectionError && (
-            <div className="connection-error">{connectionError}</div>
-          )}
+          {connectionError && <div className="connection-error">{connectionError}</div>}
         </main>
         <Composer
           busy={busy}

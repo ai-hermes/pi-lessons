@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { Button } from "@components/ui/button";
+import type { ToolRun } from "@shared/types";
 import {
   CheckCircle2,
   ChevronDown,
@@ -7,8 +8,7 @@ import {
   LoaderCircle,
   XCircle,
 } from "lucide-react";
-import type { ToolRun } from "@shared/types";
-import { Button } from "@components/ui/button";
+import { useState } from "react";
 
 export function ToolCard({ tool }: { tool: ToolRun }) {
   const [open, setOpen] = useState(false);
@@ -22,11 +22,7 @@ export function ToolCard({ tool }: { tool: ToolRun }) {
     );
   return (
     <div className="tool-card">
-      <Button
-        variant="ghost"
-        className="tool-summary"
-        onClick={() => setOpen(!open)}
-      >
+      <Button variant="ghost" className="tool-summary" onClick={() => setOpen(!open)}>
         <FileText size={16} />
         <strong>{tool.name}</strong>
         <span>{tool.result ?? "工具调用"}</span>

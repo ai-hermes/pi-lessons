@@ -7,8 +7,9 @@ import {
   createAgentSessionFromServices,
   type CreateAgentSessionRuntimeFactory,
 } from "@earendil-works/pi-coding-agent";
-import type { ConversationRecord } from "./types";
 import type { GlobalConfig } from "@server/config";
+
+import type { ConversationRecord } from "./types";
 
 export interface RuntimeOptions {
   conversationRecord: ConversationRecord;
@@ -24,24 +25,15 @@ You can inspect files, run commands, and edit the workspace. Explain important a
 The workspace is a convenience boundary, not an operating-system sandbox. Stay inside the current working directory unless the user explicitly asks otherwise. Do not expose credentials or secrets. Reply in the user's language.`;
 
 export async function createRuntime(options: RuntimeOptions) {
-  const { conversationRecord, globalConfig, modelRuntime, sessionManager } =
-    options;
+  const { conversationRecord, globalConfig, modelRuntime, sessionManager } = options;
   let runtimeSessionManager = sessionManager;
   if (!runtimeSessionManager) {
-    SessionManager.create(
-      conversationRecord.workspaceDir,
-      globalConfig.sessionsDir,
-      {
-        id: conversationRecord.id,
-      },
-    );
+    SessionManager.create(conversationRecord.workspaceDir, globalConfig.sessionsDir, {
+      id: conversationRecord.id,
+    });
   }
 
-  const factory: CreateAgentSessionRuntimeFactory = async ({
-    cwd,
-    agentDir,
-    sessionManager,
-  }) => {
+  const factory: CreateAgentSessionRuntimeFactory = async ({ cwd, agentDir, sessionManager }) => {
     const services = await createAgentSessionServices({
       cwd,
       agentDir,

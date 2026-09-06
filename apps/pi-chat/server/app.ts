@@ -1,13 +1,11 @@
-import { Hono } from "hono";
-import { createConversationRoutes, createSystemRoutes } from "@server/routes";
-import pino from "pino";
-import { pinoLogger, type Env as HonoPinoEnv } from "hono-pino";
-import { errorResponse } from "@server/error";
 import type { ConversationService } from "@server/conversation/service";
+import { errorResponse } from "@server/error";
+import { createConversationRoutes, createSystemRoutes } from "@server/routes";
+import { Hono } from "hono";
+import { pinoLogger, type Env as HonoPinoEnv } from "hono-pino";
+import pino from "pino";
 
-export function createApp(
-  conversationService: ConversationService,
-): Hono<HonoPinoEnv> {
+export function createApp(conversationService: ConversationService): Hono<HonoPinoEnv> {
   const app = new Hono<HonoPinoEnv>();
   const log = pino({
     level: process.env.LOG_LEVEL ?? "info",

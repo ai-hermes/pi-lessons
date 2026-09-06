@@ -1,8 +1,9 @@
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { serve } from "@hono/node-server";
 import { createApp } from "@server/app";
-import { getGlobalConfig } from "./config";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { ConversationService } from "@server/conversation/service";
+
+import { getGlobalConfig } from "./config";
 
 const globalConfig = getGlobalConfig();
 const modelRuntime = await ModelRuntime.create();
@@ -18,9 +19,7 @@ const server = serve(
     port,
   },
   (info) => {
-    process.stdout.write(
-      `Pi Chat API listening on http://${host}:${info.port}\n`,
-    );
+    process.stdout.write(`Pi Chat API listening on http://${host}:${info.port}\n`);
   },
 );
 

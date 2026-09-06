@@ -3,7 +3,7 @@
   "files.insertFinalNewline": true,
   "files.trimFinalNewlines": true,
   "[javascript][javascriptreact][typescript][typescriptreact]": {
-    "editor.defaultFormatter": "vscode.typescript-language-features"
+    "editor.defaultFormatter": "oxc.oxc-vscode"
   },
   "[json][jsonc]": {
     "editor.defaultFormatter": "vscode.json-language-features"
