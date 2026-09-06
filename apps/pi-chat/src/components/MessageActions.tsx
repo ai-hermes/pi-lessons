@@ -1,7 +1,7 @@
-import { useState } from "react";
-import { Copy } from "lucide-react";
-import type { ChatMessage } from "@shared/types";
 import { Button } from "@components/ui/button";
+import type { ChatMessage } from "@shared/types";
+import { Copy } from "lucide-react";
+import { useState } from "react";
 
 function relativeTime(value: number | string) {
   const time = typeof value === "string" ? Date.parse(value) : value;

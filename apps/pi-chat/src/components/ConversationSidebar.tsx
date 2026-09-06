@@ -1,9 +1,9 @@
-import { useState } from "react";
-import { PanelLeftClose, Pencil, Plus, Trash2, X } from "lucide-react";
-import { AlertDialog as AlertDialogPrimitive } from "radix-ui";
-import type { ConversationSummary } from "@shared/types";
 import { PiLogo } from "@components/PiLogo";
 import { Button } from "@components/ui/button";
+import type { ConversationSummary } from "@shared/types";
+import { PanelLeftClose, Pencil, Plus, Trash2, X } from "lucide-react";
+import { AlertDialog as AlertDialogPrimitive } from "radix-ui";
+import { useState } from "react";
 
 export function ConversationSidebar({
   conversations,
@@ -30,9 +30,7 @@ export function ConversationSidebar({
 }) {
   const [editingId, setEditingId] = useState<string>();
   const [editingTitle, setEditingTitle] = useState("");
-  const selectedIndex = conversations.findIndex(
-    (item) => item.id === selectedId,
-  );
+  const selectedIndex = conversations.findIndex((item) => item.id === selectedId);
 
   const saveTitle = async (item: ConversationSummary) => {
     const title = editingTitle.trim();
@@ -123,15 +121,11 @@ export function ConversationSidebar({
                         variant="ghost"
                         className={
                           "conversation-item " +
-                          (item.id === selectedId
-                            ? "conversation-item-active"
-                            : "")
+                          (item.id === selectedId ? "conversation-item-active" : "")
                         }
                         onClick={() => onSelect(item.id)}
                         title={item.title}
-                        aria-current={
-                          item.id === selectedId ? "page" : undefined
-                        }
+                        aria-current={item.id === selectedId ? "page" : undefined}
                       >
                         <span>{item.title}</span>
                       </Button>
@@ -179,9 +173,7 @@ export function ConversationSidebar({
                                     onClick={() => {
                                       void onDelete(item.id).catch((error) =>
                                         window.alert(
-                                          error instanceof Error
-                                            ? error.message
-                                            : "删除会话失败",
+                                          error instanceof Error ? error.message : "删除会话失败",
                                         ),
                                       );
                                     }}
@@ -199,9 +191,7 @@ export function ConversationSidebar({
                 </div>
               ))}
             </div>
-            {conversations.length === 0 && (
-              <p className="conversation-empty">还没有会话</p>
-            )}
+            {conversations.length === 0 && <p className="conversation-empty">还没有会话</p>}
           </div>
         </div>
       </aside>

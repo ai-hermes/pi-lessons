@@ -10,10 +10,7 @@ function useElapsed() {
   const [tenths, setTenths] = useState(0);
 
   useEffect(() => {
-    const timer = window.setInterval(
-      () => setTenths((value) => value + 1),
-      100,
-    );
+    const timer = window.setInterval(() => setTenths((value) => value + 1), 100);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -29,11 +26,7 @@ export function LoadingIndicator() {
     <div className="message-loading" role="status" aria-label="正在生成回复">
       <span className="loading-grid" aria-hidden>
         {chevronDelays.map((delay, index) => (
-          <span
-            key={index}
-            className="loading-pixel"
-            style={{ animationDelay: `${delay}ms` }}
-          />
+          <span key={index} className="loading-pixel" style={{ animationDelay: `${delay}ms` }} />
         ))}
       </span>
       <span className="loading-label">正在生成</span>

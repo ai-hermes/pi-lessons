@@ -80,7 +80,6 @@ curl -X GET http://localhost:4328/api/conversation/31c2c56c-8a5b-4f74-a379-4c38d
 
 curl -X GET http://localhost:4328/api/conversation/31c2c56c-8a5b-4f74-a379-4c38df9ccdea
 
-
 会话列表
 会话切换
 会话删除
@@ -92,11 +91,11 @@ curl -X GET http://localhost:4328/api/conversation/31c2c56c-8a5b-4f74-a379-4c38d
 
 feat/pi-chat-0904
 
+会话配置 - model list - thinking level list
 
-会话配置
-    - model list
-    - thinking level list
+会话配置切换 - switch model - switch thinking level
 
-会话配置切换
-    - switch model
-    - switch thinking level
+- 工具接入-自定义工具
+- 工具接入-extension
+- 工具接入-mcp
+- 工具接入-skill

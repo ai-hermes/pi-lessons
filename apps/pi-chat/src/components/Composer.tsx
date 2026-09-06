@@ -1,9 +1,9 @@
-import { useState } from "react";
-import { ArrowUp, ChevronDown, ChevronRight, Square } from "lucide-react";
-import { Popover as PopoverPrimitive } from "radix-ui";
-import type { ModelOption, ThinkingLevel } from "@shared/types";
 import { Button } from "@components/ui/button";
 import { Textarea } from "@components/ui/textarea";
+import type { ModelOption, ThinkingLevel } from "@shared/types";
+import { ArrowUp, ChevronDown, ChevronRight, Square } from "lucide-react";
+import { Popover as PopoverPrimitive } from "radix-ui";
+import { useState } from "react";
 
 const thinkingNames: Record<ThinkingLevel, string> = {
   off: "Off",
@@ -38,20 +38,11 @@ export function Composer({
 }) {
   const [input, setInput] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsView, setSettingsView] = useState<"effort" | "models">(
-    "effort",
-  );
-  const modelValue = model
-    ? `${model.provider}/${model.id}`
-    : "";
-  const thinkingIndex = Math.max(
-    0,
-    thinkingLevels.indexOf(thinkingLevel ?? thinkingLevels[0]),
-  );
+  const [settingsView, setSettingsView] = useState<"effort" | "models">("effort");
+  const modelValue = model ? `${model.provider}/${model.id}` : "";
+  const thinkingIndex = Math.max(0, thinkingLevels.indexOf(thinkingLevel ?? thinkingLevels[0]));
   const thinkingProgress =
-    thinkingLevels.length > 1
-      ? (thinkingIndex / (thinkingLevels.length - 1)) * 100
-      : 0;
+    thinkingLevels.length > 1 ? (thinkingIndex / (thinkingLevels.length - 1)) * 100 : 0;
 
   const submit = () => {
     const text = input.trim();
@@ -72,9 +63,7 @@ export function Composer({
               submit();
             }
           }}
-          placeholder={
-            busy ? "正在生成回复…" : "输入消息，按 Alt + Enter 发送…"
-          }
+          placeholder={busy ? "正在生成回复…" : "输入消息，按 Alt + Enter 发送…"}
           rows={1}
         />
         <div className="composer-toolbar">
@@ -93,13 +82,9 @@ export function Composer({
                   disabled={busy}
                   aria-label="选择模型和思考强度"
                 >
-                  <span className="model-selector-name">
-                    {modelValue || "Select model"}
-                  </span>
+                  <span className="model-selector-name">{modelValue || "Select model"}</span>
                   <span className="model-selector-effort">
-                    {thinkingLevel
-                      ? thinkingNames[thinkingLevel]
-                      : "Select effort"}
+                    {thinkingLevel ? thinkingNames[thinkingLevel] : "Select effort"}
                   </span>
                   <ChevronDown size={15} />
                 </button>
@@ -119,9 +104,7 @@ export function Composer({
                         onClick={() => setSettingsView("models")}
                       >
                         <strong>
-                          {thinkingLevel
-                            ? thinkingNames[thinkingLevel]
-                            : "Select effort"}
+                          {thinkingLevel ? thinkingNames[thinkingLevel] : "Select effort"}
                         </strong>
                         <ChevronRight size={18} />
                         <span>{modelValue || "Select model"}</span>
@@ -156,8 +139,7 @@ export function Composer({
                           disabled={thinkingLevels.length < 2}
                           aria-label="思考强度"
                           onChange={(event) => {
-                            const level =
-                              thinkingLevels[Number(event.currentTarget.value)];
+                            const level = thinkingLevels[Number(event.currentTarget.value)];
                             if (!level) return;
                             onThinkingChange(level).catch(console.error);
                           }}
@@ -173,9 +155,7 @@ export function Composer({
                           <button
                             className={
                               "model-selector-option " +
-                              (value === modelValue
-                                ? "model-selector-option-active"
-                                : "")
+                              (value === modelValue ? "model-selector-option-active" : "")
                             }
                             type="button"
                             key={value}
@@ -202,11 +182,7 @@ export function Composer({
             aria-label={busy ? "停止生成" : "发送消息"}
             title={busy ? "停止生成" : "发送消息"}
           >
-            {busy ? (
-              <Square size={14} fill="currentColor" />
-            ) : (
-              <ArrowUp size={18} />
-            )}
+            {busy ? <Square size={14} fill="currentColor" /> : <ArrowUp size={18} />}
           </Button>
         </div>
       </div>

@@ -1,10 +1,8 @@
-import { jsonBody } from '@server/utils'
 import type { ConversationService } from "@server/conversation/service";
+import { jsonBody } from "@server/utils";
 import type { ConversationConfigUpdate, StreamEvent } from "@shared/types";
 import { Hono } from "hono";
-export function createConversationRoutes(
-  conversationService: ConversationService,
-) {
+export function createConversationRoutes(conversationService: ConversationService) {
   const conversationApp = new Hono();
 
   conversationApp.post("/", async (ctx) => {
@@ -15,7 +13,7 @@ export function createConversationRoutes(
 
   conversationApp.get("/", async (ctx) => {
     const conversationList = await conversationService.list();
-    return ctx.json(conversationList)
+    return ctx.json(conversationList);
   });
 
   conversationApp.get("/:conversationId", async (ctx) => {
@@ -36,13 +34,13 @@ export function createConversationRoutes(
     // zod
     const patchedConversationConfig = await conversationService.updateConfig(conversationId, body);
     return ctx.json(patchedConversationConfig);
-  })
+  });
 
   conversationApp.delete("/:conversationId", async (ctx) => {
     const { conversationId } = ctx.req.param();
     await conversationService.delete(conversationId);
     return ctx.json({
-      deleted: true
+      deleted: true,
     });
   });
 
@@ -60,11 +58,9 @@ export function createConversationRoutes(
     const { conversationId } = ctx.req.param();
     await conversationService.abort(conversationId);
     return ctx.json({
-      aborted: true
+      aborted: true,
     });
   });
-
-
 
   conversationApp.post("/:conversationId/messages", async (ctx) => {
     const formData = await ctx.req.formData();
@@ -91,9 +87,7 @@ export function createConversationRoutes(
     const body = new ReadableStream<Uint8Array>({
       start: (controller) => {
         const send = (event: StreamEvent) => {
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
-          );
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
         };
         const { events } = channel.replay(safeAfter);
         for (const event of events) {

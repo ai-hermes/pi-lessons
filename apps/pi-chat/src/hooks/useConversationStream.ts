@@ -1,7 +1,7 @@
+import type { ChatMessage, MessageListItem, RuntimeStatus } from "@shared/types";
 import { useRef, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import type { ChatMessage, MessageListItem, RuntimeStatus } from "@shared/types";
-import { conversationReducer } from "@/state";
+
 import {
   abortConversation,
   connectEvents,
@@ -9,6 +9,7 @@ import {
   getConversation,
   sendMessage,
 } from "@/api";
+import { conversationReducer } from "@/state";
 
 interface PendingSend {
   conversationId: string;
@@ -16,16 +17,19 @@ interface PendingSend {
   message: ChatMessage;
 }
 
+interface ConversationItemsState {
+  conversationId?: string;
+  items: MessageListItem[];
+}
+
 export function useConversationStream(conversationId?: string) {
   const navigate = useNavigate();
-  const [messageState, setMessageState] = useState<{
-    conversationId?: string;
-    items: MessageListItem[];
-  }>({ items: [] });
-  const [historyState, setHistoryState] = useState<{
-    conversationId?: string;
-    items: MessageListItem[];
-  }>({ items: [] });
+  const [messageState, setMessageState] = useState<ConversationItemsState>({
+    items: [],
+  });
+  const [historyState, setHistoryState] = useState<ConversationItemsState>({
+    items: [],
+  });
   const [errorState, setErrorState] = useState<{
     conversationId?: string;
     message: string;
@@ -38,12 +42,8 @@ export function useConversationStream(conversationId?: string) {
   const pendingSend = useRef<PendingSend | null>(null);
 
   const messageItems = [
-    ...(historyState.conversationId === conversationId
-      ? historyState.items
-      : []),
-    ...(messageState.conversationId === conversationId
-      ? messageState.items
-      : []),
+    ...(historyState.conversationId === conversationId ? historyState.items : []),
+    ...(messageState.conversationId === conversationId ? messageState.items : []),
   ];
 
   useEffect(() => {
@@ -172,18 +172,16 @@ export function useConversationStream(conversationId?: string) {
 
     setMessageState((current) => ({
       conversationId,
-      items: conversationReducer(
-        current.conversationId === conversationId ? current.items : [],
-        { type: "optimistic-user", message },
-      ),
+      items: conversationReducer(current.conversationId === conversationId ? current.items : [], {
+        type: "optimistic-user",
+        message,
+      }),
     }));
 
     await send(conversationId, text);
   }
-  const status =
-    statusState.conversationId === conversationId
-      ? statusState.status
-      : "cold";
+  const status = statusState.conversationId === conversationId ? statusState.status : "cold";
+  const error = errorState.conversationId === conversationId ? errorState.message : "";
 
   async function abort() {
     if (!conversationId) return;
@@ -197,5 +195,5 @@ export function useConversationStream(conversationId?: string) {
       });
     }
   }
-  return { messageItems, loading, error: errorState.message, send: submit, status, abort };
+  return { messageItems, loading, error, send: submit, status, abort };
 }

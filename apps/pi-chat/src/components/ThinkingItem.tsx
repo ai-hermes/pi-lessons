@@ -1,15 +1,9 @@
-import { useEffect, useState } from "react";
-import { Brain, ChevronDown, ChevronRight } from "lucide-react";
 import { Markdown } from "@components/Markdown";
 import { Button } from "@components/ui/button";
+import { Brain, ChevronDown, ChevronRight } from "lucide-react";
+import { useEffect, useState } from "react";
 
-export function ThinkingItem({
-  text,
-  completed,
-}: {
-  text: string;
-  completed?: boolean;
-}) {
+export function ThinkingItem({ text, completed }: { text: string; completed?: boolean }) {
   const [open, setOpen] = useState(true);
   useEffect(() => {
     if (completed) setOpen(false);

@@ -1,12 +1,11 @@
-import type { GlobalConfig } from "@server/config";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+
+import type { TextContent, ImageContent, ThinkingLevel } from "@earendil-works/pi-ai";
 import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
-import type { ConversationRecord, ManagedSession } from "./types";
-import { ConversationRepository } from "./repository";
-import { createRuntime } from "./runtime";
-import { EventChannel } from "./channel";
+import type { GlobalConfig } from "@server/config";
 import type {
   ConversationConfig,
   ConversationConfigUpdate,
@@ -14,13 +13,12 @@ import type {
   ConversationSummary,
   RuntimeStatus,
 } from "@shared/types";
-import type {
-  TextContent,
-  ImageContent,
-  ThinkingLevel,
-} from "@earendil-works/pi-ai";
+
+import { EventChannel } from "./channel";
 import { ConversationViewBuilder, isImagePart, resultText } from "./helper";
-import { existsSync } from "node:fs";
+import { ConversationRepository } from "./repository";
+import { createRuntime } from "./runtime";
+import type { ConversationRecord, ManagedSession } from "./types";
 
 export class ConversationService {
   private globalConfig: GlobalConfig;
@@ -38,10 +36,7 @@ export class ConversationService {
 
   async createConversation() {
     const conversationId = randomUUID();
-    const conversationWorkspaceDir = join(
-      this.globalConfig.workspacesDir,
-      conversationId,
-    );
+    const conversationWorkspaceDir = join(this.globalConfig.workspacesDir, conversationId);
     await mkdir(conversationWorkspaceDir, { recursive: true });
 
     const sessionManager = SessionManager.create(
@@ -85,9 +80,7 @@ export class ConversationService {
     const session = managedSession.runtime.session;
     const channel = managedSession.channel;
 
-    const builder = new ConversationViewBuilder(
-      session.sessionManager.getBranch(),
-    );
+    const builder = new ConversationViewBuilder(session.sessionManager.getBranch());
     const messageList = builder.build();
 
     return {
@@ -98,8 +91,7 @@ export class ConversationService {
         id: session.agent.state.model.id,
       },
       thinkingLevel: session.agent.state.thinkingLevel as ThinkingLevel,
-      availableThinkingLevels:
-        session.getAvailableThinkingLevels() as ThinkingLevel[],
+      availableThinkingLevels: session.getAvailableThinkingLevels() as ThinkingLevel[],
       status: managedSession.status,
       error: managedSession.error,
       stream: {
@@ -113,18 +105,13 @@ export class ConversationService {
   async list(): Promise<ConversationSummary[]> {
     const conversationRecords = await this.conversationRepository.list();
     return conversationRecords
-      .map((record) =>
-        this.summary(
-          record,
-          this.managedSessions.get(record.id)?.status ?? "cold",
-        ),
-      )
+      .map((record) => this.summary(record, this.managedSessions.get(record.id)?.status ?? "cold"))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
   async delete(id: string) {
     const conversationRecord = await this.conversationRepository.get(id);
-    if (!conversationRecord) return
+    if (!conversationRecord) return;
 
     const managedSesson = this.managedSessions.get(id);
     if (managedSesson && this.isBusy(managedSesson)) {
@@ -133,23 +120,23 @@ export class ConversationService {
 
     if (existsSync(conversationRecord.sessionFile)) {
       await rm(conversationRecord.sessionFile, {
-        force: true
+        force: true,
       });
     }
 
     await rm(conversationRecord.workspaceDir, {
       force: true,
-      recursive: true
+      recursive: true,
     });
     await this.conversationRepository.delete(id);
   }
 
-  public async rename(conversationId: string, title: string,): Promise<ConversationSummary> {
+  public async rename(conversationId: string, title: string): Promise<ConversationSummary> {
     const cleanedTitle = title.trim();
     if (!cleanedTitle) throw Error("Title cannot be empty.");
     const newConversationRecord = await this.conversationRepository.update(conversationId, {
       title: cleanedTitle,
-    })
+    });
     return this.summary(
       newConversationRecord,
       this.managedSessions.get(conversationId)?.status ?? "cold",
@@ -164,26 +151,27 @@ export class ConversationService {
     this.setStatus(managedSession, "ready");
   }
 
-
   async getConfig(conversationId: string): Promise<ConversationConfig> {
     const managedSession = await this.ensureManagedSession(conversationId);
     return this.config(managedSession);
   }
 
-  async updateConfig(conversationId: string, update: ConversationConfigUpdate,): Promise<ConversationConfig> {
+  async updateConfig(
+    conversationId: string,
+    update: ConversationConfigUpdate,
+  ): Promise<ConversationConfig> {
     const managedSession = await this.ensureManagedSession(conversationId);
     if (this.isBusy(managedSession)) {
-      throw new Error(`Cannot update config for conversation ${conversationId} because it is busy.`);
+      throw new Error(
+        `Cannot update config for conversation ${conversationId} because it is busy.`,
+      );
     }
-
 
     const session = managedSession.runtime.session;
     if (update.model) {
       // session.setModel();
       const model = this.availableModels(managedSession).find(
-        (item) =>
-          item.provider === update.model?.provider &&
-          item.id === update.model.id,
+        (item) => item.provider === update.model?.provider && item.id === update.model.id,
       );
       if (!model) {
         throw new Error(`Model ${update.model.provider}/${update.model.id} is not available.`);
@@ -192,14 +180,8 @@ export class ConversationService {
     }
 
     if (update.thinkingLevel !== undefined) {
-      if (
-        !session
-          .getAvailableThinkingLevels()
-          .includes(update.thinkingLevel as ThinkingLevel)
-      ) {
-        throw new Error(
-          `Thinking level ${update.thinkingLevel} is not available`,
-        );
+      if (!session.getAvailableThinkingLevels().includes(update.thinkingLevel as ThinkingLevel)) {
+        throw new Error(`Thinking level ${update.thinkingLevel} is not available`);
       }
       session.setThinkingLevel(update.thinkingLevel);
     }
@@ -214,20 +196,19 @@ export class ConversationService {
         provider: session.agent.state.model.provider,
         id: session.agent.state.model.id,
       },
-      models: this.availableModels(managedSession).map(model => {
+      models: this.availableModels(managedSession).map((model) => {
         return {
           provider: model.provider,
           id: model.id,
           name: model.name,
           contextWindow: model.contextWindow,
           reasoning: model.reasoning,
-          imageInput: model.input.includes('image'),
-        }
+          imageInput: model.input.includes("image"),
+        };
       }),
       thinkingLevel: session.agent.state.thinkingLevel,
       availableThinkingLevels: session.getAvailableThinkingLevels(),
-    }
-
+    };
   }
 
   private availableModels(managedSession: ManagedSession) {
@@ -237,10 +218,7 @@ export class ConversationService {
       : this.modelRuntime.getAvailableSnapshot();
   }
 
-  private summary(
-    record: ConversationRecord,
-    status: RuntimeStatus,
-  ): ConversationSummary {
+  private summary(record: ConversationRecord, status: RuntimeStatus): ConversationSummary {
     return {
       id: record.id,
       title: record.title,
@@ -286,101 +264,99 @@ export class ConversationService {
 
   private bind(managedSession: ManagedSession) {
     managedSession.unsubscribe?.();
-    managedSession.unsubscribe = managedSession.runtime.session.subscribe(
-      (event) => {
-        // Handle the event here
-        switch (event.type) {
-          case "agent_start":
-            this.setStatus(managedSession, "running");
-            break;
-          case "message_start":
-            const message = event.message;
-            if (message.role === "assistant") {
-              managedSession.streamMessageId = randomUUID();
-              managedSession.streamThinkingId = undefined;
-              managedSession.channel.publish("message.started", {
-                id: managedSession.streamMessageId,
-              });
-            } else if (message.role === "user") {
-              const content: (TextContent | ImageContent)[] =
-                typeof message.content === "string"
-                  ? [{ type: "text", text: message.content }]
-                  : message.content;
-              const text = content
-                .filter((part) => part.type === "text")
-                .map((part) => part.text ?? "")
-                .join("");
-              const images = content.filter(isImagePart).map((part) => ({
-                type: "image" as const,
-                data: part.data!,
-                mimeType: part.mimeType!,
-              }));
-              managedSession.channel.publish("message.added", {
-                id: randomUUID(),
-                role: message.role,
-                text,
-                images,
-              });
-            }
-            break;
-          case "message_update":
-            if (event.assistantMessageEvent.type === "text_delta") {
-              managedSession.channel.publish("message.delta", {
-                id: managedSession.streamMessageId,
-                delta: event.assistantMessageEvent.delta,
-              });
-            } else if (event.assistantMessageEvent.type === "thinking_start") {
-              managedSession.streamThinkingId = randomUUID();
-              managedSession.channel.publish("thinking.started", {
-                id: managedSession.streamThinkingId,
-              });
-            } else if (event.assistantMessageEvent.type === "thinking_delta") {
-              managedSession.channel.publish("thinking.delta", {
-                id: managedSession.streamThinkingId,
-                delta: event.assistantMessageEvent.delta,
-              });
-            } else if (event.assistantMessageEvent.type === "thinking_end") {
-              // 结束由 entry_appended 中的最终投影完成
-            }
-            break;
-          case "entry_appended":
-            break;
-          case "tool_execution_start":
-            managedSession.channel.publish("tool.started", {
-              id: event.toolCallId,
-              name: event.toolName,
-              args: event.args,
-            });
-            break;
-          case "tool_execution_update":
-            managedSession.channel.publish("tool.updated", {
-              id: event.toolCallId,
-              name: event.toolName,
-              args: event.args,
-              result: resultText(event.partialResult),
-              details: event.partialResult, // todo
-            });
-            break;
-          case "tool_execution_end":
-            managedSession.channel.publish("tool.completed", {
-              id: event.toolCallId,
-              name: event.toolName,
-              status: event.isError ? "error" : "success",
-              result: resultText(event.result),
-              details: event.result?.details,
-            });
-            break;
-          case "agent_settled":
-            managedSession.streamMessageId = undefined;
+    managedSession.unsubscribe = managedSession.runtime.session.subscribe((event) => {
+      // Handle the event here
+      switch (event.type) {
+        case "agent_start":
+          this.setStatus(managedSession, "running");
+          break;
+        case "message_start":
+          const message = event.message;
+          if (message.role === "assistant") {
+            managedSession.streamMessageId = randomUUID();
             managedSession.streamThinkingId = undefined;
-            this.setStatus(managedSession, "ready");
-            managedSession.channel.publish("runtime.settled", {});
-            break;
-          default:
-            break;
-        }
-      },
-    );
+            managedSession.channel.publish("message.started", {
+              id: managedSession.streamMessageId,
+            });
+          } else if (message.role === "user") {
+            const content: (TextContent | ImageContent)[] =
+              typeof message.content === "string"
+                ? [{ type: "text", text: message.content }]
+                : message.content;
+            const text = content
+              .filter((part) => part.type === "text")
+              .map((part) => part.text ?? "")
+              .join("");
+            const images = content.filter(isImagePart).map((part) => ({
+              type: "image" as const,
+              data: part.data!,
+              mimeType: part.mimeType!,
+            }));
+            managedSession.channel.publish("message.added", {
+              id: randomUUID(),
+              role: message.role,
+              text,
+              images,
+            });
+          }
+          break;
+        case "message_update":
+          if (event.assistantMessageEvent.type === "text_delta") {
+            managedSession.channel.publish("message.delta", {
+              id: managedSession.streamMessageId,
+              delta: event.assistantMessageEvent.delta,
+            });
+          } else if (event.assistantMessageEvent.type === "thinking_start") {
+            managedSession.streamThinkingId = randomUUID();
+            managedSession.channel.publish("thinking.started", {
+              id: managedSession.streamThinkingId,
+            });
+          } else if (event.assistantMessageEvent.type === "thinking_delta") {
+            managedSession.channel.publish("thinking.delta", {
+              id: managedSession.streamThinkingId,
+              delta: event.assistantMessageEvent.delta,
+            });
+          } else if (event.assistantMessageEvent.type === "thinking_end") {
+            // 结束由 entry_appended 中的最终投影完成
+          }
+          break;
+        case "entry_appended":
+          break;
+        case "tool_execution_start":
+          managedSession.channel.publish("tool.started", {
+            id: event.toolCallId,
+            name: event.toolName,
+            args: event.args,
+          });
+          break;
+        case "tool_execution_update":
+          managedSession.channel.publish("tool.updated", {
+            id: event.toolCallId,
+            name: event.toolName,
+            args: event.args,
+            result: resultText(event.partialResult),
+            details: event.partialResult, // todo
+          });
+          break;
+        case "tool_execution_end":
+          managedSession.channel.publish("tool.completed", {
+            id: event.toolCallId,
+            name: event.toolName,
+            status: event.isError ? "error" : "success",
+            result: resultText(event.result),
+            details: event.result?.details,
+          });
+          break;
+        case "agent_settled":
+          managedSession.streamMessageId = undefined;
+          managedSession.streamThinkingId = undefined;
+          this.setStatus(managedSession, "ready");
+          managedSession.channel.publish("runtime.settled", {});
+          break;
+        default:
+          break;
+      }
+    });
   }
 
   private setStatus(managedSession: ManagedSession, status: RuntimeStatus) {
@@ -396,8 +372,7 @@ export class ConversationService {
     if (managedSession) {
       return managedSession;
     }
-    const conversationRecord =
-      await this.conversationRepository.get(conversationId);
+    const conversationRecord = await this.conversationRepository.get(conversationId);
     if (!conversationRecord) {
       throw new Error(`Conversation with ID ${conversationId} not found.`);
     }
@@ -421,7 +396,6 @@ export class ConversationService {
 
     return this.createManagedSession(conversationRecord, sessionManager);
   }
-
 
   private isBusy(managedSession: ManagedSession): boolean {
     return (

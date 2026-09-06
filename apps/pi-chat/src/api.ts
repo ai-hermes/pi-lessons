@@ -63,7 +63,6 @@ export function listConversations(): Promise<ConversationSummary[]> {
   return readResponse(fetch("/api/conversation"));
 }
 
-
 export function deleteConversation(id: string): Promise<{ deleted: true }> {
   return readResponse(
     fetch("/api/conversation/" + encodeURIComponent(id), {
@@ -72,11 +71,7 @@ export function deleteConversation(id: string): Promise<{ deleted: true }> {
   );
 }
 
-
-export function renameConversation(
-  id: string,
-  title: string,
-): Promise<ConversationSummary> {
+export function renameConversation(id: string, title: string): Promise<ConversationSummary> {
   return readResponse(
     fetch("/api/conversation/" + encodeURIComponent(id), {
       method: "PATCH",
@@ -86,7 +81,6 @@ export function renameConversation(
   );
 }
 
-
 export function abortConversation(id: string): Promise<{ aborted: true }> {
   return readResponse(
     fetch("/api/conversation/" + encodeURIComponent(id) + "/abort", {
@@ -95,13 +89,8 @@ export function abortConversation(id: string): Promise<{ aborted: true }> {
   );
 }
 
-
-export function getConversationConfig(
-  id: string,
-): Promise<ConversationConfig> {
-  return readResponse(
-    fetch("/api/conversation/" + encodeURIComponent(id) + "/config"),
-  );
+export function getConversationConfig(id: string): Promise<ConversationConfig> {
+  return readResponse(fetch("/api/conversation/" + encodeURIComponent(id) + "/config"));
 }
 
 export function updateConversationConfig(

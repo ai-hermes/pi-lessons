@@ -1,6 +1,7 @@
 import type { AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
-import type { EventChannel } from "./channel";
 import type { RuntimeStatus } from "@shared/types";
+
+import type { EventChannel } from "./channel";
 
 export interface ConversationRecord {
   id: string;

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+
 import type { EventType, StreamEvent } from "@shared/types";
 
 type Listener = (event: StreamEvent) => void;

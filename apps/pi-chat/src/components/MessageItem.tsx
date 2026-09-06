@@ -1,8 +1,8 @@
-import type { MessageListItem } from "@shared/types";
 import { Markdown } from "@components/Markdown";
 import { MessageActions } from "@components/MessageActions";
 import { ThinkingItem } from "@components/ThinkingItem";
 import { ToolCard } from "@components/ToolCard";
+import type { MessageListItem } from "@shared/types";
 
 export function MessageItem({
   item,
@@ -12,12 +12,7 @@ export function MessageItem({
   showActions: boolean;
 }) {
   if (item.kind === "thinking") {
-    return (
-      <ThinkingItem
-        text={item.thinking.text}
-        completed={item.thinking.completed}
-      />
-    );
+    return <ThinkingItem text={item.thinking.text} completed={item.thinking.completed} />;
   }
   if (item.kind === "tool") {
     return <ToolCard tool={item.tool} />;
@@ -26,14 +21,10 @@ export function MessageItem({
   return (
     <article className={"message-row " + (user ? "user-row" : "")}>
       <div className="message-column">
-        <div
-          className={"bubble " + (user ? "user-bubble" : "assistant-bubble")}
-        >
+        <div className={"bubble " + (user ? "user-bubble" : "assistant-bubble")}>
           <Markdown content={item.message.text} />
         </div>
-        {showActions && (
-          <MessageActions message={item.message} timestamp={undefined} />
-        )}
+        {showActions && <MessageActions message={item.message} timestamp={undefined} />}
       </div>
     </article>
   );
