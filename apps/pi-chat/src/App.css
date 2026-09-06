@@ -536,6 +536,7 @@ button {
 .thinking button {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 8px;
   min-height: 38px;
   color: #666;
@@ -614,16 +615,12 @@ button {
   box-shadow: inset 0 0 0 1px #bdbdbd;
 }
 
-.tool-summary span {
+.tool-summary strong {
   flex: 1;
   overflow: hidden;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #777;
-  font-size: 12px;
-}
-
-.tool-summary strong {
   font:
     500 12px ui-monospace,
     monospace;
