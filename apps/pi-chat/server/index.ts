@@ -1,11 +1,19 @@
+import { writeFile } from "node:fs/promises";
+
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { serve } from "@hono/node-server";
 import { createApp } from "@server/app";
 import { ConversationService } from "@server/conversation/service";
 
-import { getGlobalConfig } from "./config";
+import { ensureDir, getGlobalConfig } from "./config";
 
 const globalConfig = getGlobalConfig();
+await ensureDir([globalConfig.rootDir]);
+await writeFile(globalConfig.mcpConfigPath, JSON.stringify({ mcpServers: {} }, null, 2), {
+  flag: "wx",
+}).catch((error: NodeJS.ErrnoException) => {
+  if (error.code !== "EEXIST") throw error;
+});
 const modelRuntime = await ModelRuntime.create();
 const service = new ConversationService(globalConfig, modelRuntime);
 

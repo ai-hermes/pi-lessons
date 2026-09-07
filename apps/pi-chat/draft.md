@@ -29,6 +29,7 @@ wrapper:
 
 conversationId=faab890b-3429-4058-83ed-8e161e94e44f
 root_dir
+├── .mcp.json
 ├── app-settings.json
 ├── exports
 ├── records
@@ -95,7 +96,21 @@ feat/pi-chat-0904
 
 会话配置切换 - switch model - switch thinking level
 
+
+feat/pi-chat-0907
 - 工具接入-自定义工具
 - 工具接入-extension
-- 工具接入-mcp
-- 工具接入-skill
+- 工具接入-mcp (model context protocol)
+
+mcp server connect/list tools(pi register tool)
+
+stdio/streamable http
+
+nvidia 今天的股价
+
+"Web Search"  
+    keyword1 -> [url1]
+    keyword2 -> [url2]
+"Fetch Content"
+    url1 -> html content
+    url2 -> html content
