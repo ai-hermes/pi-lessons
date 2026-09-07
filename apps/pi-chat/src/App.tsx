@@ -87,7 +87,7 @@ export default function App() {
       const conversationList = await listConversations();
       setConversations(conversationList);
     })();
-  }, []);
+  }, [conversationId]);
 
   useEffect(() => {
     if (!scrollAfterSubmitRef.current || messageItems.length === 0) return;
