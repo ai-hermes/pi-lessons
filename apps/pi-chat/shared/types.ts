@@ -81,6 +81,7 @@ export interface ConversationSummary {
 export interface ConversationSnapshot {
   conversation: ConversationSummary;
   messageList: MessageListItem[];
+  activeSkillNames: string[];
   model: { provider: string; id: string };
   thinkingLevel: ThinkingLevel;
   availableThinkingLevels: ThinkingLevel[];
@@ -108,6 +109,11 @@ export interface ModelOption {
   thinkingLevels: ThinkingLevel[];
 }
 
+export interface SkillOption {
+  name: string;
+  description: string;
+}
+
 export interface RepositoryInfo {
   branch: string;
   commit: string;
@@ -116,6 +122,7 @@ export interface RepositoryInfo {
 export interface BootstrapData {
   models: ModelOption[];
   repository?: RepositoryInfo;
+  skills: SkillOption[];
 }
 
 export interface ConversationConfig {
