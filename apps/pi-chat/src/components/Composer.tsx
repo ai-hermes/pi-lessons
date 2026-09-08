@@ -2,8 +2,9 @@ import { Button } from "@components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@components/ui/popover";
 import { Slider } from "@components/ui/slider";
 import { Textarea } from "@components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@components/ui/tooltip";
 import type { ModelOption, SkillOption, ThinkingLevel } from "@shared/types";
-import { ArrowUp, ChevronDown, ChevronRight, Search, Square, Zap } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Search, Square, Zap } from "lucide-react";
 import { useState } from "react";
 
 const thinkingNames: Record<ThinkingLevel, string> = {
@@ -29,6 +30,8 @@ export function Composer({
   onAbort,
   onModelChange,
   onThinkingChange,
+  showScrollButton,
+  onScrollToBottom,
 }: {
   busy: boolean;
   model?: { provider: string; id: string };
@@ -42,6 +45,8 @@ export function Composer({
   onAbort(): Promise<void>;
   onModelChange(value: string): Promise<void>;
   onThinkingChange(value: ThinkingLevel): Promise<void>;
+  showScrollButton: boolean;
+  onScrollToBottom(): void;
 }) {
   const [input, setInput] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -51,6 +56,7 @@ export function Composer({
   const hasSkills = skills.length > 0;
   const modelValue = model ? `${model.provider}/${model.id}` : "";
   const thinkingIndex = Math.max(0, thinkingLevels.indexOf(thinkingLevel ?? thinkingLevels[0]));
+  const sendDisabled = !busy && !input.trim();
 
   const filteredSkills = skills.filter(
     (s) =>
@@ -67,6 +73,17 @@ export function Composer({
 
   return (
     <footer className="composer-wrap">
+      {showScrollButton && (
+        <Button
+          className="scroll-bottom-button"
+          variant="ghost"
+          size="icon"
+          aria-label="滚动到底部"
+          onClick={onScrollToBottom}
+        >
+          <ArrowDown size={18} />
+        </Button>
+      )}
       <div className="composer">
         <Textarea
           value={input}
@@ -256,16 +273,26 @@ export function Composer({
               </PopoverContent>
             </Popover>
           </div>
-          <Button
-            className={"send-button " + (busy ? "stop-button" : "")}
-            size="icon"
-            onClick={() => (busy ? void onAbort() : submit())}
-            disabled={!busy && !input.trim()}
-            aria-label={busy ? "停止生成" : "发送消息"}
-            title={busy ? "停止生成" : "发送消息"}
-          >
-            {busy ? <Square size={14} fill="currentColor" /> : <ArrowUp size={18} />}
-          </Button>
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    className={"send-button " + (busy ? "stop-button" : "")}
+                    size="icon"
+                    onClick={() => (busy ? void onAbort() : submit())}
+                    disabled={sendDisabled}
+                    aria-label={busy ? "停止生成" : "发送消息"}
+                  >
+                    {busy ? <Square size={14} fill="currentColor" /> : <ArrowUp size={18} />}
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                {sendDisabled ? "请输入内容后发送" : busy ? "停止生成" : "发送消息"}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
       </div>
       <div className="composer-hint">
