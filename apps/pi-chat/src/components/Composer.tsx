@@ -2,8 +2,8 @@ import { Button } from "@components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@components/ui/popover";
 import { Slider } from "@components/ui/slider";
 import { Textarea } from "@components/ui/textarea";
-import type { ModelOption, ThinkingLevel } from "@shared/types";
-import { ArrowUp, ChevronDown, ChevronRight, Square } from "lucide-react";
+import type { ModelOption, SkillOption, ThinkingLevel } from "@shared/types";
+import { ArrowUp, ChevronDown, ChevronRight, Search, Square, Zap } from "lucide-react";
 import { useState } from "react";
 
 const thinkingNames: Record<ThinkingLevel, string> = {
@@ -22,6 +22,9 @@ export function Composer({
   models,
   thinkingLevel,
   thinkingLevels,
+  skills,
+  selectedSkills,
+  onSelectedSkillsChange,
   onSend,
   onAbort,
   onModelChange,
@@ -32,7 +35,10 @@ export function Composer({
   models: ModelOption[];
   thinkingLevel?: ThinkingLevel;
   thinkingLevels: ThinkingLevel[];
-  onSend(text: string): void;
+  skills: SkillOption[];
+  selectedSkills: string[];
+  onSelectedSkillsChange(skills: string[]): void;
+  onSend(text: string, skills: string[]): void;
   onAbort(): Promise<void>;
   onModelChange(value: string): Promise<void>;
   onThinkingChange(value: ThinkingLevel): Promise<void>;
@@ -40,14 +46,23 @@ export function Composer({
   const [input, setInput] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsView, setSettingsView] = useState<"effort" | "models">("effort");
+  const [skillOpen, setSkillOpen] = useState(false);
+  const [skillSearch, setSkillSearch] = useState("");
+  const hasSkills = skills.length > 0;
   const modelValue = model ? `${model.provider}/${model.id}` : "";
   const thinkingIndex = Math.max(0, thinkingLevels.indexOf(thinkingLevel ?? thinkingLevels[0]));
+
+  const filteredSkills = skills.filter(
+    (s) =>
+      s.name.toLowerCase().includes(skillSearch.toLowerCase()) ||
+      s.description.toLowerCase().includes(skillSearch.toLowerCase()),
+  );
 
   const submit = () => {
     const text = input.trim();
     if (!text || busy) return;
     setInput("");
-    onSend(text);
+    onSend(text, selectedSkills);
   };
 
   return (
@@ -67,6 +82,80 @@ export function Composer({
         />
         <div className="composer-toolbar">
           <div className="composer-settings">
+            <Popover open={hasSkills ? skillOpen : false} onOpenChange={setSkillOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  className="skill-selector-trigger"
+                  variant="ghost"
+                  type="button"
+                  disabled={busy || !hasSkills}
+                  aria-label={hasSkills ? "选择技能" : "当前没有可用技能"}
+                  title={
+                    hasSkills
+                      ? "选择技能"
+                      : "当前没有可用技能，请先在项目根目录的 skills/ 下安装 SKILL.md"
+                  }
+                >
+                  <Zap size={15} />
+                  <span className="skill-selector-label">
+                    {hasSkills
+                      ? selectedSkills.length > 0
+                        ? `技能 (${selectedSkills.length})`
+                        : "技能"
+                      : "无技能"}
+                  </span>
+                  <ChevronDown size={15} />
+                </Button>
+              </PopoverTrigger>
+              {hasSkills && (
+                <PopoverContent
+                  className="skill-selector-popover"
+                  side="top"
+                  align="start"
+                  sideOffset={12}
+                >
+                  <div className="skill-search-wrap">
+                    <Search size={14} className="skill-search-icon" />
+                    <input
+                      className="skill-search-input"
+                      placeholder="搜索技能…"
+                      value={skillSearch}
+                      onChange={(e) => setSkillSearch(e.target.value)}
+                    />
+                  </div>
+                  <div className="skill-list">
+                    {filteredSkills.map((skill) => {
+                      const checked = selectedSkills.includes(skill.name);
+                      return (
+                        <button
+                          key={skill.name}
+                          type="button"
+                          className={"skill-option " + (checked ? "skill-option-active" : "")}
+                          onClick={() => {
+                            onSelectedSkillsChange(
+                              checked
+                                ? selectedSkills.filter((s) => s !== skill.name)
+                                : [...selectedSkills, skill.name],
+                            );
+                          }}
+                        >
+                          <span className="skill-option-check" aria-hidden>
+                            {checked ? "✓" : ""}
+                          </span>
+                          <span className="skill-option-text">
+                            <span className="skill-option-name">{skill.name}</span>
+                            <span className="skill-option-desc">{skill.description}</span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                    {filteredSkills.length === 0 && (
+                      <span className="skill-empty">未找到匹配的技能</span>
+                    )}
+                  </div>
+                </PopoverContent>
+              )}
+            </Popover>
             <Popover
               open={settingsOpen}
               onOpenChange={(open) => {
