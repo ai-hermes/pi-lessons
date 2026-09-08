@@ -10,6 +10,7 @@ import type {
   ConversationConfig,
   ConversationConfigUpdate,
   ConversationSummary,
+  SkillOption,
   ThinkingLevel,
 } from "@shared/types";
 import { Menu, PanelLeftOpen } from "lucide-react";
@@ -28,6 +29,21 @@ import {
 
 import "./App.css";
 
+const mockSkills: SkillOption[] = [
+  {
+    name: "lark-doc",
+    description: "读取、创建和编辑飞书云文档。",
+  },
+  {
+    name: "lark-base",
+    description: "查询和维护飞书多维表格记录。",
+  },
+  {
+    name: "lark-calendar",
+    description: "查看日程并创建会议安排。",
+  },
+];
+
 export default function App() {
   const { conversationId } = useParams<{ conversationId: string }>();
   const navigate = useNavigate();
@@ -36,10 +52,11 @@ export default function App() {
     conversationId: string;
     config: ConversationConfig;
   }>();
-  const [bootstrap, setBootstrap] = useState<BootstrapData>({ models: [] });
+  const [bootstrap, setBootstrap] = useState<BootstrapData>({ models: [], skills: mockSkills });
   const [draftConfig, setDraftConfig] = useState<ConversationConfigUpdate>({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const messageBottomRef = useRef<HTMLDivElement>(null);
   const scrollAfterSubmitRef = useRef(false);
   const wasGeneratingRef = useRef(false);
@@ -78,7 +95,7 @@ export default function App() {
   useEffect(() => {
     (async () => {
       const bootstrapData = await getBootstrap();
-      setBootstrap(bootstrapData);
+      setBootstrap({ ...bootstrapData, skills: mockSkills });
     })();
   }, []);
 
@@ -111,7 +128,7 @@ export default function App() {
     if (!text) return;
     scrollAfterSubmitRef.current = true;
     setInput("");
-    void send(text, conversationId ? undefined : draftConfig);
+    void send(text, conversationId ? undefined : draftConfig, selectedSkills);
   };
 
   const startNew = async () => {
@@ -245,6 +262,9 @@ export default function App() {
           models={models}
           thinkingLevel={thinkingLevel}
           thinkingLevels={thinkingLevels}
+          skills={bootstrap.skills ?? []}
+          selectedSkills={selectedSkills}
+          onSelectedSkillsChange={setSelectedSkills}
           onSend={submit}
           onAbort={abort}
           onModelChange={changeModel}
