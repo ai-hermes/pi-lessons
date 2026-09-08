@@ -305,7 +305,7 @@ button {
 .chat-area {
   max-width: 960px;
   margin: 0 auto;
-  padding: 30px 24px 170px;
+  padding: 30px 24px 152px;
 }
 
 .empty-chat-area {
@@ -378,7 +378,7 @@ button {
 }
 
 .message-bottom-spacer {
-  scroll-margin-bottom: 170px;
+  scroll-margin-bottom: 152px;
 }
 
 .message-loading {
@@ -788,6 +788,32 @@ button {
   background: linear-gradient(transparent, #fff 25%);
 }
 
+.ui-button.scroll-bottom-button {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 16px);
+  z-index: 30;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  border: 1px solid #e5e5e5;
+  background: #fff !important;
+  color: #555;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+}
+
+.ui-button.scroll-bottom-button:hover {
+  color: #1d1d1f;
+}
+
+@media (min-width: 641px) {
+  .app-shell:has(.sidebar-collapsed) .scroll-bottom-button {
+    left: calc(50% - 130px);
+  }
+}
+
 .composer {
   max-width: 960px;
   margin: 0 auto;
@@ -922,7 +948,6 @@ button {
   font-weight: 500;
   white-space: nowrap;
 }
-
 
 .skill-selector-popover {
   z-index: 50;
@@ -1205,25 +1230,45 @@ button {
   color: #111;
 }
 
-.send-button {
+.ui-button.send-button {
   flex: 0 0 auto;
   width: 32px;
   height: 32px;
   border: 0;
-  border-radius: 7px;
-  background: #1d1d1f;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #303036, #111113);
   color: #fff;
   display: grid;
   place-items: center;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 4px 12px rgba(0, 0, 0, 0.28);
+  transition:
+    background 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
 }
 
-.stop-button {
-  /* background: #b42318 !important; */
+.ui-button.send-button:hover:not(:disabled),
+.ui-button.send-button:focus-visible:not(:disabled) {
+  background: linear-gradient(135deg, #45454d, #19191c);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 6px 16px rgba(0, 0, 0, 0.38);
+  transform: translateY(-1px);
 }
 
-.send-button:disabled {
-  background: #d4d4d4;
+.ui-button.send-button.stop-button {
+  background: #dc2626;
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
+}
+
+.ui-button.send-button:disabled {
+  background: #27272a;
+  color: #fff;
+  box-shadow: none;
   cursor: not-allowed;
+  opacity: 1;
 }
 
 .composer-hint {
@@ -1314,6 +1359,17 @@ button {
   flex: 0 0 auto;
 }
 
+.ui-tooltip-content {
+  z-index: 50;
+  border-radius: 6px;
+  background: #1d1d1f;
+  padding: 6px 8px;
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  line-height: 1;
+}
+
 .ui-textarea {
   width: 100%;
   background: transparent;
@@ -1378,6 +1434,10 @@ button {
 }
 
 @media (max-width: 640px) {
+  .ui-button.scroll-bottom-button {
+    left: 50%;
+  }
+
   .conversation-sidebar {
     position: fixed;
     left: 0;

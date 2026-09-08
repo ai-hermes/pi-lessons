@@ -58,8 +58,10 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const messageBottomRef = useRef<HTMLDivElement>(null);
-  const scrollAfterSubmitRef = useRef(false);
+  const autoFollowRef = useRef(true);
+  const lastScrollYRef = useRef(0);
   const wasGeneratingRef = useRef(false);
+  const [showScrollButton, setShowScrollButton] = useState(false);
   const {
     messageItems,
     loading,
@@ -78,6 +80,8 @@ export default function App() {
 
   useLayoutEffect(() => {
     window.scrollTo(0, 0);
+    autoFollowRef.current = true;
+    lastScrollYRef.current = 0;
   }, [conversationId]);
 
   useEffect(() => {
@@ -107,28 +111,34 @@ export default function App() {
   }, [conversationId]);
 
   useEffect(() => {
-    if (!scrollAfterSubmitRef.current || messageItems.length === 0) return;
-
-    scrollAfterSubmitRef.current = false;
-    const frame = window.requestAnimationFrame(() => {
-      messageBottomRef.current?.scrollIntoView({ block: "end" });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [conversationId, messageItems.length]);
+    const onScroll = () => {
+      const scrollY = window.scrollY;
+      lastScrollYRef.current = scrollY;
+      const distanceFromBottom =
+        document.documentElement.scrollHeight - window.innerHeight - scrollY;
+      autoFollowRef.current = distanceFromBottom <= 4;
+      setShowScrollButton((prev) =>
+        prev === distanceFromBottom > 120 ? prev : distanceFromBottom > 120,
+      );
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   useLayoutEffect(() => {
     const generating = loading || busy;
     if (!generating && !wasGeneratingRef.current) return;
     wasGeneratingRef.current = generating;
+    if (!autoFollowRef.current) return;
     messageBottomRef.current?.scrollIntoView({ block: "end" });
   }, [busy, loading, messageItems.length, streamedContentLength]);
 
   const submit = (value = input) => {
     const text = value.trim();
     if (!text) return;
-    scrollAfterSubmitRef.current = true;
+    autoFollowRef.current = true;
     setInput("");
-    void send(text, conversationId ? undefined : draftConfig, selectedSkills);
+    send(text, conversationId ? undefined : draftConfig);
   };
 
   const startNew = async () => {
@@ -269,6 +279,11 @@ export default function App() {
           onAbort={abort}
           onModelChange={changeModel}
           onThinkingChange={changeThinking}
+          showScrollButton={showScrollButton}
+          onScrollToBottom={() => {
+            autoFollowRef.current = true;
+            messageBottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+          }}
         />
       </section>
     </div>
