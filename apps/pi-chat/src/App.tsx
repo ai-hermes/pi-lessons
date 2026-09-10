@@ -4,6 +4,7 @@ import { EmptyConversation } from "@components/EmptyConversation";
 import { LoadingIndicator } from "@components/LoadingIndicator";
 import { MessageItem } from "@components/MessageItem";
 import { Button } from "@components/ui/button";
+import { Skeleton } from "@components/ui/skeleton";
 import { useConversationStream } from "@hooks/useConversationStream";
 import type {
   BootstrapData,
@@ -43,6 +44,7 @@ export default function App() {
   const [showScrollButton, setShowScrollButton] = useState(false);
   const {
     messageItems,
+    historyLoading,
     loading,
     error: connectionError,
     status,
@@ -113,7 +115,7 @@ export default function App() {
     navigate("/conversation/" + created.conversation.id);
   };
 
-  const isEmpty = !conversationId || messageItems.length === 0;
+  const isEmpty = !conversationId || (!historyLoading && messageItems.length === 0);
   const conversationTitle =
     conversations.find((item) => item.id === conversationId)?.title ?? "新会话";
   return (
@@ -136,7 +138,9 @@ export default function App() {
         }}
         onDelete={async (id) => {
           await deleteConversation(id);
-          setConversations((items) => items.filter((item) => item.id !== id));
+          const remaining = conversations.filter((item) => item.id !== id);
+          setConversations(remaining);
+          navigate(remaining[0] ? "/conversation/" + remaining[0].id : "/");
         }}
       />
       <section className="chat-shell">
@@ -164,7 +168,25 @@ export default function App() {
           <span className="conversation-title">{conversationTitle}</span>
         </header>
         <main className={"chat-area " + (isEmpty ? "empty-chat-area" : "")}>
-          {isEmpty ? (
+          {historyLoading ? (
+            <div className="conversation-skeleton" role="status" aria-label="正在加载会话">
+              <div className="conversation-skeleton-user">
+                <Skeleton className="conversation-skeleton-line conversation-skeleton-user-line" />
+              </div>
+              <div className="conversation-skeleton-assistant">
+                <Skeleton className="conversation-skeleton-line conversation-skeleton-line-wide" />
+                <Skeleton className="conversation-skeleton-line conversation-skeleton-line-medium" />
+                <Skeleton className="conversation-skeleton-line conversation-skeleton-line-short" />
+              </div>
+              <div className="conversation-skeleton-user">
+                <Skeleton className="conversation-skeleton-line conversation-skeleton-user-line conversation-skeleton-user-line-short" />
+              </div>
+              <div className="conversation-skeleton-assistant">
+                <Skeleton className="conversation-skeleton-line conversation-skeleton-line-medium" />
+                <Skeleton className="conversation-skeleton-line conversation-skeleton-line-short" />
+              </div>
+            </div>
+          ) : isEmpty ? (
             <EmptyConversation onPrompt={submit} />
           ) : (
             <div className="messages">

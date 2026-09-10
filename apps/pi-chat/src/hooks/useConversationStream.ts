@@ -201,6 +201,7 @@ export function useConversationStream(conversationId?: string) {
   }
   const status = statusState.conversationId === conversationId ? statusState.status : "cold";
   const error = errorState.conversationId === conversationId ? errorState.message : "";
+  const historyLoading = Boolean(conversationId && historyState.conversationId !== conversationId);
 
   async function abort() {
     if (!conversationId) return;
@@ -216,6 +217,7 @@ export function useConversationStream(conversationId?: string) {
   }
   return {
     messageItems,
+    historyLoading,
     loading,
     error,
     send: submit,
