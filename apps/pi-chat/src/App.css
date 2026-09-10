@@ -424,6 +424,7 @@ button {
 }
 
 @keyframes pixel-on {
+
   0%,
   60%,
   100% {
@@ -442,6 +443,7 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
+
   .conversation-active-indicator,
   .conversation-item {
     transition: none;
@@ -546,14 +548,14 @@ button {
   font-size: 12px;
 }
 
-.thinking button > svg:first-child,
-.tool-summary > svg:first-child {
+.thinking button>svg:first-child,
+.tool-summary>svg:first-child {
   width: 16px;
   height: 16px;
   flex: 0 0 16px;
 }
 
-.thinking button > svg:last-child {
+.thinking button>svg:last-child {
   margin-left: 1px;
 }
 
@@ -566,19 +568,19 @@ button {
   line-height: 1.6;
 }
 
-.thinking-content .markdown > * {
+.thinking-content .markdown>* {
   margin: 3px 0 0;
   color: inherit;
   font-size: inherit;
   line-height: inherit;
 }
 
-.thinking-content .markdown > ul,
-.thinking-content .markdown > ol {
+.thinking-content .markdown>ul,
+.thinking-content .markdown>ol {
   padding-left: 21px;
 }
 
-.thinking-content .markdown > blockquote {
+.thinking-content .markdown>blockquote {
   border-left-color: #ccc;
 }
 
@@ -1259,8 +1261,8 @@ button {
 }
 
 .ui-button.send-button.stop-button {
-  background: #dc2626;
-  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
+  /* background: #dc2626; */
+  /* box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3); */
 }
 
 .ui-button.send-button:disabled {
@@ -1396,7 +1398,7 @@ button {
   color: #1d1d1f;
 }
 
-.ui-select-trigger > span:first-child {
+.ui-select-trigger>span:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

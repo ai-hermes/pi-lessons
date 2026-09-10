@@ -1,3 +1,7 @@
+import { createRequire } from "node:module";
+import { dirname } from "node:path";
+
+import { Type } from "@earendil-works/pi-ai";
 import {
   createAgentSessionRuntime,
   getAgentDir,
@@ -12,15 +16,13 @@ import {
 import type { GlobalConfig } from "@server/config";
 
 import type { ConversationRecord } from "./types";
-import { Type } from "@earendil-works/pi-ai";
-import { createRequire } from "node:module";
-import { dirname } from "node:path";
 
 export interface RuntimeOptions {
   conversationRecord: ConversationRecord;
   globalConfig: GlobalConfig;
   modelRuntime: ModelRuntime;
   sessionManager: SessionManager;
+  selectedSkills?: string[];
 }
 
 const SYSTEM_PROMPT = `You are Pi Chat, a helpful, precise coding assistant running in a dedicated conversation workspace.
@@ -29,31 +31,37 @@ You can inspect files, run commands, and edit the workspace. Explain important a
 
 The workspace is a convenience boundary, not an operating-system sandbox. Stay inside the current working directory unless the user explicitly asks otherwise. Do not expose credentials or secrets. Reply in the user's language.`;
 
-
 const utcTimeTool = defineTool({
-    name: 'utc_time',
-    label: 'utc_time',
-    description: 'return the current UTC ISO timestamp',
-    parameters: Type.Object({}),
-    execute: async () => {
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: new Date().toISOString(),
-                }
-            ],
-            details: {},
-        };
-    }
-})
+  name: "utc_time",
+  label: "utc_time",
+  description: "return the current UTC ISO timestamp",
+  parameters: Type.Object({}),
+  execute: async () => {
+    return {
+      content: [
+        {
+          type: "text",
+          text: new Date().toISOString(),
+        },
+      ],
+      details: {},
+    };
+  },
+});
 
 const webAccessExtensionPath = dirname(
   createRequire(import.meta.url).resolve("pi-web-access/package.json"),
 );
 
 export async function createRuntime(options: RuntimeOptions) {
-  const { conversationRecord, globalConfig, modelRuntime, sessionManager } = options;
+  const {
+    conversationRecord,
+    globalConfig,
+    modelRuntime,
+    sessionManager,
+    selectedSkills = [],
+  } = options;
+  const selectedSkillsSet = new Set(selectedSkills);
   let runtimeSessionManager = sessionManager;
   if (!runtimeSessionManager) {
     SessionManager.create(conversationRecord.workspaceDir, globalConfig.sessionsDir, {
@@ -83,6 +91,20 @@ export async function createRuntime(options: RuntimeOptions) {
             await createMcpAdapter({ configPath: globalConfig.mcpConfigPath })(pi);
           },
         ],
+        noSkills: true,
+        additionalSkillPaths: [globalConfig.skillsDir],
+        skillsOverride: (base) => {
+          console.log("skillOverride", base);
+          console.log("skillOverride", selectedSkillsSet);
+          console.log(
+            "skillOverride",
+            base.skills.filter((skill) => selectedSkillsSet.has(skill.name)),
+          );
+          return {
+            ...base,
+            skills: base.skills.filter((skill) => selectedSkillsSet.has(skill.name)),
+          };
+        },
       },
     });
     const agentSession = await createAgentSessionFromServices({

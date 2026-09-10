@@ -20,6 +20,7 @@ export interface GlobalConfig {
   sessionsDir: string;
   workspacesDir: string;
   mcpConfigPath: string;
+  skillsDir: string;
 }
 
 export function getGlobalConfig(rootDir = process.env.PI_CHAT_ROOT_DIR): GlobalConfig {
@@ -30,6 +31,7 @@ export function getGlobalConfig(rootDir = process.env.PI_CHAT_ROOT_DIR): GlobalC
     sessionsDir: join(resolvedRootDir, "sessions"),
     workspacesDir: join(resolvedRootDir, "workspaces"),
     mcpConfigPath: join(resolvedRootDir, ".mcp.json"),
+    skillsDir: join(resolvedRootDir, "skills"),
   };
 }
 

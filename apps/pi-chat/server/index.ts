@@ -8,7 +8,7 @@ import { ConversationService } from "@server/conversation/service";
 import { ensureDir, getGlobalConfig } from "./config";
 
 const globalConfig = getGlobalConfig();
-await ensureDir([globalConfig.rootDir]);
+await ensureDir([globalConfig.rootDir, globalConfig.skillsDir]);
 await writeFile(globalConfig.mcpConfigPath, JSON.stringify({ mcpServers: {} }, null, 2), {
   flag: "wx",
 }).catch((error: NodeJS.ErrnoException) => {

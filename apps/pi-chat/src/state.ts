@@ -53,6 +53,14 @@ function addOrUpdateTool(items: MessageListItem[], tool: ToolRun): MessageListIt
   );
 }
 
+function resolveToolArgs(items: MessageListItem[], id: string, value: unknown) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  const item = items.find((item) => item.kind === "tool" && item.id === id);
+  return item?.kind === "tool" ? item.tool.args : {};
+}
+
 function addOrUpdateMessage(items: MessageListItem[], message: ChatMessage): MessageListItem[] {
   const index = items.findIndex((item) => item.kind === "message" && item.id === message.id);
   if (index < 0) return [...items, { kind: "message", id: message.id, message }];
@@ -161,7 +169,7 @@ export function conversationReducer(
       return addOrUpdateTool(items, {
         id,
         name: String(payload.name ?? "tool"),
-        args: (payload.args ?? {}) as Record<string, unknown>,
+        args: resolveToolArgs(items, id, payload.args),
         status: "running",
       });
     case "tool.updated":
@@ -169,7 +177,7 @@ export function conversationReducer(
       return addOrUpdateTool(items, {
         id,
         name: String(payload.name ?? "tool"),
-        args: (payload.args ?? {}) as Record<string, unknown>,
+        args: resolveToolArgs(items, id, payload.args),
         status:
           action.event.type === "tool.completed"
             ? payload.status === "error"

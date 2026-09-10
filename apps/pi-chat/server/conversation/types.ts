@@ -11,6 +11,7 @@ export interface ConversationRecord {
   sessionFile: string;
   createdAt: Date;
   updatedAt: Date;
+  selectedSkills: string[];
 }
 
 export interface ManagedSession {
@@ -23,4 +24,5 @@ export interface ManagedSession {
   diagnostics: string[];
   streamMessageId?: string;
   streamThinkingId?: string;
+  activeSkillNames: string[];
 }

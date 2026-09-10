@@ -21,6 +21,7 @@ interface PendingSend {
   conversationId: string;
   text: string;
   message: ChatMessage;
+  skills?: string[];
 }
 
 interface ConversationItemsState {
@@ -45,6 +46,7 @@ export function useConversationStream(conversationId?: string) {
     conversationId?: string;
     status: RuntimeStatus;
   }>({ status: "cold" });
+  const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const pendingSend = useRef<PendingSend | null>(null);
 
   const messageItems = [
@@ -67,6 +69,7 @@ export function useConversationStream(conversationId?: string) {
         items: conversation.messageList,
       });
       setStatusState({ conversationId, status: conversation.status });
+      setSelectedSkills(conversation.activeSkillNames ?? []);
       eventSource = connectEvents(
         conversationId,
         (event) => {
@@ -110,7 +113,7 @@ export function useConversationStream(conversationId?: string) {
             ),
           }));
 
-          send(conversationId, pending.text);
+          send(conversationId, pending.text, pending.skills);
         },
         conversation.stream.lastEventId,
       );
@@ -122,7 +125,7 @@ export function useConversationStream(conversationId?: string) {
     };
   }, [conversationId]);
 
-  async function send(conversationId: string, text: string) {
+  async function send(conversationId: string, text: string, skills?: string[]) {
     setLoading(true);
     setErrorState({
       conversationId,
@@ -130,7 +133,7 @@ export function useConversationStream(conversationId?: string) {
     });
 
     try {
-      await sendMessage(conversationId, text);
+      await sendMessage(conversationId, text, skills);
     } catch (error) {
       setErrorState({
         conversationId,
@@ -141,7 +144,11 @@ export function useConversationStream(conversationId?: string) {
     }
   }
 
-  async function submit(value: string, initialConfig?: ConversationConfigUpdate) {
+  async function submit(
+    value: string,
+    initialConfig?: ConversationConfigUpdate,
+    skills?: string[],
+  ) {
     const text = value.trim();
     if (!text || loading) return;
 
@@ -168,6 +175,7 @@ export function useConversationStream(conversationId?: string) {
           conversationId,
           text,
           message,
+          skills,
         };
         navigate(`/conversation/${conversationId}`);
       } catch (error) {
@@ -189,7 +197,7 @@ export function useConversationStream(conversationId?: string) {
       }),
     }));
 
-    await send(conversationId, text);
+    await send(conversationId, text, skills);
   }
   const status = statusState.conversationId === conversationId ? statusState.status : "cold";
   const error = errorState.conversationId === conversationId ? errorState.message : "";
@@ -206,5 +214,14 @@ export function useConversationStream(conversationId?: string) {
       });
     }
   }
-  return { messageItems, loading, error, send: submit, status, abort };
+  return {
+    messageItems,
+    loading,
+    error,
+    send: submit,
+    status,
+    abort,
+    selectedSkills,
+    setSelectedSkills,
+  };
 }

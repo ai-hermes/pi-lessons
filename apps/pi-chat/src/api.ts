@@ -27,9 +27,10 @@ export function getBootstrap(): Promise<BootstrapData> {
   return readResponse(fetch("/api/system/bootstrap"));
 }
 
-export function sendMessage(id: string, text: string): Promise<unknown> {
+export function sendMessage(id: string, text: string, skills: string[] = []): Promise<unknown> {
   const form = new FormData();
   form.set("text", text);
+  form.set("skills", JSON.stringify(skills));
   return readResponse(
     fetch("/api/conversation/" + encodeURIComponent(id) + "/messages", {
       method: "POST",

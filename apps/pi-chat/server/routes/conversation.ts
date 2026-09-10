@@ -66,7 +66,16 @@ export function createConversationRoutes(conversationService: ConversationServic
     const formData = await ctx.req.formData();
     const { conversationId } = ctx.req.param();
     const userInput = formData.get("text") as string;
-    await conversationService.send(conversationId, userInput);
+    const skillsRaw = formData.get("skills") as string | null;
+    let skills: string[] = [];
+    if (skillsRaw) {
+      try {
+        skills = JSON.parse(skillsRaw) as string[];
+      } catch {
+        // ignore malformed skills
+      }
+    }
+    await conversationService.send(conversationId, userInput, skills);
     return ctx.json({ accepted: true }, 202);
   });
 

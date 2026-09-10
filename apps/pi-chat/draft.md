@@ -96,11 +96,12 @@ feat/pi-chat-0904
 
 会话配置切换 - switch model - switch thinking level
 
-
 feat/pi-chat-0907
+
 - 工具接入-自定义工具
 - 工具接入-extension
 - 工具接入-mcp (model context protocol)
+- 工具接入-skill
 
 mcp server connect/list tools(pi register tool)
 
@@ -108,9 +109,41 @@ stdio/streamable http
 
 nvidia 今天的股价
 
-"Web Search"  
-    keyword1 -> [url1]
-    keyword2 -> [url2]
+"Web Search"
+
+- keyword1 -> [url1]
+- keyword2 -> [url2]
+
 "Fetch Content"
-    url1 -> html content
-    url2 -> html content
+
+- url1 -> html content
+- url2 -> html content
+
+feat/pi-chat-0908
+skills spec -> https://agentskills.io/
+
+```bash
+# https://github.com/larksuite/cli
+npx @larksuite/cli@latest install
+lark-cli config init --new
+lark-cli auth login --recommend
+lark-cli auth status
+
+# 安装 lark-cli 的skill
+mkdir -p ~/.pi/agent/pi-chat/skills
+
+lark_tmp_dir="$(mktemp -d)"
+git clone --depth=1 https://github.com/larksuite/cli "$lark_tmp_dir/larksuite-cli"
+
+rsync -a --delete \
+"$lark_tmp_dir/larksuite-cli/skills/" \
+~/.pi/agent/pi-chat/skills/
+
+rm -rf "$lark_tmp_dir"
+
+# 校验
+find ~/.pi/agent/pi-chat/skills -maxdepth 2 -name SKILL.md | head
+ls /Users/aholic/.pi/agent/pi-chat/skills
+```
+
+send api

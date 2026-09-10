@@ -29,21 +29,6 @@ import {
 
 import "./App.css";
 
-const mockSkills: SkillOption[] = [
-  {
-    name: "lark-doc",
-    description: "读取、创建和编辑飞书云文档。",
-  },
-  {
-    name: "lark-base",
-    description: "查询和维护飞书多维表格记录。",
-  },
-  {
-    name: "lark-calendar",
-    description: "查看日程并创建会议安排。",
-  },
-];
-
 export default function App() {
   const { conversationId } = useParams<{ conversationId: string }>();
   const navigate = useNavigate();
@@ -52,15 +37,14 @@ export default function App() {
     conversationId: string;
     config: ConversationConfig;
   }>();
-  const [bootstrap, setBootstrap] = useState<BootstrapData>({ models: [], skills: mockSkills });
+  const [bootstrap, setBootstrap] = useState<BootstrapData>({ models: [], skills: [] });
   const [draftConfig, setDraftConfig] = useState<ConversationConfigUpdate>({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+
   const messageBottomRef = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
   const lastScrollYRef = useRef(0);
-  const wasGeneratingRef = useRef(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const {
     messageItems,
@@ -69,7 +53,10 @@ export default function App() {
     status,
     send,
     abort,
+    selectedSkills,
+    setSelectedSkills,
   } = useConversationStream(conversationId);
+
   const [input, setInput] = useState("");
   const busy = status === "running" || status === "stopping" || status === "compacting";
   const streamedContentLength = messageItems.reduce((total, item) => {
@@ -99,7 +86,7 @@ export default function App() {
   useEffect(() => {
     (async () => {
       const bootstrapData = await getBootstrap();
-      setBootstrap({ ...bootstrapData, skills: mockSkills });
+      setBootstrap({ ...bootstrapData });
     })();
   }, []);
 
@@ -126,9 +113,6 @@ export default function App() {
   }, []);
 
   useLayoutEffect(() => {
-    const generating = loading || busy;
-    if (!generating && !wasGeneratingRef.current) return;
-    wasGeneratingRef.current = generating;
     if (!autoFollowRef.current) return;
     messageBottomRef.current?.scrollIntoView({ block: "end" });
   }, [busy, loading, messageItems.length, streamedContentLength]);
@@ -138,7 +122,7 @@ export default function App() {
     if (!text) return;
     autoFollowRef.current = true;
     setInput("");
-    send(text, conversationId ? undefined : draftConfig);
+    send(text, conversationId ? undefined : draftConfig, selectedSkills);
   };
 
   const startNew = async () => {
@@ -205,6 +189,8 @@ export default function App() {
     models.find((item) => item.provider === model?.provider && item.id === model.id)
       ?.thinkingLevels ??
     [];
+  const conversationTitle =
+    conversations.find((item) => item.id === conversationId)?.title ?? "新会话";
   return (
     <div className="app-shell">
       <ConversationSidebar
@@ -250,7 +236,7 @@ export default function App() {
           >
             <Menu size={18} />
           </Button>
-          <span className="conversation-title">{"新会话"}</span>
+          <span className="conversation-title">{conversationTitle}</span>
         </header>
         <main className={"chat-area " + (isEmpty ? "empty-chat-area" : "")}>
           {isEmpty ? (

@@ -14,6 +14,7 @@ export function createSystemRoutes(conversationService: ConversationService) {
   systemApp.get("/bootstrap", (ctx) => {
     const bootstrap: BootstrapData = {
       models: conversationService.getAvailableModels(),
+      skills: conversationService.getAvailableSkills(),
     };
     return ctx.json(bootstrap);
   });
