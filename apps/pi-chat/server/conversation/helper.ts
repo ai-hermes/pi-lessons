@@ -25,12 +25,11 @@ export function isImagePart(part: ContentPart): part is ImageContent & {
 export function resultText(
   result: { content?: Array<{ type?: string; text?: string }> } | undefined,
 ): string {
-  return (
-    result?.content
-      ?.filter((item) => item.type === "text")
-      .map((item) => item.text ?? "")
-      .join("\n") ?? ""
-  );
+  const texts: string[] = [];
+  for (const item of result?.content ?? []) {
+    if (item.type === "text") texts.push(item.text ?? "");
+  }
+  return texts.join("\n");
 }
 
 function normalizeContent(content: string | ContentPart[]): ContentPart[] {
@@ -46,19 +45,24 @@ function normalizeContent(content: string | ContentPart[]): ContentPart[] {
   return content;
 }
 
-function extractText(content: ContentPart[]): string {
-  return content
-    .filter((part) => part.type === "text")
-    .map((part) => part.text ?? "")
-    .join("");
+export function extractText(content: ContentPart[]): string {
+  return content.reduce(
+    (text, part) => (part.type === "text" ? text + (part.text ?? "") : text),
+    "",
+  );
 }
 
-function extractImages(content: ContentPart[]): ChatImage[] {
-  return content.filter(isImagePart).map((part) => ({
-    type: "image",
-    data: part.data,
-    mimeType: part.mimeType,
-  }));
+export function extractImages(content: ContentPart[]): ChatImage[] {
+  return content.reduce<ChatImage[]>((images, part) => {
+    if (isImagePart(part)) {
+      images.push({
+        type: "image",
+        data: part.data,
+        mimeType: part.mimeType,
+      });
+    }
+    return images;
+  }, []);
 }
 
 export class ConversationViewBuilder {

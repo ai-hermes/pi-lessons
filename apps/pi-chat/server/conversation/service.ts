@@ -23,7 +23,7 @@ import type {
 } from "@shared/types";
 
 import { EventChannel } from "./channel";
-import { ConversationViewBuilder, isImagePart, resultText } from "./helper";
+import { ConversationViewBuilder, extractImages, extractText, resultText } from "./helper";
 import { ConversationRepository } from "./repository";
 import { createRuntime } from "./runtime";
 import type { ConversationRecord, ManagedSession } from "./types";
@@ -328,15 +328,8 @@ export class ConversationService {
               typeof message.content === "string"
                 ? [{ type: "text", text: message.content }]
                 : message.content;
-            const text = content
-              .filter((part) => part.type === "text")
-              .map((part) => part.text ?? "")
-              .join("");
-            const images = content.filter(isImagePart).map((part) => ({
-              type: "image" as const,
-              data: part.data!,
-              mimeType: part.mimeType!,
-            }));
+            const text = extractText(content);
+            const images = extractImages(content);
             managedSession.channel.publish("message.added", {
               id: randomUUID(),
               role: message.role,
