@@ -22,6 +22,18 @@ pnpm dev:pi-chat
 
 不要提交 `.env`、API Key、会话记录或本机路径；提交配置示例时使用占位值。
 
+## 联系与交流
+
+### 个人微信
+
+<img src="./up.jpeg" alt="个人微信二维码" width="320">
+
+### 微信群：信使宝宝在教 AI
+
+<img src="./wechat-group.jpeg" alt="微信群二维码" width="320">
+
+> 群二维码有有效期，失效后请联系作者获取最新二维码。
+
 ## 许可
 
 ISC
