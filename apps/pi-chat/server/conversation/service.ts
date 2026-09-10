@@ -9,8 +9,9 @@ import {
   type TextContent,
   type ThinkingLevel,
 } from "@earendil-works/pi-ai";
-import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, SessionManager, loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
 import type { GlobalConfig } from "@server/config";
+import { hasSameStringItems } from "@server/utils";
 import type {
   ConversationConfig,
   ConversationConfigUpdate,
@@ -18,6 +19,7 @@ import type {
   ConversationSummary,
   ModelOption,
   RuntimeStatus,
+  SkillOption,
 } from "@shared/types";
 
 import { EventChannel } from "./channel";
@@ -67,12 +69,21 @@ export class ConversationService {
     return this.createManagedSession(conversationRecord, sessionManager);
   }
 
-  async send(conversationId: string, userInput: string) {
+  async send(conversationId: string, userInput: string, skills?: string[]) {
     const cleanedUserInput = userInput.trim();
     if (!cleanedUserInput || cleanedUserInput.length === 0) {
       throw new Error("User input cannot be empty.");
     }
-    const managedSession = await this.ensureManagedSession(conversationId);
+
+    const loadSkillsResult = loadSkillsFromDir({
+      dir: this.globalConfig.skillsDir,
+      source: "project",
+    });
+    const availableSkillList = loadSkillsResult.skills.map((skill) => skill.name);
+    const availableSkillsSet = new Set(availableSkillList);
+    const validSelectedSkills = (skills ?? []).filter((skill) => availableSkillsSet.has(skill));
+
+    const managedSession = await this.ensureManagedSession(conversationId, validSelectedSkills);
     const session = managedSession.runtime.session;
     session.prompt(cleanedUserInput);
   }
@@ -92,6 +103,7 @@ export class ConversationService {
     return {
       conversation: this.summary(conversationRecord, managedSession.status),
       messageList: messageList,
+      activeSkillNames: [...managedSession.activeSkillNames],
       model: {
         provider: session.agent.state.model.provider,
         id: session.agent.state.model.id,
@@ -164,6 +176,19 @@ export class ConversationService {
 
   getAvailableModels(): ModelOption[] {
     return this.modelOptions();
+  }
+
+  getAvailableSkills(): SkillOption[] {
+    const loadSkillsResult = loadSkillsFromDir({
+      dir: this.globalConfig.skillsDir,
+      source: "project",
+    });
+    return loadSkillsResult.skills.map((skill) => {
+      return {
+        name: skill.name,
+        description: skill.description,
+      };
+    });
   }
 
   async updateConfig(
@@ -249,12 +274,15 @@ export class ConversationService {
   private async createManagedSession(
     conversationRecord: ConversationRecord,
     sessionManager: SessionManager,
+    selectedSkills: string[] = [],
   ) {
+    console.log("createManagedSession", selectedSkills);
     const runtime = await createRuntime({
       globalConfig: this.globalConfig,
       conversationRecord,
       sessionManager,
       modelRuntime: this.modelRuntime,
+      selectedSkills,
     });
 
     const managedSession: ManagedSession = {
@@ -263,6 +291,7 @@ export class ConversationService {
       channel: this.getEventChannel(conversationRecord.id),
       status: runtime.session.isStreaming ? "running" : "ready",
       diagnostics: runtime.diagnostics.map((item) => item.message),
+      activeSkillNames: [...selectedSkills],
     };
     this.managedSessions.set(managedSession.id, managedSession);
     this.bind(managedSession);
@@ -385,10 +414,27 @@ export class ConversationService {
     managedSession.channel.publish("runtime.status", { status });
   }
 
-  private async ensureManagedSession(conversationId: string) {
+  private async ensureManagedSession(conversationId: string, selectedSkills?: string[]) {
     let managedSession = this.managedSessions.get(conversationId);
     if (managedSession) {
-      return managedSession;
+      if (!selectedSkills || hasSameStringItems(managedSession.activeSkillNames, selectedSkills)) {
+        return managedSession;
+      }
+      if (this.isBusy(managedSession)) {
+        throw new Error(`Managed session is busy and cannot be updated with new selected skills.`);
+      }
+      // re-create managedsession
+
+      const conversationRecord = await this.conversationRepository.get(conversationId);
+      if (!conversationRecord) {
+        throw new Error(`Conversation with ID ${conversationId} not found.`);
+      }
+      // pi sessionManager
+      // eventChannel
+      const sessionManager = managedSession.runtime.session.sessionManager;
+      this.release(conversationId, { dropChannel: false });
+      await this.conversationRepository.update(conversationId, { selectedSkills });
+      return this.createManagedSession(conversationRecord, sessionManager, selectedSkills);
     }
     const conversationRecord = await this.conversationRepository.get(conversationId);
     if (!conversationRecord) {
@@ -412,7 +458,11 @@ export class ConversationService {
       );
     }
 
-    return this.createManagedSession(conversationRecord, sessionManager);
+    return this.createManagedSession(
+      conversationRecord,
+      sessionManager,
+      conversationRecord.selectedSkills,
+    );
   }
 
   private isBusy(managedSession: ManagedSession): boolean {
@@ -424,12 +474,14 @@ export class ConversationService {
     );
   }
 
-  private async release(id: string) {
+  private async release(id: string, options: { dropChannel?: boolean } = {}) {
     const managedSession = this.managedSessions.get(id);
     if (!managedSession) return;
     managedSession.unsubscribe?.();
     managedSession.runtime.session.dispose();
-    this.channels.delete(id);
+    if (options.dropChannel ?? true) {
+      this.channels.delete(id);
+    }
     this.managedSessions.delete(id);
   }
 }

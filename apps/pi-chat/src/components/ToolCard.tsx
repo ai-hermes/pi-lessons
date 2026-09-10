@@ -10,8 +10,40 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 
+type ToolLabelDetails = Record<string, unknown> & {
+  server?: string;
+  tool?: string;
+  mode?: string;
+};
+
+const mcpOperations = ["connect", "describe", "instructions", "list", "search"] as const;
+type McpOperation = (typeof mcpOperations)[number];
+type ToolLabelArgs = ToolRun["args"] &
+  Partial<Record<"server" | "tool" | "mode" | McpOperation, string>>;
+
+function toolLabel(tool: ToolRun) {
+  const details = (tool.details ?? {}) as ToolLabelDetails;
+  const args = tool.args as ToolLabelArgs;
+  const server = details.server ?? args.server;
+  const calledTool = details.tool ?? args.tool;
+  const mode = args.mode ?? details.mode;
+
+  if (tool.name !== "mcp" && !tool.name.startsWith("mcp__")) {
+    return tool.name;
+  }
+
+  const namespace = tool.name.startsWith("mcp__") ? tool.name.slice(5) : undefined;
+  const source = server ?? namespace;
+
+  if (mode && mcpOperations.includes(mode as McpOperation)) {
+    return [source, mode].filter(Boolean).join(" / ");
+  }
+  return [source, calledTool].filter(Boolean).join(" / ");
+}
+
 export function ToolCard({ tool }: { tool: ToolRun }) {
   const [open, setOpen] = useState(false);
+  const label = toolLabel(tool);
   const statusIcon =
     tool.status === "running" ? (
       <LoaderCircle className="running" size={17} />
@@ -20,11 +52,12 @@ export function ToolCard({ tool }: { tool: ToolRun }) {
     ) : (
       <CheckCircle2 className="success" size={17} />
     );
+  console.log("tool", tool);
   return (
     <div className="tool-card">
       <Button variant="ghost" className="tool-summary" onClick={() => setOpen(!open)}>
         <FileText size={16} />
-        <strong>{tool.name}</strong>
+        <strong title={label}>{label}</strong>
         {statusIcon}
         {open ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
       </Button>
