@@ -5,8 +5,12 @@
   "description": "Pi Chat learning workspace",
   "scripts": {
     "dev:pi-chat": "pnpm --filter pi-chat dev",
-    "build:pi-chat": "pnpm --filter pi-chat build"
+    "build:pi-chat": "pnpm --filter pi-chat build",
+    "doctor": "npx react-doctor@latest"
   },
   "license": "ISC",
-  "packageManager": "pnpm@11.22.0"
+  "packageManager": "pnpm@11.22.0",
+  "devDependencies": {
+    "react-doctor": "^0.9.13"
+  }
 }

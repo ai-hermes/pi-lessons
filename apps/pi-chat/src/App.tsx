@@ -10,7 +10,7 @@ import type {
   ConversationConfig,
   ConversationConfigUpdate,
   ConversationSummary,
-  SkillOption,
+  ModelOption,
   ThinkingLevel,
 } from "@shared/types";
 import { Menu, PanelLeftOpen } from "lucide-react";
@@ -33,12 +33,7 @@ export default function App() {
   const { conversationId } = useParams<{ conversationId: string }>();
   const navigate = useNavigate();
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [configState, setConfigState] = useState<{
-    conversationId: string;
-    config: ConversationConfig;
-  }>();
   const [bootstrap, setBootstrap] = useState<BootstrapData>({ models: [], skills: [] });
-  const [draftConfig, setDraftConfig] = useState<ConversationConfigUpdate>({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
@@ -56,8 +51,9 @@ export default function App() {
     selectedSkills,
     setSelectedSkills,
   } = useConversationStream(conversationId);
+  const { draftConfig, model, models, thinkingLevel, thinkingLevels, changeModel, changeThinking } =
+    useConversationConfig(conversationId, bootstrap.models);
 
-  const [input, setInput] = useState("");
   const busy = status === "running" || status === "stopping" || status === "compacting";
   const streamedContentLength = messageItems.reduce((total, item) => {
     if (item.kind === "message") return total + item.message.text.length;
@@ -69,18 +65,6 @@ export default function App() {
     window.scrollTo(0, 0);
     autoFollowRef.current = true;
     lastScrollYRef.current = 0;
-  }, [conversationId]);
-
-  useEffect(() => {
-    if (!conversationId) return;
-
-    (async () => {
-      const conversationConfig = await getConversationConfig(conversationId);
-      setConfigState({
-        conversationId,
-        config: conversationConfig,
-      });
-    })();
   }, [conversationId]);
 
   useEffect(() => {
@@ -117,11 +101,10 @@ export default function App() {
     messageBottomRef.current?.scrollIntoView({ block: "end" });
   }, [busy, loading, messageItems.length, streamedContentLength]);
 
-  const submit = (value = input) => {
+  const submit = (value: string) => {
     const text = value.trim();
     if (!text) return;
     autoFollowRef.current = true;
-    setInput("");
     send(text, conversationId ? undefined : draftConfig, selectedSkills);
   };
 
@@ -130,65 +113,7 @@ export default function App() {
     navigate("/conversation/" + created.conversation.id);
   };
 
-  const changeModel = async (value: string) => {
-    // value => ${provider_id}/${model_id}
-    const separator = value.indexOf("/");
-    if (separator < 1) return;
-    const model = {
-      provider: value.slice(0, separator),
-      id: value.slice(separator + 1),
-    };
-    if (!conversationId) {
-      const thinkingLevels =
-        bootstrap.models.find((item) => item.provider === model.provider && item.id === model.id)
-          ?.thinkingLevels ?? [];
-      setDraftConfig((current) => ({
-        model,
-        thinkingLevel:
-          current.thinkingLevel && thinkingLevels.includes(current.thinkingLevel)
-            ? current.thinkingLevel
-            : thinkingLevels.includes("medium")
-              ? "medium"
-              : thinkingLevels[0],
-      }));
-      return;
-    }
-    const id = conversationId;
-    const config = await updateConversationConfig(id, {
-      model,
-    });
-    setConfigState((current) => {
-      return current?.conversationId === id ? { conversationId: id, config } : current;
-    });
-  };
-
-  const changeThinking = async (level: ThinkingLevel) => {
-    if (!conversationId) {
-      setDraftConfig((current) => ({ ...current, thinkingLevel: level }));
-      return;
-    }
-    const id = conversationId;
-    const config = await updateConversationConfig(id, {
-      thinkingLevel: level,
-    });
-    setConfigState((current) =>
-      current?.conversationId === id ? { conversationId: id, config } : current,
-    );
-  };
-
   const isEmpty = !conversationId || messageItems.length === 0;
-
-  const config =
-    configState && configState.conversationId === conversationId ? configState.config : undefined;
-  const model = config?.model ?? (!conversationId ? draftConfig.model : undefined);
-  const models = config?.models ?? bootstrap.models;
-  const thinkingLevel =
-    config?.thinkingLevel ?? (!conversationId ? draftConfig.thinkingLevel : undefined);
-  const thinkingLevels =
-    config?.availableThinkingLevels ??
-    models.find((item) => item.provider === model?.provider && item.id === model.id)
-      ?.thinkingLevels ??
-    [];
   const conversationTitle =
     conversations.find((item) => item.id === conversationId)?.title ?? "新会话";
   return (
@@ -274,4 +199,71 @@ export default function App() {
       </section>
     </div>
   );
+}
+
+function useConversationConfig(conversationId: string | undefined, bootstrapModels: ModelOption[]) {
+  const [configState, setConfigState] = useState<{
+    conversationId: string;
+    config: ConversationConfig;
+  }>();
+  const [draftConfig, setDraftConfig] = useState<ConversationConfigUpdate>({});
+
+  useEffect(() => {
+    if (!conversationId) return;
+
+    (async () => {
+      const config = await getConversationConfig(conversationId);
+      setConfigState({ conversationId, config });
+    })();
+  }, [conversationId]);
+
+  const config =
+    configState && configState.conversationId === conversationId ? configState.config : undefined;
+  const model = config?.model ?? (!conversationId ? draftConfig.model : undefined);
+  const models = config?.models ?? bootstrapModels;
+  const thinkingLevel =
+    config?.thinkingLevel ?? (!conversationId ? draftConfig.thinkingLevel : undefined);
+  const thinkingLevels =
+    config?.availableThinkingLevels ??
+    models.find((item) => item.provider === model?.provider && item.id === model.id)
+      ?.thinkingLevels ??
+    [];
+
+  const changeModel = async (value: string) => {
+    const separator = value.indexOf("/");
+    if (separator < 1) return;
+    const model = { provider: value.slice(0, separator), id: value.slice(separator + 1) };
+    if (!conversationId) {
+      const modelThinkingLevels =
+        bootstrapModels.find((item) => item.provider === model.provider && item.id === model.id)
+          ?.thinkingLevels ?? [];
+      setDraftConfig((current) => ({
+        model,
+        thinkingLevel:
+          current.thinkingLevel && modelThinkingLevels.includes(current.thinkingLevel)
+            ? current.thinkingLevel
+            : modelThinkingLevels.includes("medium")
+              ? "medium"
+              : modelThinkingLevels[0],
+      }));
+      return;
+    }
+    const config = await updateConversationConfig(conversationId, { model });
+    setConfigState((current) =>
+      current?.conversationId === conversationId ? { conversationId, config } : current,
+    );
+  };
+
+  const changeThinking = async (thinkingLevel: ThinkingLevel) => {
+    if (!conversationId) {
+      setDraftConfig((current) => ({ ...current, thinkingLevel }));
+      return;
+    }
+    const config = await updateConversationConfig(conversationId, { thinkingLevel });
+    setConfigState((current) =>
+      current?.conversationId === conversationId ? { conversationId, config } : current,
+    );
+  };
+
+  return { draftConfig, model, models, thinkingLevel, thinkingLevels, changeModel, changeThinking };
 }
