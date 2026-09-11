@@ -64,6 +64,7 @@ export class ConversationService {
       sessionFile: sessionManager.getSessionFile()!,
       createdAt: currentDate,
       updatedAt: currentDate,
+      selectedSkills: [],
     };
     await this.conversationRepository.save(conversationRecord);
     return this.createManagedSession(conversationRecord, sessionManager);
@@ -357,7 +358,11 @@ export class ConversationService {
               delta: event.assistantMessageEvent.delta,
             });
           } else if (event.assistantMessageEvent.type === "thinking_end") {
-            // 结束由 entry_appended 中的最终投影完成
+            if (managedSession.streamThinkingId) {
+              managedSession.channel.publish("thinking.completed", {
+                id: managedSession.streamThinkingId,
+              });
+            }
           }
           break;
         case "entry_appended":
