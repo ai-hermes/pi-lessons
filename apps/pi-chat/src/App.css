@@ -476,7 +476,6 @@ button {
 }
 
 @keyframes pixel-on {
-
   0%,
   60%,
   100% {
@@ -606,18 +605,37 @@ button {
   font-size: 12px;
 }
 
-.thinking button>svg:first-child,
-.tool-summary>svg:first-child {
+.thinking button > svg:first-child,
+.tool-summary > svg:first-child {
   width: 16px;
   height: 16px;
   flex: 0 0 16px;
 }
 
-.thinking button>svg:last-child {
+.thinking button > svg:last-child {
   margin-left: 1px;
 }
 
 .thinking-content {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.2s ease,
+    opacity 0.16s ease;
+}
+
+.thinking-content-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.thinking-content-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.thinking-content-body {
   margin-left: 21px;
   padding-left: 10px;
   border-left: 2px solid #e5e5e5;
@@ -626,20 +644,26 @@ button {
   line-height: 1.6;
 }
 
-.thinking-content .markdown>* {
+.thinking-content-body .markdown > * {
   margin: 3px 0 0;
   color: inherit;
   font-size: inherit;
   line-height: inherit;
 }
 
-.thinking-content .markdown>ul,
-.thinking-content .markdown>ol {
+.thinking-content-body .markdown > ul,
+.thinking-content-body .markdown > ol {
   padding-left: 21px;
 }
 
-.thinking-content .markdown>blockquote {
+.thinking-content-body .markdown > blockquote {
   border-left-color: #ccc;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-content {
+    transition: none;
+  }
 }
 
 .tool-card {
@@ -1456,7 +1480,7 @@ button {
   color: #1d1d1f;
 }
 
-.ui-select-trigger>span:first-child {
+.ui-select-trigger > span:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

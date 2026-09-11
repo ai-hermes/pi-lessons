@@ -18,6 +18,8 @@ pnpm dev:pi-chat
 
 会话、记录和工作区数据默认保存在 `~/.pi/agent/pi-chat`，可通过 `PI_CHAT_ROOT_DIR` 修改。
 
+将航班、12306 和酒店 MCP 配置写入 `~/.pi/agent/pi-chat/.mcp.json` 后，航班与酒店查询需要在 `apps/pi-chat/.env` 中设置 `VARIFLIGHT_API_KEY`、`DIDA_API_KEY`。
+
 ## 安全
 
 不要提交 `.env`、API Key、会话记录或本机路径；提交配置示例时使用占位值。
