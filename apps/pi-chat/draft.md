@@ -147,3 +147,14 @@ ls /Users/aholic/.pi/agent/pi-chat/skills
 ```
 
 send api
+
+feat/pi-chat-0910
+~/.pi/agent/pi-chat/.mcp.json
+
+mcp:
+航班variflight: https://mcp.variflight.com/
+火车票12306
+酒店DIDA：https://travelportal-partner-center.dida.com/register?lang=zh
+
+skill:
+baoxiao(skill-creator)
