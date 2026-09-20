@@ -1,5 +1,6 @@
 import type {
   BootstrapData,
+  BrowserState,
   ConversationConfig,
   ConversationConfigUpdate,
   ConversationSnapshot,
@@ -40,7 +41,11 @@ export function sendMessage(id: string, text: string, skills: string[] = []): Pr
 }
 
 export function getConversation(id: string): Promise<ConversationSnapshot> {
-  return readResponse(fetch("/api/conversation/" + encodeURIComponent(id)));
+  return readResponse(
+    fetch("/api/conversation/" + encodeURIComponent(id), {
+      signal: AbortSignal.timeout(15_000),
+    }),
+  );
 }
 
 export function connectEvents(
@@ -93,6 +98,46 @@ export function abortConversation(id: string): Promise<{ aborted: true }> {
     fetch("/api/conversation/" + encodeURIComponent(id) + "/abort", {
       method: "POST",
     }),
+  );
+}
+
+export function resolveBrowserHandoff(id: string, requestId: string, action: "resume" | "cancel") {
+  return readResponse(
+    fetch(
+      `/api/conversation/${encodeURIComponent(id)}/browser/handoff/${encodeURIComponent(requestId)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      },
+    ),
+  );
+}
+
+export function openRemoteBrowser(id: string) {
+  return readResponse<{ browser: BrowserState }>(
+    fetch(`/api/conversation/${encodeURIComponent(id)}/browser/open`, { method: "POST" }),
+  );
+}
+
+export function closeRemoteBrowser(id: string) {
+  return readResponse(
+    fetch(`/api/conversation/${encodeURIComponent(id)}/browser/close`, {
+      method: "POST",
+      keepalive: true,
+    }),
+  );
+}
+
+export function saveRemoteBrowser(id: string) {
+  return readResponse(
+    fetch(`/api/conversation/${encodeURIComponent(id)}/browser/save`, { method: "POST" }),
+  );
+}
+
+export function loadRemoteBrowser(id: string) {
+  return readResponse(
+    fetch(`/api/conversation/${encodeURIComponent(id)}/browser/load`, { method: "POST" }),
   );
 }
 

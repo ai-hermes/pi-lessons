@@ -24,22 +24,24 @@ export function ConversationSidebar({
   onOpenChange(open: boolean): void;
   onCollapse(): void;
   onNew(): Promise<void>;
-  onSelect(id: string): void;
+  onSelect(id: string): void | Promise<void>;
   onRename(id: string, title: string): Promise<void>;
   onDelete(id: string): Promise<void>;
 }) {
   const [editingId, setEditingId] = useState<string>();
   const [editingTitle, setEditingTitle] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
   const selectedIndex = conversations.findIndex((item) => item.id === selectedId);
 
   const saveTitle = async (item: ConversationSummary) => {
     const title = editingTitle.trim();
     setEditingId(undefined);
     if (!title || title === item.title) return;
+    setErrorMessage("");
     try {
       await onRename(item.id, title);
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "编辑会话失败");
+      setErrorMessage(error instanceof Error ? error.message : "编辑会话失败");
     }
   };
 
@@ -91,6 +93,11 @@ export function ConversationSidebar({
           </Button>
           <div className="conversation-list">
             <span className="conversation-list-label">会话历史</span>
+            {errorMessage && (
+              <p className="conversation-error" role="alert">
+                {errorMessage}
+              </p>
+            )}
             <div className="conversation-items">
               {selectedIndex >= 0 && (
                 <span
@@ -123,7 +130,7 @@ export function ConversationSidebar({
                           "conversation-item " +
                           (item.id === selectedId ? "conversation-item-active" : "")
                         }
-                        onClick={() => onSelect(item.id)}
+                        onClick={() => void onSelect(item.id)}
                         title={item.title}
                         aria-current={item.id === selectedId ? "page" : undefined}
                       >
@@ -171,11 +178,12 @@ export function ConversationSidebar({
                                   <Button
                                     className="alert-dialog-delete"
                                     onClick={() => {
-                                      void onDelete(item.id).catch((error) =>
-                                        window.alert(
+                                      setErrorMessage("");
+                                      void onDelete(item.id).catch((error) => {
+                                        setErrorMessage(
                                           error instanceof Error ? error.message : "删除会话失败",
-                                        ),
-                                      );
+                                        );
+                                      });
                                     }}
                                   >
                                     删除
