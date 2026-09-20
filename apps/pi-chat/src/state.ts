@@ -1,6 +1,11 @@
 import type {
+  BrowserHandoffRequest,
+  BrowserState,
+  ChatImage,
   ChatMessage,
+  ConversationSnapshot,
   MessageListItem,
+  RuntimeStatus,
   StreamEvent,
   ThinkingBlock,
   ToolRun,
@@ -14,6 +19,88 @@ type EventPayload = Record<string, unknown>;
 
 function eventPayload(event: StreamEvent): EventPayload {
   return event.payload && typeof event.payload === "object" ? (event.payload as EventPayload) : {};
+}
+
+export interface BrowserPanelState {
+  conversationId?: string;
+  mode: "closed" | "manual";
+  status: RuntimeStatus;
+  browserHandoff?: BrowserHandoffRequest;
+  browser?: BrowserState;
+  connected: boolean;
+}
+
+export function createBrowserPanelState(conversationId?: string): BrowserPanelState {
+  return {
+    conversationId,
+    mode: "closed",
+    status: "cold",
+    connected: false,
+  };
+}
+
+type BrowserPanelAction = { conversationId?: string } & (
+  | { type: "select" | "open" | "close" | "disconnect" }
+  | { type: "snapshot"; snapshot: ConversationSnapshot }
+  | { type: "event"; event: StreamEvent }
+);
+
+// The runtime and panel policy consume the same ordered, cursor-checked stream.
+// Snapshots restore safety state, never visibility or a user's intent to open.
+export function browserPanelReducer(
+  state: BrowserPanelState,
+  action: BrowserPanelAction,
+): BrowserPanelState {
+  if (action.type === "select") return createBrowserPanelState(action.conversationId);
+  if (action.conversationId !== state.conversationId) return state;
+  let next = state;
+  switch (action.type) {
+    case "open":
+      return { ...state, mode: "manual" };
+    case "close":
+      return { ...state, mode: "closed" };
+    case "disconnect":
+      return { ...state, connected: false };
+    case "snapshot": {
+      const { status, browserHandoff } = action.snapshot;
+      next = {
+        ...state,
+        status,
+        browserHandoff,
+        browser: action.snapshot.browser,
+        connected: true,
+      };
+      break;
+    }
+    case "event": {
+      const { event } = action;
+      const payload = eventPayload(event);
+      switch (event.type) {
+        case "browser.handoff.changed":
+          next = {
+            ...state,
+            browserHandoff: (event.payload as BrowserHandoffRequest | null) ?? undefined,
+          };
+          break;
+        case "browser.state":
+          next = { ...state, browser: event.payload as BrowserState };
+          break;
+        case "runtime.status":
+          next = {
+            ...state,
+            status: payload.status as RuntimeStatus,
+          };
+          break;
+        case "runtime.error":
+          next = { ...state, status: "error" };
+          break;
+        default:
+          return state;
+      }
+      break;
+    }
+  }
+  return next;
 }
 
 function updateItem(
@@ -185,6 +272,16 @@ export function conversationReducer(
               : "success"
             : "running",
         ...(typeof payload.result === "string" ? { result: payload.result } : {}),
+        ...(Array.isArray(payload.images)
+          ? {
+              images: payload.images.filter(
+                (image): image is ChatImage =>
+                  image?.type === "image" &&
+                  typeof image.data === "string" &&
+                  typeof image.mimeType === "string",
+              ),
+            }
+          : {}),
         ...(payload.details !== undefined ? { details: payload.details } : {}),
       });
     default:

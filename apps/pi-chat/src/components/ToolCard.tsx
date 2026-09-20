@@ -16,7 +16,7 @@ type ToolLabelDetails = Record<string, unknown> & {
   mode?: string;
 };
 
-const mcpOperations = ["connect", "describe", "instructions", "list", "search"] as const;
+const mcpOperations = ["connect", "describe", "instructions", "list", "search", "status"] as const;
 type McpOperation = (typeof mcpOperations)[number];
 type ToolLabelArgs = ToolRun["args"] &
   Partial<Record<"server" | "tool" | "mode" | McpOperation, string>>;
@@ -36,9 +36,9 @@ function toolLabel(tool: ToolRun) {
   const source = server ?? namespace;
 
   if (mode && mcpOperations.includes(mode as McpOperation)) {
-    return [source, mode].filter(Boolean).join(" / ");
+    return `${source || tool.name} / ${mode}`;
   }
-  return [source, calledTool].filter(Boolean).join(" / ");
+  return [source, calledTool].filter(Boolean).join(" / ") || tool.name;
 }
 
 export function ToolCard({ tool }: { tool: ToolRun }) {
@@ -52,7 +52,6 @@ export function ToolCard({ tool }: { tool: ToolRun }) {
     ) : (
       <CheckCircle2 className="success" size={17} />
     );
-  console.log("tool", tool);
   return (
     <div className="tool-card">
       <Button variant="ghost" className="tool-summary" onClick={() => setOpen(!open)}>
@@ -70,6 +69,16 @@ export function ToolCard({ tool }: { tool: ToolRun }) {
               <label>输出</label>
               <pre>{tool.result}</pre>
             </>
+          )}
+          {tool.images?.map((image, index) =>
+            /^image\/(png|jpeg|webp|gif)$/.test(image.mimeType) ? (
+              <img
+                key={`${image.mimeType}:${image.data}`}
+                src={`data:${image.mimeType};base64,${image.data}`}
+                alt={`${label} 截图 ${index + 1}`}
+                className="tool-image"
+              />
+            ) : null,
           )}
           {tool.details !== undefined && (
             <>
