@@ -62,6 +62,20 @@ export function createConversationRoutes(conversationService: ConversationServic
     });
   });
 
+  conversationApp.post("/:conversationId/browser/open", async (ctx) => ctx.json({}));
+
+  const browserActions = {
+    close: (_id: string) => {},
+    save: (_id: string) => {},
+    load: (_id: string) => {},
+  };
+  for (const [name, run] of Object.entries(browserActions)) {
+    conversationApp.post(`/:conversationId/browser/${name}`, async (ctx) => {
+      await run(ctx.req.param("conversationId"));
+      return ctx.json({ accepted: true });
+    });
+  }
+
   conversationApp.post("/:conversationId/messages", async (ctx) => {
     const formData = await ctx.req.formData();
     const { conversationId } = ctx.req.param();
@@ -95,6 +109,9 @@ export function createConversationRoutes(conversationService: ConversationServic
 
     const body = new ReadableStream<Uint8Array>({
       start: (controller) => {
+        // Flush headers through proxies even when there are no events to replay.
+        // The client waits for EventSource.onopen before loading the snapshot.
+        controller.enqueue(encoder.encode(": connected\n\n"));
         const send = (event: StreamEvent) => {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
         };
