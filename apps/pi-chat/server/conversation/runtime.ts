@@ -53,6 +53,10 @@ const webAccessExtensionPath = dirname(
   createRequire(import.meta.url).resolve("pi-web-access/package.json"),
 );
 
+const langfuseExtensionPath = dirname(
+  createRequire(import.meta.url).resolve("@langfuse/pi-observability-plugin/package.json"),
+);
+
 export async function createRuntime(options: RuntimeOptions) {
   const {
     conversationRecord,
@@ -80,6 +84,7 @@ export async function createRuntime(options: RuntimeOptions) {
         additionalExtensionPaths: [
           // "npm:pi-web-access@0.28.0",
           webAccessExtensionPath,
+          langfuseExtensionPath,
         ],
         extensionFactories: [
           async (pi) => {

@@ -158,3 +158,10 @@ mcp:
 
 skill:
 baoxiao(skill-creator)
+
+feat/pi-chat-0920
+langfuse: https://langfuse.com/
+pi-langfuse: https://langfuse.com/integrations/developer-tools/pi-agent
+@langfuse/pi-observability-plugin
+
+curl localhost:3000/api/public/health
