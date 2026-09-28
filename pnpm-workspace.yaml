@@ -1,6 +1,7 @@
 packages:
   - "."
   - "apps/pi-chat"
+  - "apps/opensandbox"
 allowBuilds:
   "@google/genai": true
   esbuild: true
