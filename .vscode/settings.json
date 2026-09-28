@@ -2,6 +2,22 @@
   "editor.formatOnSave": true,
   "files.insertFinalNewline": true,
   "files.trimFinalNewlines": true,
+  "files.exclude": {
+    "pi-chat-aio": true,
+    "pi-chat-browser-hitl": true,
+    "pi-chat-browser-hitl-screenshots": true,
+    "pi-chat-browser-state": true,
+    "pi-chat-browser-state-screenshots": true,
+    "pi-chat-hitl": true,
+    "pi-chat-hitl-screenshots": true,
+    "pi-chat-opensandbox-aio": true,
+    "pi-chat-opensandbox-aio-screenshots": true,
+    "pi-chat-skill-baoxiao": true,
+    "pi-chat-skill-baoxiao-screenshots": true,
+    "reference": true,
+    "working files": true,
+    "working files/decks": true
+  },
   "[javascript][javascriptreact][typescript][typescriptreact]": {
     "editor.defaultFormatter": "oxc.oxc-vscode"
   },
