@@ -1,0 +1,18 @@
+{
+  "name": "pi-sdk",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "example": "tsx 01.ts",
+    "example:volcengine": "tsx extensions/pi-volcengine/example.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "dotenv": "^17.4.2",
+    "typebox": "^1.3.16"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.12"
+  }
+}
