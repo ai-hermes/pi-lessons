@@ -165,3 +165,5 @@ pi-langfuse: https://langfuse.com/integrations/developer-tools/pi-agent
 @langfuse/pi-observability-plugin
 
 curl localhost:3000/api/public/health
+
+feat/pi-chat-0928
