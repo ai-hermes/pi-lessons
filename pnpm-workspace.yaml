@@ -1,6 +1,7 @@
 packages:
   - '.'
   - 'apps/pi-chat'
+  - 'apps/pi-sdk'
 allowBuilds:
   '@google/genai': true
   esbuild: true
