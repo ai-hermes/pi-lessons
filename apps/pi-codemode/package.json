@@ -1,0 +1,27 @@
+{
+  "name": "pi-codemode",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "01": "tsx 01-hello.ts",
+    "02-1": "tsx 02-1-microtask.ts",
+    "02-2": "tsx 02-2-async-await.ts",
+    "02-3": "tsx 02-3-stalled.ts",
+    "02-4": "tsx 02-4-host-promise.ts",
+    "03": "tsx 03-pi-codemode.ts",
+    "04": "tsx 04-bridge.ts",
+    "05": "tsx 05-mini-prelude.ts",
+    "06": "tsx 06-async-bridge.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@earendil-works/pi-codemode": "^1.0.4",
+    "quickjs-wasi": "^3.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.0"
+  }
+}

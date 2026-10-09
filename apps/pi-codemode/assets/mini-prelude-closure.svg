@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="720" viewBox="0 0 1000 720" font-family="PingFang SC, Hiragino Sans GB, Helvetica, sans-serif">
+  <defs>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2e9e5b"/></marker>
+    <marker id="k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#777"/></marker>
+    <marker id="o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#e08a00"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#d93025"/></marker>
+  </defs>
+  <rect width="1000" height="720" fill="#ffffff"/>
+
+  <!-- Node 宿主 -->
+  <rect x="20" y="20" width="960" height="90" rx="10" fill="#fff4e0" stroke="#e08a00" stroke-width="2"/>
+  <text x="40" y="50" font-size="18" font-weight="bold" fill="#8a5300">Node 宿主（Worker 线程）</text>
+  <text x="40" y="78" font-size="13" fill="#8a5300">只有通过 bridge 才能从 VM 进到这里</text>
+  <rect x="545" y="38" width="410" height="56" rx="6" fill="#ffffff" stroke="#e08a00"/>
+  <text x="560" y="62" font-size="13" font-family="Menlo, monospace" fill="#333">vm.newFunction("bridge", (kind, …) =&gt; {</text>
+  <text x="560" y="82" font-size="13" font-family="Menlo, monospace" fill="#333">  …执行工具 / 收集输出…  })</text>
+
+  <!-- QuickJS VM -->
+  <rect x="20" y="130" width="960" height="570" rx="10" fill="#f5f8ff" stroke="#3b6fd8" stroke-width="2"/>
+  <text x="40" y="156" font-size="16" font-weight="bold" fill="#2a4fa0">QuickJS VM（wasm）</text>
+
+  <!-- globalThis -->
+  <rect x="40" y="172" width="420" height="200" rx="8" fill="#e9f7ef" stroke="#2e9e5b" stroke-width="2"/>
+  <text x="56" y="196" font-size="15" font-weight="bold" fill="#1d6b3c">globalThis（脚本可见，只读）</text>
+  <g font-size="13">
+    <rect x="56" y="208" width="388" height="32" rx="5" fill="#fff" stroke="#2e9e5b"/>
+    <text x="68" y="229"><tspan font-family="Menlo, monospace" font-weight="bold">tools</tspan><tspan fill="#555">   冻结对象，成员内部调用 bridge("call")</tspan></text>
+    <rect x="56" y="248" width="388" height="32" rx="5" fill="#fff" stroke="#2e9e5b"/>
+    <text x="68" y="269"><tspan font-family="Menlo, monospace" font-weight="bold">console</tspan><tspan fill="#555">  log() 内部调用 bridge("output")</tspan></text>
+    <rect x="56" y="288" width="388" height="32" rx="5" fill="#fff" stroke="#2e9e5b"/>
+    <text x="68" y="309"><tspan font-family="Menlo, monospace" font-weight="bold">store</tspan><tspan fill="#555">    写入闭包里的 stored Map</tspan></text>
+    <rect x="56" y="328" width="388" height="32" rx="5" fill="#fff" stroke="#2e9e5b"/>
+    <text x="68" y="349"><tspan font-family="Menlo, monospace" font-weight="bold">load</tspan><tspan fill="#555">     读取闭包里的 stored Map</tspan></text>
+  </g>
+
+  <!-- 闭包作用域 -->
+  <rect x="520" y="172" width="440" height="330" rx="8" fill="#f4eefc" stroke="#7b4bc4" stroke-width="2" stroke-dasharray="8 5"/>
+  <text x="536" y="196" font-size="15" font-weight="bold" fill="#5a2f9e">prelude 闭包作用域（脚本不可见）</text>
+  <g font-size="13">
+    <rect x="545" y="210" width="390" height="40" rx="5" fill="#fff" stroke="#7b4bc4"/>
+    <text x="558" y="235"><tspan font-family="Menlo, monospace" font-weight="bold">bridge</tspan><tspan fill="#555">   ← 形参：宿主函数句柄</tspan></text>
+    <rect x="545" y="262" width="390" height="40" rx="5" fill="#fff" stroke="#7b4bc4"/>
+    <text x="558" y="287"><tspan font-family="Menlo, monospace" font-weight="bold">toolsJson / storeJson</tspan><tspan fill="#555">  ← 形参</tspan></text>
+    <rect x="545" y="314" width="390" height="40" rx="5" fill="#fff" stroke="#7b4bc4"/>
+    <text x="558" y="339"><tspan font-family="Menlo, monospace" font-weight="bold">stored: Map</tspan><tspan fill="#555">   ← store/load 共享的数据</tspan></text>
+  </g>
+  <text x="545" y="388" font-size="13" fill="#5a2f9e">prelude 函数执行完已经返回，但这个作用域没被回收：</text>
+  <text x="545" y="410" font-size="13" fill="#5a2f9e">tools / console / store / load 是在这里面定义的函数，</text>
+  <text x="545" y="432" font-size="13" fill="#5a2f9e">它们“记住”了这些变量 —— 这就是闭包。</text>
+  <text x="545" y="466" font-size="13" fill="#5a2f9e">脚本只能通过这 4 个“门”间接使用里面的东西，</text>
+  <text x="545" y="488" font-size="13" fill="#5a2f9e">无法直接写出 bridge / stored 这些名字。</text>
+
+  <!-- 闭包引用箭头 -->
+  <g stroke="#777" stroke-width="1.6" fill="none" marker-end="url(#k)">
+    <path d="M444,224 L543,226"/>
+    <path d="M444,264 C490,264 500,238 543,236"/>
+    <path d="M444,304 C490,304 500,330 543,330"/>
+    <path d="M444,344 C490,344 500,340 543,340"/>
+  </g>
+  <text x="462" y="216" font-size="12" fill="#777">闭包引用</text>
+
+  <!-- bridge 跨边界 -->
+  <path d="M740,210 L740,98" stroke="#e08a00" stroke-width="2.2" fill="none" marker-end="url(#o)"/>
+  <rect x="750" y="140" width="120" height="22" rx="4" fill="#f5f8ff"/>
+  <text x="756" y="156" font-size="12" fill="#b06a00">跨越 wasm 边界</text>
+
+  <!-- 用户脚本 -->
+  <rect x="40" y="420" width="440" height="260" rx="8" fill="#ffffff" stroke="#333" stroke-width="2"/>
+  <text x="56" y="446" font-size="15" font-weight="bold" fill="#222">用户脚本（模型写的代码）</text>
+  <g font-size="13" font-family="Menlo, monospace">
+    <text x="56" y="480" fill="#1d6b3c">✓ await tools.mcp__dev_radius__search(…)</text>
+    <text x="56" y="506" fill="#1d6b3c">✓ console.log("hi")</text>
+    <text x="56" y="532" fill="#1d6b3c">✓ store("k", 1);  load("k")</text>
+    <text x="56" y="574" fill="#d93025">✗ bridge("call", …)</text>
+    <text x="80" y="592" fill="#d93025" font-size="12">ReferenceError: bridge is not defined</text>
+    <text x="56" y="618" fill="#d93025">✗ stored.get("k")</text>
+    <text x="80" y="636" fill="#d93025" font-size="12">ReferenceError: stored is not defined</text>
+    <text x="56" y="664" fill="#d93025">✗ tools = {} / delete globalThis.console</text>
+  </g>
+
+  <!-- 脚本 → globalThis -->
+  <path d="M160,420 L160,374" stroke="#2e9e5b" stroke-width="2.4" fill="none" marker-end="url(#g)"/>
+  <text x="170" y="402" font-size="12" fill="#1d6b3c">只能访问这 4 个全局名字</text>
+
+  <!-- 脚本 ✗ 闭包 -->
+  <path d="M482,580 C520,580 540,540 600,505" stroke="#d93025" stroke-width="2" stroke-dasharray="6 4" fill="none" marker-end="url(#r)"/>
+  <circle cx="540" cy="556" r="12" fill="#fff" stroke="#d93025" stroke-width="2"/>
+  <text x="533" y="561" font-size="15" font-weight="bold" fill="#d93025">✗</text>
+  <text x="560" y="560" font-size="12" fill="#d93025">作用域里查不到这些名字</text>
+  <text x="560" y="578" font-size="12" fill="#d93025">（不在 globalThis，也不在脚本自己的作用域）</text>
+</svg>
