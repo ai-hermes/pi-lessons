@@ -4,7 +4,7 @@
 
 ```bash
 pnpm install
-pnpm --filter pi-codemode 01   # 01 ~ 06
+pnpm --filter pi-codemode run 01   # 01 ~ 06
 pnpm --filter pi-codemode typecheck
 ```
 
