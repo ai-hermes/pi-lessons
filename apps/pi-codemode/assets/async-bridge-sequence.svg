@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="1160" viewBox="0 0 1180 1160" font-family="PingFang SC, Hiragino Sans GB, Helvetica, sans-serif">
+<defs><marker id="a444" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#444"/></marker><marker id="a333" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#333"/></marker><marker id="a7b4bc4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7b4bc4"/></marker><marker id="ae08a00" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#e08a00"/></marker><marker id="a2e9e5b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2e9e5b"/></marker></defs>
+<rect width="1180" height="1160" fill="#fff"/>
+<rect x="95" y="16" width="545" height="1114" rx="10" fill="#f5f8ff" stroke="#3b6fd8" stroke-opacity="0.5"/>
+<text x="110" y="1120" font-size="13" fill="#3b6fd8">QuickJS VM 内部</text>
+<rect x="645" y="16" width="515" height="1114" rx="10" fill="#fffaf2" stroke="#e08a00" stroke-opacity="0.5"/>
+<text x="660" y="1120" font-size="13" fill="#b06a00">Node 宿主</text>
+<rect x="115" y="28" width="230" height="56" rx="8" fill="#fff" stroke="#333" stroke-width="2"/><text x="230" y="52" text-anchor="middle" font-size="15" font-weight="bold" fill="#333">用户脚本</text><text x="230" y="72" text-anchor="middle" font-size="12" fill="#666">async () => { … }</text><line x1="230" y1="84" x2="230" y2="1120" stroke="#333" stroke-dasharray="4 4" stroke-opacity="0.6"/>
+<rect x="385" y="28" width="230" height="56" rx="8" fill="#f4eefc" stroke="#7b4bc4" stroke-width="2"/><text x="500" y="52" text-anchor="middle" font-size="15" font-weight="bold" fill="#7b4bc4">prelude</text><text x="500" y="72" text-anchor="middle" font-size="12" fill="#666">pending 表 / settle / run</text><line x1="500" y1="84" x2="500" y2="1120" stroke="#7b4bc4" stroke-dasharray="4 4" stroke-opacity="0.6"/>
+<rect x="655" y="28" width="230" height="56" rx="8" fill="#fff4e0" stroke="#e08a00" stroke-width="2"/><text x="770" y="52" text-anchor="middle" font-size="15" font-weight="bold" fill="#e08a00">Node：bridge + drain</text><text x="770" y="72" text-anchor="middle" font-size="12" fill="#666">宿主函数 / 推进微任务</text><line x1="770" y1="84" x2="770" y2="1120" stroke="#e08a00" stroke-dasharray="4 4" stroke-opacity="0.6"/>
+<rect x="925" y="28" width="230" height="56" rx="8" fill="#e9f7ef" stroke="#2e9e5b" stroke-width="2"/><text x="1040" y="52" text-anchor="middle" font-size="15" font-weight="bold" fill="#2e9e5b">Node：hostTools</text><text x="1040" y="72" text-anchor="middle" font-size="12" fill="#666">模拟 MCP server</text><line x1="1040" y1="84" x2="1040" y2="1120" stroke="#2e9e5b" stroke-dasharray="4 4" stroke-opacity="0.6"/>
+<rect x="1022" y="382" width="12" height="288" fill="#2e9e5b" opacity="0.35"/>
+<rect x="1046" y="495" width="12" height="315" fill="#2e9e5b" opacity="0.6"/>
+<text x="1014" y="440" text-anchor="end" font-size="12" fill="#1d6b3c">#1 / #2 各 setTimeout 200ms</text>
+<text x="30" y="134" font-size="13" font-weight="bold" fill="#3b6fd8">3ms</text><line x1="80" y1="130" x2="1160" y2="130" stroke="#3b6fd8" stroke-opacity="0.15"/>
+<line x1="764" y1="130" x2="508" y2="130" stroke="#444" stroke-width="1.8"  marker-end="url(#a444)"/>
+<text x="635" y="123" text-anchor="middle" font-size="12.5" fill="#444" font-family="Menlo, monospace">vm.callFunction(run, fn)</text>
+<line x1="494" y1="165" x2="238" y2="165" stroke="#444" stroke-width="1.8"  marker-end="url(#a444)"/>
+<text x="365" y="158" text-anchor="middle" font-size="12.5" fill="#444" font-family="Menlo, monospace">fn() 开始执行</text>
+<line x1="236" y1="205" x2="492" y2="205" stroke="#444" stroke-width="1.8"  marker-end="url(#a444)"/>
+<text x="365" y="198" text-anchor="middle" font-size="12.5" fill="#444" font-family="Menlo, monospace">console.log("脚本开始")</text>
+<line x1="506" y1="235" x2="762" y2="235" stroke="#e08a00" stroke-width="1.8"  marker-end="url(#ae08a00)"/>
+<text x="635" y="228" text-anchor="middle" font-size="12.5" fill="#e08a00" font-family="Menlo, monospace">bridge("output", …)</text>
+<rect x="695" y="245" width="150" height="28" rx="5" fill="#fff" stroke="#bbb"/>
+<text x="770" y="264" text-anchor="middle" font-size="12.5" fill="#333">输出: 脚本开始</text>
+<text x="30" y="309" font-size="13" font-weight="bold" fill="#3b6fd8">6ms</text><line x1="80" y1="305" x2="1160" y2="305" stroke="#3b6fd8" stroke-opacity="0.15"/>
+<line x1="236" y1="305" x2="492" y2="305" stroke="#444" stroke-width="1.8"  marker-end="url(#a444)"/>
+<text x="365" y="298" text-anchor="middle" font-size="12.5" fill="#444" font-family="Menlo, monospace">tools.search({query:"codemode"})</text>
+<rect x="415" y="312" width="170" height="28" rx="5" fill="#f4eefc" stroke="#7b4bc4"/>
+<text x="500" y="331" text-anchor="middle" font-size="12.5" fill="#5a2f9e">pending = {1}</text>
+<line x1="506" y1="362" x2="762" y2="362" stroke="#e08a00" stroke-width="1.8"  marker-end="url(#ae08a00)"/>
+<text x="635" y="355" text-anchor="middle" font-size="12.5" fill="#e08a00" font-family="Menlo, monospace">bridge("call", 1, …)</text>
+<line x1="776" y1="382" x2="1032" y2="382" stroke="#2e9e5b" stroke-width="1.8"  marker-end="url(#a2e9e5b)"/>
+<text x="905" y="375" text-anchor="middle" font-size="12.5" fill="#2e9e5b" font-family="Menlo, monospace">启动 #1（不 await）</text>
+<line x1="236" y1="418" x2="492" y2="418" stroke="#444" stroke-width="1.8"  marker-end="url(#a444)"/>
+<text x="365" y="411" text-anchor="middle" font-size="12.5" fill="#444" font-family="Menlo, monospace">tools.search({query:"quickjs"})</text>
+<rect x="415" y="425" width="170" height="28" rx="5" fill="#f4eefc" stroke="#7b4bc4"/>
+<text x="500" y="444" text-anchor="middle" font-size="12.5" fill="#5a2f9e">pending = {1, 2}</text>
+<line x1="506" y1="475" x2="762" y2="475" stroke="#e08a00" stroke-width="1.8"  marker-end="url(#ae08a00)"/>
+<text x="635" y="468" text-anchor="middle" font-size="12.5" fill="#e08a00" font-family="Menlo, monospace">bridge("call", 2, …)</text>
+<line x1="776" y1="495" x2="1032" y2="495" stroke="#2e9e5b" stroke-width="1.8"  marker-end="url(#a2e9e5b)"/>
+<text x="905" y="488" text-anchor="middle" font-size="12.5" fill="#2e9e5b" font-family="Menlo, monospace">启动 #2（不 await）</text>
+<rect x="650" y="508" width="240" height="46" rx="5" fill="#fff" stroke="#bbb"/>
+<text x="770" y="527" text-anchor="middle" font-size="12.5" fill="#333">bridge 立即 return undefined</text>
+<text x="770" y="545" text-anchor="middle" font-size="12.5" fill="#333">VM 拿到的是 pending 的 Promise</text>
+<rect x="120" y="520" width="220" height="46" rx="5" fill="#fff0f0" stroke="#d93025"/>
+<text x="230" y="539" text-anchor="middle" font-size="12.5" fill="#a02020">await Promise.all([...])</text>
+<text x="230" y="557" text-anchor="middle" font-size="12.5" fill="#a02020">→ 脚本挂起</text>
+<rect x="640" y="562" width="260" height="64" rx="5" fill="#fff" stroke="#bbb"/>
+<text x="770" y="581" text-anchor="middle" font-size="12.5" fill="#333">drain(): executePendingJobs()</text>
+<text x="770" y="599" text-anchor="middle" font-size="12.5" fill="#333">pending=2，不算卡死</text>
+<text x="770" y="617" text-anchor="middle" font-size="12.5" fill="#333">Node 同步代码结束，事件循环空闲</text>
+<rect x="90" y="629" width="1070" height="38" rx="6" fill="#eeeeee" opacity="0.7"/>
+<text x="530" y="653" text-anchor="middle" font-size="14" fill="#555">≈ 200ms：VM 里没有任何代码在跑，只有 Node 的两个定时器在等</text>
+<text x="30" y="674" font-size="13" font-weight="bold" fill="#3b6fd8">207ms</text><line x1="80" y1="670" x2="1160" y2="670" stroke="#3b6fd8" stroke-opacity="0.15"/>
+<line x1="1034" y1="670" x2="778" y2="670" stroke="#2e9e5b" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#a2e9e5b)"/>
+<text x="905" y="663" text-anchor="middle" font-size="12.5" fill="#2e9e5b" font-family="Menlo, monospace">#1 resolve</text>
+<line x1="764" y1="700" x2="508" y2="700" stroke="#e08a00" stroke-width="1.8"  marker-end="url(#ae08a00)"/>
+<text x="635" y="693" text-anchor="middle" font-size="12.5" fill="#e08a00" font-family="Menlo, monospace">settle(1, true, json)</text>
+<rect x="410" y="712" width="180" height="46" rx="5" fill="#fff" stroke="#bbb"/>
+<text x="500" y="731" text-anchor="middle" font-size="12.5" fill="#333">pending.delete(1)</text>
+<text x="500" y="749" text-anchor="middle" font-size="12.5" fill="#333">resolve(#1 的结果)</text>
+<rect x="415" y="758" width="170" height="28" rx="5" fill="#f4eefc" stroke="#7b4bc4"/>
+<text x="500" y="777" text-anchor="middle" font-size="12.5" fill="#5a2f9e">pending = {2}</text>
+<rect x="670" y="718" width="200" height="46" rx="5" fill="#fff" stroke="#bbb"/>
+<text x="770" y="737" text-anchor="middle" font-size="12.5" fill="#333">drain()</text>
+<text x="770" y="755" text-anchor="middle" font-size="12.5" fill="#333">Promise.all 还在等 #2</text>
+<text x="30" y="814" font-size="13" font-weight="bold" fill="#3b6fd8">209ms</text><line x1="80" y1="810" x2="1160" y2="810" stroke="#3b6fd8" stroke-opacity="0.15"/>
+<line x1="1034" y1="810" x2="778" y2="810" stroke="#2e9e5b" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#a2e9e5b)"/>
+<text x="905" y="803" text-anchor="middle" font-size="12.5" fill="#2e9e5b" font-family="Menlo, monospace">#2 resolve</text>
+<line x1="764" y1="840" x2="508" y2="840" stroke="#e08a00" stroke-width="1.8"  marker-end="url(#ae08a00)"/>
+<text x="635" y="833" text-anchor="middle" font-size="12.5" fill="#e08a00" font-family="Menlo, monospace">settle(2, true, json)</text>
+<rect x="415" y="852" width="170" height="28" rx="5" fill="#f4eefc" stroke="#7b4bc4"/>
+<text x="500" y="871" text-anchor="middle" font-size="12.5" fill="#5a2f9e">pending = {}</text>
+<rect x="650" y="852" width="240" height="46" rx="5" fill="#fff" stroke="#bbb"/>
+<text x="770" y="871" text-anchor="middle" font-size="12.5" fill="#333">drain(): executePendingJobs()</text>
+<text x="770" y="889" text-anchor="middle" font-size="12.5" fill="#333">微任务推进 → 脚本被唤醒</text>
+<line x1="494" y1="910" x2="238" y2="910" stroke="#7b4bc4" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#a7b4bc4)"/>
+<text x="365" y="903" text-anchor="middle" font-size="12.5" fill="#7b4bc4" font-family="Menlo, monospace">Promise.all resolve，从 await 继续</text>
+<line x1="236" y1="950" x2="492" y2="950" stroke="#444" stroke-width="1.8"  marker-end="url(#a444)"/>
+<text x="365" y="943" text-anchor="middle" font-size="12.5" fill="#444" font-family="Menlo, monospace">console.log(a, b)</text>
+<line x1="506" y1="980" x2="762" y2="980" stroke="#e08a00" stroke-width="1.8"  marker-end="url(#ae08a00)"/>
+<text x="635" y="973" text-anchor="middle" font-size="12.5" fill="#e08a00" font-family="Menlo, monospace">bridge("output", …)</text>
+<rect x="670" y="990" width="200" height="28" rx="5" fill="#fff" stroke="#bbb"/>
+<text x="770" y="1009" text-anchor="middle" font-size="12.5" fill="#333">输出: 两个结果都回来了…</text>
+<line x1="236" y1="1040" x2="492" y2="1040" stroke="#444" stroke-width="1.8"  marker-end="url(#a444)"/>
+<text x="365" y="1033" text-anchor="middle" font-size="12.5" fill="#444" font-family="Menlo, monospace">return { ok: true }</text>
+<line x1="506" y1="1070" x2="762" y2="1070" stroke="#e08a00" stroke-width="1.8"  marker-end="url(#ae08a00)"/>
+<text x="635" y="1063" text-anchor="middle" font-size="12.5" fill="#e08a00" font-family="Menlo, monospace">bridge("done", "ok", …)</text>
+<rect x="670" y="1080" width="200" height="28" rx="5" fill="#e9f7ef" stroke="#2e9e5b"/>
+<text x="770" y="1099" text-anchor="middle" font-size="12.5" fill="#333">脚本结束 → dispose VM</text>
+<g font-size="12" fill="#555"><line x1="110" y1="1142" x2="150" y2="1142" stroke="#444" stroke-width="1.8" marker-end="url(#a444)"/><text x="158" y="1146">同步调用</text>
+<line x1="240" y1="1142" x2="280" y2="1142" stroke="#444" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#a444)"/><text x="288" y="1146">异步完成 / 唤醒</text>
+<text x="420" y="1146">左侧时间取自 node 06-async-bridge.mjs 的实际输出</text></g>
+</svg>

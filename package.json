@@ -5,7 +5,8 @@
   "description": "Pi Chat learning workspace",
   "scripts": {
     "dev:pi-chat": "pnpm --filter pi-chat dev",
-    "build:pi-chat": "pnpm --filter pi-chat build"
+    "build:pi-chat": "pnpm --filter pi-chat build",
+    "typecheck:pi-codemode": "pnpm --filter pi-codemode typecheck"
   },
   "license": "ISC",
   "packageManager": "pnpm@11.22.0"
