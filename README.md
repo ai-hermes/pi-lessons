@@ -30,7 +30,7 @@ pnpm dev:pi-chat
 
 ### 微信群：信使宝宝在教 AI
 
-<img src="./docs/assets/wechat-group.jpeg" alt="微信群二维码" width="320">
+<img src="./docs/assets/wechat-group.png" alt="微信群二维码" width="320">
 
 > 群二维码有有效期，失效后请联系作者获取最新二维码。
 

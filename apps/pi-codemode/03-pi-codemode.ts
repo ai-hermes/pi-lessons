@@ -42,7 +42,6 @@ console.log("同一个函数?", tools.mcp__dev_radius__search === tools["mcp__de
 // 所有工具和 searchTools 共用同一份代码，区别只在闭包捕获的 kind / name / spread
 const f = tools.mcp__dev_radius__search;
 console.log("tools.mcp__dev_radius__search.toString():\\n" + f.toString());
-console.log("name / length:", JSON.stringify({ name: f.name, length: f.length }));
 console.log("和 searchTools 源码相同?", f.toString() === searchTools.toString());
 console.log("store.toString() 开头:", store.toString().split("\\n")[0], "…（具名函数，不经过 bridge）");
 
