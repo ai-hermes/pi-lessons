@@ -131,6 +131,6 @@
 <text class="d" x="994" y="681.5" text-anchor="end">→ coding-agent 适配层 ctx.executeTool</text>
 <rect class="code" x="411" y="696" width="583" height="46" rx="6"/>
 <text class="c" x="421" y="715">const value = await tool.execute(JSON.parse(args), { signal })</text>
-<text class="c" x="421" y="732" xml:space="preserve">worker.postMessage({ type: "result", id, ok, payload })<tspan fill="#9aa19d">  // 失败时 ok = false</tspan></text>
+<text class="c" x="421" y="732" xml:space="preserve">this.post({ type: "result", id, ok, payload })<tspan fill="#9aa19d">  // 即 worker.postMessage</tspan></text>
 <text class="d" x="411" y="764">按 type 分发：call → 执行工具并带同一个 id 回复；output → output.push；done → finish()</text>
 </svg>
