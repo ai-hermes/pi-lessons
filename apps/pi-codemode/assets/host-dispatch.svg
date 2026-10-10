@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="660" viewBox="0 0 1080 660" font-family="PingFang SC, Hiragino Sans GB, -apple-system, Helvetica, sans-serif">
+<defs>
+  <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+    <feDropShadow dx="0" dy="2" stdDeviation="5" flood-color="#1b2a24" flood-opacity="0.08"/>
+  </filter>
+  <marker id="ag" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M1,1 L9,5 L1,9" fill="none" stroke="#8a948f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker>
+  <marker id="ao" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M1,1 L9,5 L1,9" fill="none" stroke="#c2621b" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker>
+  <marker id="ab" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M1,1 L9,5 L1,9" fill="none" stroke="#2f6db5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker>
+  <style>
+    .t  { font-size: 15px; font-weight: 600; fill: #1f2422; }
+    .d  { font-size: 12px; fill: #6b716e; }
+    .c  { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px; fill: #33403b; }
+    .card { fill: #fff; stroke: #e6e3dc; }
+    .code { fill: #f5f3ee; }
+    .tag  { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px; font-weight: 700; fill: #fff; }
+    .li   { font-size: 12px; fill: #4f5753; }
+    .num  { font-size: 10.5px; font-weight: 700; fill: #fff; }
+  </style>
+</defs>
+
+<rect width="1080" height="660" fill="#fbfaf7"/>
+
+<text x="30" y="48" font-size="24" font-weight="700" fill="#1f2422">宿主怎么处理 worker 发来的消息</text>
+<text x="30" y="76" font-size="13" fill="#7a807d">主线程 host.js：一个 on("message") 入口，按 type 分发；call 一来一回，output 只收集，done / crash 统一走 finish() 收尾</text>
+
+<rect x="20" y="96" width="1040" height="544" rx="18" fill="#f4f1eb" stroke="#e5dfd3"/>
+<circle cx="44" cy="121" r="4" fill="#2b2b2b"/>
+<text x="56" y="125.5" font-size="13" font-weight="700" fill="#2b2b2b" letter-spacing="0.5">主线程 · host.js</text>
+
+<!-- 入口 -->
+<g filter="url(#shadow)"><rect class="card" x="40" y="250" width="250" height="160" rx="12"/></g>
+<text class="t" x="56" y="279">handleMessage 入口</text>
+<rect class="code" x="56" y="292" width="218" height="66" rx="6"/>
+<text class="c" x="66" y="311">worker.on("message", (m) =&gt;</text>
+<text class="c" x="66" y="327" xml:space="preserve">  this.handleMessage(m))</text>
+<text class="c" x="66" y="345"><tspan fill="#c2621b">switch</tspan> (m.type) { … }</text>
+<text class="d" x="56" y="380">每次 execute() 新建 Worker 时绑定</text>
+<text class="d" x="56" y="398">分发中抛错 → finish(sandbox)</text>
+
+<!-- 扇出 -->
+<path d="M294,330 C320,330 318,160 344,160" fill="none" stroke="#8a948f" stroke-width="1.8" marker-end="url(#ag)"/>
+<path d="M294,330 C320,330 318,290 344,290" fill="none" stroke="#8a948f" stroke-width="1.8" marker-end="url(#ag)"/>
+<path d="M294,330 C320,330 318,420 344,420" fill="none" stroke="#8a948f" stroke-width="1.8" marker-end="url(#ag)"/>
+<path d="M294,330 C320,330 318,510 344,510" fill="none" stroke="#8a948f" stroke-width="1.8" marker-end="url(#ag)"/>
+
+<!-- output -->
+<g filter="url(#shadow)"><rect class="card" x="350" y="120" width="440" height="80" rx="12"/></g>
+<rect x="366" y="134" width="64" height="20" rx="10" fill="#6b8f80"/><text class="tag" x="398" y="148" text-anchor="middle">output</text>
+<text class="t" x="440" y="149.5">收集输出</text>
+<rect class="code" x="366" y="162" width="190" height="24" rx="6"/>
+<text class="c" x="376" y="178">this.output.push(m.item)</text>
+<text class="d" x="568" y="178">不回复；console / text / image</text>
+
+<!-- call -->
+<g filter="url(#shadow)"><rect x="350" y="214" width="440" height="152" rx="12" fill="#fff" stroke="#c2621b" stroke-width="1.6"/></g>
+<rect x="366" y="228" width="48" height="20" rx="10" fill="#c2621b"/><text class="tag" x="390" y="242" text-anchor="middle">call</text>
+<text class="t" x="424" y="243.5">void this.handleCall(m)</text>
+<text class="d" x="774" y="243.5" text-anchor="end">不 await → 多个 call 并发</text>
+<rect class="code" x="366" y="256" width="408" height="62" rx="6"/>
+<text class="c" x="376" y="275">pending.set(id, { controller: new AbortController() })</text>
+<text class="c" x="376" y="292">const v = await tool.execute(JSON.parse(args), { signal })</text>
+<text class="c" x="376" y="309">this.post({ type: "result", id, ok, payload })</text>
+<text class="d" x="366" y="340">工具不存在 / 抛错 → ok = false，payload 是错误信息</text>
+<text class="d" x="366" y="357">回复前已 finish（pending 被清空）→ 结果直接丢弃</text>
+
+<!-- done -->
+<g filter="url(#shadow)"><rect class="card" x="350" y="380" width="440" height="80" rx="12"/></g>
+<rect x="366" y="394" width="52" height="20" rx="10" fill="#2f6db5"/><text class="tag" x="392" y="408" text-anchor="middle">done</text>
+<text class="t" x="428" y="409.5">handleDone(m)</text>
+<text class="d" x="774" y="409.5" text-anchor="end">解析 value / error / writes</text>
+<rect class="code" x="366" y="422" width="408" height="24" rx="6"/>
+<text class="c" x="376" y="438">m.ok ? finish(undefined, value, writes) : finish(error)</text>
+
+<!-- crash -->
+<g filter="url(#shadow)"><rect class="card" x="350" y="474" width="440" height="72" rx="12"/></g>
+<rect x="366" y="488" width="56" height="20" rx="10" fill="#9b4a4a"/><text class="tag" x="394" y="502" text-anchor="middle">crash</text>
+<text class="t" x="432" y="503.5">VM 自身出错</text>
+<text class="d" x="774" y="503.5" text-anchor="end">如 wasm trap，脚本管不到</text>
+<rect class="code" x="366" y="514" width="408" height="22" rx="6"/>
+<text class="c" x="376" y="529">finish({ kind: "sandbox", message })</text>
+
+<!-- worker 事件 -->
+<rect x="350" y="560" width="440" height="52" rx="12" fill="none" stroke="#c9c3b8" stroke-dasharray="5 4"/>
+<text class="c" x="366" y="582">worker.on("error") / worker.on("exit")</text>
+<text class="d" x="366" y="601">不走 switch：Worker 异常或提前退出，同样 finish(sandbox)</text>
+
+<!-- 右侧：回到 Worker -->
+<line x1="796" y1="290" x2="828" y2="290" stroke="#c2621b" stroke-width="2" stroke-linecap="round" marker-end="url(#ao)"/>
+<g filter="url(#shadow)"><rect x="834" y="226" width="206" height="128" rx="12" fill="#fff" stroke="#efc9ab"/></g>
+<text x="850" y="254" font-size="13" font-weight="700" fill="#c2621b">postMessage · result</text>
+<text class="d" x="850" y="278">跨线程回到 Worker：</text>
+<rect class="code" x="850" y="288" width="174" height="44" rx="6"/>
+<text class="c" x="860" y="306">settle(id, ok, payload)</text>
+<text class="c" x="860" y="323">drain()</text>
+
+<text class="d" x="834" y="164">→ 最终进入 result.output</text>
+
+<!-- 右侧：finish -->
+<line x1="796" y1="420" x2="828" y2="420" stroke="#2f6db5" stroke-width="1.8" stroke-linecap="round" marker-end="url(#ab)"/>
+<line x1="796" y1="510" x2="828" y2="510" stroke="#2f6db5" stroke-width="1.8" stroke-linecap="round" marker-end="url(#ab)"/>
+<line x1="796" y1="586" x2="828" y2="586" stroke="#2f6db5" stroke-width="1.8" stroke-dasharray="5 4" stroke-linecap="round" marker-end="url(#ab)"/>
+<g filter="url(#shadow)"><rect x="834" y="380" width="206" height="244" rx="12" fill="#fff" stroke="#bcd0e8" stroke-width="1.4"/></g>
+<text class="t" x="850" y="408">finish()：只收尾一次</text>
+<circle cx="858" cy="433" r="8" fill="#2f6db5"/><text class="num" x="858" y="437" text-anchor="middle">1</text>
+<text class="li" x="872" y="437.5">finished = true，清超时</text>
+<circle cx="858" cy="463" r="8" fill="#2f6db5"/><text class="num" x="858" y="467" text-anchor="middle">2</text>
+<text class="li" x="872" y="467.5">未完成的 call → abort()</text>
+<circle cx="858" cy="493" r="8" fill="#2f6db5"/><text class="num" x="858" y="497" text-anchor="middle">3</text>
+<text class="li" x="872" y="497.5">组装结果：</text>
+<text class="c" x="872" y="515">{ ok, value | error,</text>
+<text class="c" x="872" y="530" xml:space="preserve">  output, calls,</text>
+<text class="c" x="872" y="545" xml:space="preserve">  storeWrites }</text>
+<circle cx="858" cy="570" r="8" fill="#2f6db5"/><text class="num" x="858" y="574" text-anchor="middle">4</text>
+<text class="li" x="872" y="574.5">Atomics 写中断 + terminate()</text>
+<circle cx="858" cy="600" r="8" fill="#2f6db5"/><text class="num" x="858" y="604" text-anchor="middle">5</text>
+<text class="li" x="872" y="604.5">resolve → execute() 返回</text>
+</svg>
