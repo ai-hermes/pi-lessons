@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="150" viewBox="0 0 560 150" font-family="PingFang SC, Hiragino Sans GB, -apple-system, Helvetica, sans-serif">
+<defs>
+  <filter id="shadow" x="-10%" y="-10%" width="120%" height="140%">
+    <feDropShadow dx="0" dy="2" stdDeviation="5" flood-color="#1b2a24" flood-opacity="0.08"/>
+  </filter>
+  <style>
+    .c { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px; fill: #33403b; }
+  </style>
+</defs>
+<g filter="url(#shadow)"><rect x="10" y="8" width="540" height="130" rx="12" fill="#fff" stroke="#e6e3dc"/></g>
+<text x="28" y="38" font-size="15" font-weight="600" fill="#1f2422">worker → host 的 3 种消息</text>
+<text x="532" y="38" text-anchor="end" font-size="12" fill="#6b716e">args / value 都是 JSON 字符串</text>
+<rect x="26" y="52" width="508" height="68" rx="6" fill="#f5f3ee"/>
+<text class="c" x="38" y="73" xml:space="preserve"><tspan fill="#c2621b">case "call":</tspan>   post({ type: "call", id, target: "tool", name, args });</text>
+<text class="c" x="38" y="90" xml:space="preserve"><tspan fill="#c2621b">case "output":</tspan> post({ type: "output", item });</text>
+<text class="c" x="38" y="107" xml:space="preserve"><tspan fill="#c2621b">case "done":</tspan>   post({ type: "done", ok, value, writes });</text>
+</svg>
