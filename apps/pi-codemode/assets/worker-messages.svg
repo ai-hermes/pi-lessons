@@ -1,17 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="560" height="150" viewBox="0 0 560 150" font-family="PingFang SC, Hiragino Sans GB, -apple-system, Helvetica, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="460" height="212" viewBox="0 0 460 212" font-family="PingFang SC, Hiragino Sans GB, -apple-system, Helvetica, sans-serif">
 <defs>
-  <filter id="shadow" x="-10%" y="-10%" width="120%" height="140%">
+  <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
     <feDropShadow dx="0" dy="2" stdDeviation="5" flood-color="#1b2a24" flood-opacity="0.08"/>
   </filter>
   <style>
     .c { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px; fill: #33403b; }
+    .k { fill: #c2621b; }
   </style>
 </defs>
-<g filter="url(#shadow)"><rect x="10" y="8" width="540" height="130" rx="12" fill="#fff" stroke="#e6e3dc"/></g>
+<g filter="url(#shadow)"><rect x="10" y="8" width="440" height="192" rx="12" fill="#fff" stroke="#e6e3dc"/></g>
 <text x="28" y="38" font-size="15" font-weight="600" fill="#1f2422">worker → host 的 3 种消息</text>
-<text x="532" y="38" text-anchor="end" font-size="12" fill="#6b716e">args / value 都是 JSON 字符串</text>
-<rect x="26" y="52" width="508" height="68" rx="6" fill="#f5f3ee"/>
-<text class="c" x="38" y="73" xml:space="preserve"><tspan fill="#c2621b">case "call":</tspan>   post({ type: "call", id, target: "tool", name, args });</text>
-<text class="c" x="38" y="90" xml:space="preserve"><tspan fill="#c2621b">case "output":</tspan> post({ type: "output", item });</text>
-<text class="c" x="38" y="107" xml:space="preserve"><tspan fill="#c2621b">case "done":</tspan>   post({ type: "done", ok, value, writes });</text>
+<text x="432" y="38" text-anchor="end" font-size="12" fill="#6b716e">args / value 都是 JSON 字符串</text>
+<rect x="26" y="52" width="408" height="132" rx="6" fill="#f5f3ee"/>
+<text class="c k" x="40" y="74">case "call":</text>
+<text class="c" x="40" y="91" xml:space="preserve">  post({ type: "call", id, target: "tool", name, args });</text>
+<text class="c k" x="40" y="116">case "output":</text>
+<text class="c" x="40" y="133" xml:space="preserve">  post({ type: "output", item });</text>
+<text class="c k" x="40" y="158">case "done":</text>
+<text class="c" x="40" y="175" xml:space="preserve">  post({ type: "done", ok, value, writes });</text>
 </svg>
