@@ -18,7 +18,7 @@ const hostTools: Record<string, HostTool> = {
 	},
 };
 
-// 注意：这段字符串是在 QuickJS 里执行的 JS，不是 TS
+// 注意：这段字符串是在 QuickJS 里执行的 JS
 const PRELUDE = `(function (bridge) {
 	"use strict";
 	const pending = new Map();            // id -> { resolve, reject }

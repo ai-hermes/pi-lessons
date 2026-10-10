@@ -1,10 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="630" viewBox="0 0 1080 630" font-family="PingFang SC, Hiragino Sans GB, -apple-system, Helvetica, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="820" viewBox="0 0 1080 820" font-family="PingFang SC, Hiragino Sans GB, -apple-system, Helvetica, sans-serif">
 <defs>
   <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
     <feDropShadow dx="0" dy="2" stdDeviation="5" flood-color="#1b2a24" flood-opacity="0.08"/>
   </filter>
   <marker id="ag" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M1,1 L9,5 L1,9" fill="none" stroke="#8a948f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker>
   <marker id="ao" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M1,1 L9,5 L1,9" fill="none" stroke="#c2621b" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker>
+  <marker id="ab" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M1,1 L9,5 L1,9" fill="none" stroke="#2f6db5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker>
   <style>
     .t  { font-size: 15px; font-weight: 600; fill: #1f2422; }
     .d  { font-size: 12px; fill: #6b716e; }
@@ -12,88 +13,124 @@
     .n  { font-size: 12px; font-weight: 700; fill: #fff; }
     .card { fill: #fff; stroke: #e6e3dc; }
     .code { fill: #f5f3ee; }
+    .note { font-size: 12px; fill: #7d8580; }
+    .noteh { font-size: 13px; font-weight: 600; fill: #4f5753; }
   </style>
 </defs>
 
-<rect width="1080" height="630" fill="#fbfaf7"/>
+<rect width="1080" height="820" fill="#fbfaf7"/>
 
 <!-- 标题 -->
 <text x="30" y="48" font-size="24" font-weight="700" fill="#1f2422">一次工具调用的完整旅程</text>
-<text x="30" y="76" font-size="13" fill="#7a807d">VM 只负责“发出”，宿主异步执行，结果 settle 回 pending 表，再由 drain() 推进脚本继续往下跑</text>
+<text x="30" y="76" font-size="13" fill="#7a807d">VM 与 worker.js 同在 Worker 线程，bridge 是同步回调；真正跨线程的只有 postMessage，请求和结果靠 id 配对</text>
 
-<!-- ===== VM 泳道 ===== -->
-<rect x="30" y="104" width="1020" height="208" rx="16" fill="#eef5f1" stroke="#d6e7de"/>
-<circle cx="54" cy="130" r="4" fill="#1f6f5c"/>
-<text x="66" y="134.5" font-size="13" font-weight="700" fill="#1f6f5c" letter-spacing="0.5">VM 内 · QuickJS WASM</text>
-<text x="1030" y="134.5" text-anchor="end" font-size="12" fill="#7fa797">单线程 · 没有事件循环</text>
+<!-- ================= Worker 线程 ================= -->
+<rect x="30" y="100" width="1020" height="430" rx="18" fill="#f1f5fa" stroke="#d5e1ef"/>
+<circle cx="54" cy="125" r="4" fill="#2f6db5"/>
+<text x="66" y="129.5" font-size="13" font-weight="700" fill="#2f6db5" letter-spacing="0.5">Worker 线程 · worker.js</text>
+<text x="1030" y="129.5" text-anchor="end" font-size="12" fill="#86a3c6">每次 execute() 新建一个 Worker + VM</text>
+
+<!-- VM 子泳道 -->
+<rect x="50" y="144" width="980" height="196" rx="14" fill="#eef5f1" stroke="#d6e7de"/>
+<circle cx="72" cy="165" r="4" fill="#1f6f5c"/>
+<text x="84" y="169.5" font-size="12.5" font-weight="700" fill="#1f6f5c" letter-spacing="0.5">QuickJS VM（WASM）</text>
+<text x="1012" y="169.5" text-anchor="end" font-size="12" fill="#7fa797">脚本只看得到 tools.*，看不到 bridge</text>
 
 <!-- 1 -->
-<g filter="url(#shadow)"><rect class="card" x="60" y="152" width="290" height="136" rx="12"/></g>
-<circle cx="84" cy="178" r="11" fill="#1f6f5c"/><text class="n" x="84" y="182.5" text-anchor="middle">1</text>
-<text class="t" x="104" y="183.5">脚本调用工具</text>
-<rect class="code" x="76" y="198" width="258" height="46" rx="6"/>
-<text class="c" x="88" y="217">await tools.mcp__dev_radius__search(</text>
-<text class="c" x="88" y="234" xml:space="preserve">  { query: "codemode" })</text>
-<text class="d" x="76" y="268">在脚本眼里，就是一次普通的 await</text>
+<g filter="url(#shadow)"><rect class="card" x="70" y="184" width="290" height="140" rx="12"/></g>
+<circle cx="94" cy="210" r="11" fill="#1f6f5c"/><text class="n" x="94" y="214.5" text-anchor="middle">1</text>
+<text class="t" x="114" y="215.5">脚本调用工具</text>
+<rect class="code" x="86" y="230" width="258" height="46" rx="6"/>
+<text class="c" x="98" y="249">await tools.mcp__dev_radius__search(</text>
+<text class="c" x="98" y="266" xml:space="preserve">  { query: "codemode" })</text>
+<text class="d" x="86" y="304">在脚本眼里，就是一次普通的 await</text>
 
 <!-- 2 -->
-<g filter="url(#shadow)"><rect class="card" x="395" y="152" width="290" height="136" rx="12"/></g>
-<circle cx="419" cy="178" r="11" fill="#1f6f5c"/><text class="n" x="419" y="182.5" text-anchor="middle">2</text>
-<text class="t" x="439" y="183.5">caller() 包装调用</text>
-<rect class="code" x="411" y="198" width="258" height="46" rx="6"/>
-<text class="c" x="423" y="217">const id = nextId++</text>
-<text class="c" x="423" y="234">pending.set(id, {resolve, reject})</text>
-<text class="d" x="411" y="268">序列化参数 → 分配 id → 返回 Promise</text>
+<g filter="url(#shadow)"><rect class="card" x="395" y="184" width="290" height="140" rx="12"/></g>
+<circle cx="419" cy="210" r="11" fill="#1f6f5c"/><text class="n" x="419" y="214.5" text-anchor="middle">2</text>
+<text class="t" x="439" y="215.5">prelude caller() 包装</text>
+<rect class="code" x="411" y="230" width="258" height="46" rx="6"/>
+<text class="c" x="423" y="249">const id = nextId++</text>
+<text class="c" x="423" y="266">pending.set(id, {resolve, reject})</text>
+<text class="d" x="411" y="304">序列化参数 → 分配 id → 返回 Promise</text>
 
 <!-- 3 -->
-<g filter="url(#shadow)"><rect x="730" y="152" width="290" height="136" rx="12" fill="#fff" stroke="#c2621b" stroke-width="1.6"/></g>
-<circle cx="754" cy="178" r="11" fill="#c2621b"/><text class="n" x="754" y="182.5" text-anchor="middle">3</text>
-<text class="t" x="774" y="183.5">bridge 发出调用</text>
-<rect x="746" y="198" width="258" height="46" rx="6" fill="#fbf1e8"/>
-<text class="c" x="758" y="226">bridge("call", id, name, json)</text>
-<text class="d" x="746" y="268">VM 的唯一出口，发出去立即返回</text>
+<g filter="url(#shadow)"><rect class="card" x="720" y="184" width="290" height="140" rx="12"/></g>
+<circle cx="744" cy="210" r="11" fill="#1f6f5c"/><text class="n" x="744" y="214.5" text-anchor="middle">3</text>
+<text class="t" x="764" y="215.5">调用闭包里的 bridge</text>
+<rect class="code" x="736" y="230" width="258" height="46" rx="6"/>
+<text class="c" x="748" y="258">bridge("call", id, name, json)</text>
+<text class="d" x="736" y="304">VM 的唯一出口，调用后立即返回</text>
 
-<line x1="356" y1="220" x2="389" y2="220" stroke="#8a948f" stroke-width="1.8" stroke-linecap="round" marker-end="url(#ag)"/>
-<line x1="691" y1="220" x2="724" y2="220" stroke="#8a948f" stroke-width="1.8" stroke-linecap="round" marker-end="url(#ag)"/>
+<line x1="366" y1="253" x2="389" y2="253" stroke="#8a948f" stroke-width="1.8" stroke-linecap="round" marker-end="url(#ag)"/>
+<line x1="691" y1="253" x2="714" y2="253" stroke="#8a948f" stroke-width="1.8" stroke-linecap="round" marker-end="url(#ag)"/>
 
-<!-- ===== 宿主泳道 ===== -->
-<rect x="30" y="400" width="1020" height="208" rx="16" fill="#f4f1eb" stroke="#e5dfd3"/>
-<circle cx="54" cy="426" r="4" fill="#2b2b2b"/>
-<text x="66" y="430.5" font-size="13" font-weight="700" fill="#2b2b2b" letter-spacing="0.5">宿主 · Node / Worker</text>
-<text x="66" y="482" font-size="13" font-weight="600" fill="#5c564b">为什么要绕一圈？</text>
-<text x="66" y="508" font-size="12" fill="#8a8274">· VM 里没有 I/O，真正的工具执行</text>
-<text x="76" y="526" font-size="12" fill="#8a8274">只能交给宿主</text>
-<text x="66" y="550" font-size="12" fill="#8a8274">· 宿主执行期间 VM 不阻塞，</text>
-<text x="76" y="568" font-size="12" fill="#8a8274">Promise.all 可以并发多个调用</text>
+<!-- worker.ts 行 -->
+<text class="noteh" x="70" y="392">为什么要单独开 Worker？</text>
+<text class="note" x="70" y="418">· 脚本死循环也卡不住主线程</text>
+<text class="note" x="70" y="442">· 超时/取消：主线程写 SharedArrayBuffer，</text>
+<text class="note" x="80" y="460">VM 的 interruptHandler 用 Atomics 读到</text>
+<text class="note" x="80" y="478">就中断，必要时 worker.terminate()</text>
 
-<!-- 5 -->
-<g filter="url(#shadow)"><rect class="card" x="395" y="448" width="290" height="136" rx="12"/></g>
-<circle cx="419" cy="474" r="11" fill="#2b2b2b"/><text class="n" x="419" y="478.5" text-anchor="middle">5</text>
-<text class="t" x="439" y="479.5">host.ts handleCall</text>
-<rect class="code" x="411" y="494" width="258" height="46" rx="6"/>
-<text class="c" x="423" y="522">await tool.execute(args, { signal })</text>
-<text class="d" x="411" y="564">→ coding-agent 适配层 ctx.executeTool</text>
+<!-- 6/7 -->
+<g filter="url(#shadow)"><rect class="card" x="395" y="364" width="290" height="148" rx="12"/></g>
+<circle cx="419" cy="390" r="11" fill="#2f6db5"/><text class="n" x="419" y="394.5" text-anchor="middle">6</text>
+<text class="t" x="439" y="395.5">on("message") 收到结果</text>
+<rect class="code" x="411" y="410" width="258" height="46" rx="6"/>
+<text class="c" x="423" y="429">settle(id, ok, payload)</text>
+<text class="c" x="423" y="446">drain()  // executePendingJobs</text>
+<circle cx="419" cy="482" r="8" fill="#2f6db5"/><text x="419" y="486" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">7</text>
+<text class="d" x="433" y="486">按 id 找到 Promise 并 resolve，</text>
+<text class="d" x="433" y="503">drain 推进 await，并检查 stalled</text>
 
 <!-- 4 -->
-<g filter="url(#shadow)"><rect class="card" x="730" y="448" width="290" height="136" rx="12"/></g>
-<circle cx="754" cy="474" r="11" fill="#2b2b2b"/><text class="n" x="754" y="478.5" text-anchor="middle">4</text>
-<text class="t" x="774" y="479.5">worker.ts</text>
-<rect class="code" x="746" y="494" width="258" height="46" rx="6"/>
-<text class="c" x="758" y="522">parentPort.postMessage(msg)</text>
-<text class="d" x="746" y="564">统一转发 call / global / output / done</text>
+<g filter="url(#shadow)"><rect class="card" x="720" y="364" width="290" height="148" rx="12"/></g>
+<circle cx="744" cy="390" r="11" fill="#2f6db5"/><text class="n" x="744" y="394.5" text-anchor="middle">4</text>
+<text class="t" x="764" y="395.5">bridge 的宿主实现</text>
+<rect class="code" x="736" y="410" width="258" height="46" rx="6"/>
+<text class="c" x="748" y="429">vm.newFunction("bridge", …)</text>
+<text class="c" x="748" y="446">  → post({ type: "call", … })</text>
+<text class="d" x="736" y="486">同一线程内的同步函数调用，</text>
+<text class="d" x="736" y="503">还没有跨线程</text>
 
-<line x1="724" y1="516" x2="691" y2="516" stroke="#8a948f" stroke-width="1.8" stroke-linecap="round" marker-end="url(#ag)"/>
+<!-- 3 → 4 同步调用 -->
+<line x1="865" y1="328" x2="865" y2="358" stroke="#8a948f" stroke-width="1.8" stroke-linecap="round" marker-end="url(#ag)"/>
+<text x="878" y="348" font-size="11.5" fill="#8a948f">同步调用</text>
 
-<!-- 3 → 4：postMessage -->
-<line x1="875" y1="294" x2="875" y2="440" stroke="#c2621b" stroke-width="2" stroke-linecap="round" marker-end="url(#ao)"/>
-<rect x="890" y="342" width="104" height="26" rx="13" fill="#fff" stroke="#efc9ab"/>
-<text x="942" y="359.5" text-anchor="middle" font-size="12" font-weight="600" fill="#c2621b">postMessage</text>
+<!-- 6 → 2 resolve -->
+<line x1="540" y1="360" x2="540" y2="330" stroke="#2f6db5" stroke-width="1.8" stroke-dasharray="5 4" stroke-linecap="round" marker-end="url(#ab)"/>
+<text x="553" y="350" font-size="11.5" fill="#2f6db5">resolve → await 继续往下跑</text>
 
-<!-- 5 → 2：settle + drain -->
-<line x1="540" y1="440" x2="540" y2="294" stroke="#c2621b" stroke-width="2" stroke-dasharray="6 5" stroke-linecap="round" marker-end="url(#ao)"/>
-<rect x="196" y="328" width="328" height="56" rx="10" fill="#fff" stroke="#efc9ab"/>
-<circle cx="216" cy="346" r="8" fill="#c2621b"/><text x="216" y="350" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">6</text>
-<text x="231" y="350.5" font-size="12" fill="#5a3a22"><tspan class="c" fill="#c2621b">settle(id, ok, payload)</tspan>  回写 pending</text>
-<circle cx="216" cy="368" r="8" fill="#c2621b"/><text x="216" y="372" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">7</text>
-<text x="231" y="372.5" font-size="12" fill="#5a3a22"><tspan class="c" fill="#c2621b">drain()</tspan>  executePendingJobs + stalled 检查</text>
+<!-- ================= 线程边界 ================= -->
+<line x1="30" y1="570" x2="1050" y2="570" stroke="#c9c3b8" stroke-width="1.2" stroke-dasharray="3 5"/>
+<text x="40" y="565" font-size="11" fill="#a39c90">线程边界：只能传可结构化克隆的消息</text>
+
+<!-- ================= 主线程 ================= -->
+<rect x="30" y="610" width="1020" height="190" rx="18" fill="#f4f1eb" stroke="#e5dfd3"/>
+<!-- 4 → 5 postMessage call -->
+<line x1="865" y1="516" x2="865" y2="634" stroke="#c2621b" stroke-width="2" stroke-linecap="round" marker-end="url(#ao)"/>
+<rect x="880" y="557" width="150" height="26" rx="13" fill="#fff" stroke="#efc9ab"/>
+<text x="955" y="574.5" text-anchor="middle" font-size="12" font-weight="600" fill="#c2621b">postMessage · call</text>
+
+<!-- 5 → 6 postMessage result -->
+<line x1="540" y1="634" x2="540" y2="516" stroke="#c2621b" stroke-width="2" stroke-linecap="round" marker-end="url(#ao)"/>
+<rect x="555" y="557" width="160" height="26" rx="13" fill="#fff" stroke="#efc9ab"/>
+<text x="635" y="574.5" text-anchor="middle" font-size="12" font-weight="600" fill="#c2621b">postMessage · result</text>
+
+<circle cx="54" cy="635" r="4" fill="#2b2b2b"/>
+<text x="66" y="639.5" font-size="13" font-weight="700" fill="#2b2b2b" letter-spacing="0.5">主线程 · host.js</text>
+
+<text class="noteh" x="70" y="682">为什么要绕一圈？</text>
+<text class="note" x="70" y="710">· VM 里没有 I/O，真正的工具只能在宿主执行</text>
+<text class="note" x="70" y="736">· 宿主执行期间 VM 不阻塞，Promise.all 可并发多个调用</text>
+
+<!-- 5 -->
+<g filter="url(#shadow)"><rect class="card" x="395" y="650" width="615" height="130" rx="12"/></g>
+<circle cx="419" cy="676" r="11" fill="#2b2b2b"/><text class="n" x="419" y="680.5" text-anchor="middle">5</text>
+<text class="t" x="439" y="681.5">handleCall：执行真正的工具</text>
+<text class="d" x="994" y="681.5" text-anchor="end">→ coding-agent 适配层 ctx.executeTool</text>
+<rect class="code" x="411" y="696" width="583" height="46" rx="6"/>
+<text class="c" x="421" y="715">const value = await tool.execute(JSON.parse(args), { signal })</text>
+<text class="c" x="421" y="732" xml:space="preserve">this.post({ type: "result", id, ok, payload })<tspan fill="#9aa19d">  // 即 worker.postMessage</tspan></text>
+<text class="d" x="411" y="764">按 type 分发：call → 执行工具并带同一个 id 回复；output → output.push；done → finish()</text>
 </svg>

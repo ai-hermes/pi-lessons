@@ -48,7 +48,7 @@ const script = vm.evalCode(`(async () => {
 	return "done";
 })()`);
 
-vm.executePendingJobs();
+// vm.executePendingJobs();
 show("脚本同步部分跑完（停在 await sleep）");
 
 // resolvePromise：在 Node 侧 await VM 里的 Promise
