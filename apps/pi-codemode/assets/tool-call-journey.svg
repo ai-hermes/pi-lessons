@@ -121,10 +121,8 @@
 <text x="66" y="639.5" font-size="13" font-weight="700" fill="#2b2b2b" letter-spacing="0.5">主线程 · host.js</text>
 
 <text class="noteh" x="70" y="682">为什么要绕一圈？</text>
-<text class="note" x="70" y="708">· VM 里没有 I/O，真正的工具</text>
-<text class="note" x="80" y="726">只能在宿主执行</text>
-<text class="note" x="70" y="750">· 宿主执行期间 VM 不阻塞，</text>
-<text class="note" x="80" y="768">Promise.all 可并发多个调用</text>
+<text class="note" x="70" y="710">· VM 里没有 I/O，真正的工具只能在宿主执行</text>
+<text class="note" x="70" y="736">· 宿主执行期间 VM 不阻塞，Promise.all 可并发多个调用</text>
 
 <!-- 5 -->
 <g filter="url(#shadow)"><rect class="card" x="395" y="650" width="615" height="230" rx="12"/></g>
