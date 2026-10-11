@@ -67,3 +67,21 @@ const result = await sandbox.execute(code, { store: { lastQuery: "上一次运�
 await sandbox.close();
 console.log("\n===== CodemodeResult =====");
 console.log(JSON.stringify(result, null, 2));
+
+/*
+// 生成包装函数
+// tools.mcp__dev_radius__search.toString():
+(...args) =>
+   new Promise((resolve, reject) => {
+		let json;
+		try {
+			json = serialize(spread ? args : args[0]);
+		} catch (error) {
+			reject(error);
+		return;
+		}
+		const id = nextId++;
+		pending.set(id, { resolve, reject });
+		bridge(kind, id, name, json);
+   })
+*/
