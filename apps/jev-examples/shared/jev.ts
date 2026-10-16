@@ -15,40 +15,19 @@
 import {
 	APIConnectionError,
 	APIError,
-	type ChoiceQuestion,
-	type ChoiceResponse,
 	type Fetch,
-	type NoulResponse,
 	type Question,
 	type Questions,
-	type ScoreQuestion,
-	type ScoreResponse,
 	type SystemOneRequest,
 	type SystemOneResult,
 	TypeSafeClient,
 } from "@typesafe-ai/sdk";
 import { EnvHttpProxyAgent } from "undici";
 
-export {
-	choice,
-	noul,
-	score,
-	type ChoiceQuestion,
-	type ChoiceResponse,
-	type NoulQuestion,
-	type NoulResponse,
-	type Question,
-	type Questions,
-	type ScoreQuestion,
-	type ScoreResponse,
-	type SystemOneRequest,
-} from "@typesafe-ai/sdk";
+export { choice, noul, score, type ChoiceQuestion, type ChoiceResponse, type NoulQuestion } from "@typesafe-ai/sdk";
 
-/** SDK result plus a locally measured latency (ms) */
-export type SystemOneResponse<Q extends Questions = Questions> = SystemOneResult<Q> & { latencyMs: number };
-
-export class JevUnavailableError extends Error {}
-export class JevAnswerError extends Error {}
+export class JevUnavailableError extends Error { }
+export class JevAnswerError extends Error { }
 
 try {
 	process.loadEnvFile(new URL("../.env", import.meta.url));
@@ -83,7 +62,7 @@ export function printMode(): void {
 }
 
 /** Calls Jev through the SDK (which retries 408 / 429 / 5xx); transport and HTTP failures become JevUnavailableError */
-export async function systemOne<const Q extends Questions>(req: SystemOneRequest<Q>): Promise<SystemOneResponse<Q>> {
+export async function systemOne<const Q extends Questions>(req: SystemOneRequest<Q>) {
 	const started = Date.now();
 	try {
 		const res = await getClient().systemOne(req);
@@ -116,49 +95,41 @@ function checkDistribution(id: string, probabilities: unknown, keys: string[]): 
 	return probs;
 }
 
-/** Choice answer typed by the question's option keys when they are known statically */
-type ChoiceAnswerFor<T extends Question> = [T] extends [ChoiceQuestion<infer C>] ? ChoiceResponse<C> : ChoiceResponse;
-/** Score answer typed by the question's rubric when it is known statically */
-type ScoreAnswerFor<T extends Question> = [T] extends [ScoreQuestion<infer C>] ? ScoreResponse<C> : ScoreResponse;
+// Answer types come from the SDK (`res.answers[id]` is typed per question); these only add runtime checks.
+// Each takes the request too, so the answer can be checked against the options that were actually sent.
 
-function lookup<Q extends Questions>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: keyof Q & string) {
-	return { q: req.questions[id] as Question | undefined, a: res.answers[id] as { type?: string } | undefined };
+/** The SDK's answer type for question K, narrowed to the given kind (needed when questions are built dynamically) */
+type AnswerOf<Q extends Questions, K extends keyof Q, T extends Question["type"]> = Extract<SystemOneResult<Q>["answers"][K], { type: T }>;
+
+/** Looks up a question and its answer, failing unless both are of the expected type */
+function pick<Q extends Questions>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: keyof Q & string, type: Question["type"]) {
+	const q: Question | undefined = req.questions[id];
+	const a = (res.answers as Record<string, any>)[id];
+	if (q?.type !== type || a?.type !== type) throw new JevAnswerError(`${id}: not a ${type} answer`);
+	return { q, a };
 }
 
-export function getChoice<Q extends Questions, K extends keyof Q & string>(
-	res: SystemOneResult<Q>,
-	req: SystemOneRequest<Q>,
-	id: K,
-): ChoiceAnswerFor<Q[K]> {
-	const { q, a } = lookup(res, req, id);
-	if (q?.type !== "choice" || a?.type !== "choice") throw new JevAnswerError(`${id}: not a choice answer`);
-	const answer = a as ChoiceResponse;
-	const allowed = Object.keys(q.criteria);
-	if (!allowed.includes(answer.choice)) throw new JevAnswerError(`${id}: returned value ${answer.choice} is not one of the options [${allowed}]`);
-	checkDistribution(id, answer.probabilities, allowed);
-	return answer as ChoiceAnswerFor<Q[K]>;
+export function getChoice<Q extends Questions, K extends keyof Q & string>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: K) {
+	const { q, a } = pick(res, req, id, "choice");
+	const allowed = Object.keys((q as Extract<Question, { type: "choice" }>).criteria);
+	if (!allowed.includes(a.choice)) throw new JevAnswerError(`${id}: returned value ${a.choice} is not one of the options [${allowed}]`);
+	checkDistribution(id, a.probabilities, allowed);
+	return a as AnswerOf<Q, K, "choice">;
 }
 
-export function getScore<Q extends Questions, K extends keyof Q & string>(
-	res: SystemOneResult<Q>,
-	req: SystemOneRequest<Q>,
-	id: K,
-): ScoreAnswerFor<Q[K]> {
-	const { q, a } = lookup(res, req, id);
-	if (q?.type !== "score" || a?.type !== "score") throw new JevAnswerError(`${id}: not a score answer`);
-	const answer = a as ScoreResponse;
-	const levels = q.criteria.map((_, i) => String(i));
-	checkDistribution(id, answer.probabilities, levels);
-	if (!Number.isFinite(answer.score) || answer.score < 0 || answer.score > levels.length - 1) {
-		throw new JevAnswerError(`${id}: score ${answer.score} is outside 0..${levels.length - 1}`);
+export function getScore<Q extends Questions, K extends keyof Q & string>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: K) {
+	const { q, a } = pick(res, req, id, "score");
+	const levels = (q as Extract<Question, { type: "score" }>).criteria.map((_, i) => String(i));
+	checkDistribution(id, a.probabilities, levels);
+	if (!Number.isFinite(a.score) || a.score < 0 || a.score > levels.length - 1) {
+		throw new JevAnswerError(`${id}: score ${a.score} is outside 0..${levels.length - 1}`);
 	}
-	return answer as ScoreAnswerFor<Q[K]>;
+	return a as AnswerOf<Q, K, "score">;
 }
 
-export function getNoul<Q extends Questions, K extends keyof Q & string>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: K): number {
-	const { q, a } = lookup(res, req, id);
-	if (q?.type !== "noul" || a?.type !== "noul") throw new JevAnswerError(`${id}: not a noul answer`);
-	const { noul: p } = a as NoulResponse;
+/** Returns the probability that the answer is "yes" */
+export function getNoul<Q extends Questions>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: keyof Q & string): number {
+	const p: number = pick(res, req, id, "noul").a.noul;
 	if (!Number.isFinite(p) || p < 0 || p > 1) throw new JevAnswerError(`${id}: probability ${p} is outside [0, 1]`);
 	return p;
 }
