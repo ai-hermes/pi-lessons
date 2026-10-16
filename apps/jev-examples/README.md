@@ -19,22 +19,22 @@ Optional variables: `TYPESAFE_BASE_URL`, `TYPESAFE_LOG_LEVEL`, `JEV_TIMEOUT_MS` 
 
 | Case | File | Question types | Highlights |
 | --- | --- | --- | --- |
-| 1 | `01-ticket-routing.ts` | Choice + Noul + Score | Ticket routing: hard rules first, confidence thresholds, refund tagging, SLA; shadow mode only suggests |
-| 2 | `02-tool-model-routing.ts` | Choice | Tool / model routing: code filters available options, mandatory fallback option, position-bias check, arguments generated and validated by code |
-| 3 | `03-writing-check.ts` | Noul + Choice + Score | Writing QA: strip quotes / code blocks, code rules first, audience-aware tone judgment |
-| 4 | `04-rag-filter.ts` | Noul (batched) | RAG candidate filtering: BM25 + vector RRF retrieval, dedupe to latest version, per-candidate relevance questions referencing candidates by ID, citation check |
-| 5 | `05-coding-proposal-review.ts` | Noul | Coding agent proposal review: schema / path / diff validation, pinned model version, decision table and audit record |
+| 1 | `01-ticket-routing.ts` | Choice + Noul + Score | Ticket routing: business rules first, confidence thresholds, refund tagging, SLA |
+| 2 | `02-tool-model-routing.ts` | Choice | Tool / model routing: code filters available options, mandatory fallback option |
+| 3 | `03-writing-check.ts` | Noul + Choice | Writing QA: code rules first, one independent question per check |
+| 4 | `04-rag-filter.ts` | Choice | RAG reranking: one graded relevance question per candidate, expected-score ordering, citation check |
+| 5 | `05-coding-proposal-review.ts` | Noul | Coding agent proposal review: schema / path / diff validation, pinned model version, decision table |
 | 6 | `06-browser-action.ts` | Choice (multi-turn) | Browser action selection: numbered visible elements, dynamic action set, page-version recheck before execution, stuck detection; a low-probability DONE becomes WAIT, and a DONE rejected by code verification is fed back to the next round |
 
-`shared/jev.ts` is a thin wrapper around the SDK: question types and the `choice` / `score` / `noul` builders come straight from `@typesafe-ai/sdk`, so answer types are inferred from the questions (e.g. `choice` is typed as the option keys). On top of that it adds latency timing, maps SDK errors to `JevUnavailableError`, and runtime-validates answers (options must be within `criteria`, probabilities must sum to ≈1, scores in range) — the SDK does not check these.
+`shared/jev.ts` is a thin wrapper around the SDK: question types and the `choice` / `score` / `noul` builders come straight from `@typesafe-ai/sdk`, so answer types are inferred from the questions (e.g. `choice` is typed as the option keys). On top of that it maps SDK errors to `JevUnavailableError`, and runtime-validates answers (the answer kind must match the question, `choice` must be one of the `criteria` keys, `score` must be in range) — the SDK does not check these.
 
-All `state` keys, question IDs, option keys and instructions are in English (e.g. `task`, `evidence`, `addresses_task`, `needs_clarification`, `permit`), and the code branches directly on these keys. When you change question wording, bump the question set version as well (see `QUESTION_SET_VERSION` in case 5).
+All `state` keys, question IDs, option keys and instructions are in English (e.g. `task`, `evidence`, `addresses_task`, `needs_clarification`, `permit`), and the code branches directly on these keys.
 
 ## Safety boundaries
 
 Jev's output is **decision evidence, not authorization**. Every case follows these rules:
 
-- Hard rules, permissions, arguments and final execution are decided by code;
+- Business rules, permissions, arguments and final execution are decided by code;
 - Low confidence, missing answers or Jev being unavailable degrade gracefully (human review / suggestion only / fallback option) instead of surfacing errors to the user;
 - "Instructions" embedded in untrusted inputs such as page content or documents are never executed (see the cookie-banner injection in case 6).
 

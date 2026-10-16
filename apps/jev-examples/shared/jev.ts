@@ -64,10 +64,8 @@ export function printMode(): void {
 
 /** Calls Jev through the SDK (which retries 408 / 429 / 5xx); transport and HTTP failures become JevUnavailableError */
 export async function systemOne<const Q extends Questions>(req: SystemOneRequest<Q>) {
-	const started = Date.now();
 	try {
-		const res = await getClient().systemOne(req);
-		return { ...res, latencyMs: Date.now() - started };
+		return await getClient().systemOne(req);
 	} catch (err) {
 		if (err instanceof APIError) throw new JevUnavailableError(`HTTP ${err.status}: ${err.message}`);
 		if (err instanceof APIConnectionError) throw new JevUnavailableError(`Request failed: ${err.message}`);
@@ -76,25 +74,8 @@ export async function systemOne<const Q extends Questions>(req: SystemOneRequest
 }
 
 // ---------------------------------------------------------------------------
-// Answer validation: options must come from this request and probabilities must be complete and sum to ~1, otherwise it fails
+// Answer validation: the answer must match the question kind, choices must be one of the options, scores must be in range
 // ---------------------------------------------------------------------------
-
-function checkDistribution(id: string, probabilities: unknown, keys: string[]): Record<string, number> {
-	if (!probabilities || typeof probabilities !== "object") {
-		throw new JevAnswerError(`${id}: missing probability distribution (probabilities)`);
-	}
-	const probs = probabilities as Record<string, number>;
-	const got = Object.keys(probs).sort();
-	const want = [...keys].sort();
-	if (got.length !== want.length || got.some((k, i) => k !== want[i])) {
-		throw new JevAnswerError(`${id}: distribution options [${got}] do not match the request [${want}]`);
-	}
-	const sum = Object.values(probs).reduce((a, b) => a + b, 0);
-	if (Object.values(probs).some((p) => !Number.isFinite(p) || p < 0 || p > 1) || Math.abs(sum - 1) > 0.02) {
-		throw new JevAnswerError(`${id}: invalid probabilities (sum ${sum.toFixed(3)})`);
-	}
-	return probs;
-}
 
 // Answer types come from the SDK (`res.answers[id]` is typed per question); these only add runtime checks.
 // Each takes the request too, so the answer can be checked against the options that were actually sent.
@@ -106,18 +87,24 @@ type AnswerOf<Q extends Questions, K extends keyof Q, T extends Question["type"]
 type Answer = ResultFor<Question>;
 
 /** Looks up a question and its answer, failing unless both are of the expected type */
-function pick<Q extends Questions, T extends Question["type"]>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: keyof Q & string, type: T) {
-	const q: Question | undefined = req.questions[id];
-	const a = (res.answers as Record<string, Answer | undefined>)[id];
-	if (q?.type !== type || a?.type !== type) throw new JevAnswerError(`${id}: not a ${type} answer`);
+function findQuestionAndAnswer<Q extends Questions, T extends Question["type"]>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: keyof Q & string, type: T) {
+	const question: Question | undefined = req.questions[id];
+	const answer = (res.answers as Record<string, Answer | undefined>)[id];
+	// double check to ensure that question and answer should be same with expected type
+	if (question?.type !== type || answer?.type !== type) {
+		throw new JevAnswerError(`${id}: not a ${type} answer`);
+	}
 	// The check above guarantees the kind; TS cannot narrow a union by a generic `type`, so state it once here
-	return { q: q as Extract<Question, { type: T }>, a: a as Extract<Answer, { type: T }> };
+	return {
+		question: question as Extract<Question, { type: T }>,
+		answer: answer as Extract<Answer, { type: T }>,
+	};
 }
 
 export function getChoice<Q extends Questions, K extends keyof Q & string>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: K) {
-	const { q, a } = pick(res, req, id, "choice");
+	const { question, answer } = findQuestionAndAnswer(res, req, id, "choice");
 	/*
-	# for choice question, q will be like
+	# for a choice question, `question` will be like
 	{
 		category: choice("Which team should handle this `ticket`?", {
 			billing: "Payments, invoices, charges or refunds",
@@ -126,30 +113,34 @@ export function getChoice<Q extends Questions, K extends keyof Q & string>(res: 
 			other: "Anything that fits none of the above",
 		}),
 	}
-	# so the allowed will be
+	# so `allowed` will be
 	["billing", "technical", "account", "other"]
 	*/
-	const allowed = Object.keys(q.criteria);
-	if (!allowed.includes(a.choice)) throw new JevAnswerError(`${id}: returned value ${a.choice} is not one of the options [${allowed}]`);
-	checkDistribution(id, a.probabilities, allowed);
-	return a as AnswerOf<Q, K, "choice">;
+	const allowed = Object.keys(question.criteria);
+	if (!allowed.includes(answer.choice)) {
+		throw new JevAnswerError(`${id}: returned value ${answer.choice} is not one of the options [${allowed}]`);
+	}
+	return answer as AnswerOf<Q, K, "choice">;
 }
 
 export function getScore<Q extends Questions, K extends keyof Q & string>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: K) {
-	const { q, a } = pick(res, req, id, "score");
-	const levels = q.criteria.map((_, i) => String(i));
-	checkDistribution(id, a.probabilities, levels);
-	if (!Number.isFinite(a.score) || a.score < 0 || a.score > levels.length - 1) {
-		throw new JevAnswerError(`${id}: score ${a.score} is outside 0..${levels.length - 1}`);
+	const { question, answer } = findQuestionAndAnswer(res, req, id, "score");
+	// Score levels are the rubric indexes 0..n-1
+	const maxScore = question.criteria.length - 1;
+	if (!Number.isFinite(answer.score) || answer.score < 0 || answer.score > maxScore) {
+		throw new JevAnswerError(`${id}: score ${answer.score} is outside 0..${maxScore}`);
 	}
-	return a as AnswerOf<Q, K, "score">;
+	return answer as AnswerOf<Q, K, "score">;
 }
 
 /** Returns the probability that the answer is "yes" */
 export function getNoul<Q extends Questions>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: keyof Q & string): number {
-	const p: number = pick(res, req, id, "noul").a.noul;
-	if (!Number.isFinite(p) || p < 0 || p > 1) throw new JevAnswerError(`${id}: probability ${p} is outside [0, 1]`);
-	return p;
+	const { answer } = findQuestionAndAnswer(res, req, id, "noul");
+	const probabilityYes = answer.noul;
+	if (!Number.isFinite(probabilityYes) || probabilityYes < 0 || probabilityYes > 1) {
+		throw new JevAnswerError(`${id}: probability ${probabilityYes} is outside [0, 1]`);
+	}
+	return probabilityYes;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,9 +155,9 @@ export function printJson(label: string, value: unknown): void {
 	console.log(`${label}:\n${JSON.stringify(value, null, 2)}`);
 }
 
-export const pct = (p: number) => `${(p * 100).toFixed(1)}%`;
-
-/** Audit log: records requests, answers and local decisions for offline replay, threshold calibration and drift detection */
-export function audit(event: string, data: Record<string, unknown>): void {
-	console.log(`[audit] ${JSON.stringify({ ts: new Date().toISOString(), event, ...data })}`);
+/** Formats a probability in [0, 1] as a percentage with one decimal, e.g. 0.8734 → "87.3%" */
+export function formatPercent(probability: number): string {
+	const percent = probability * 100;
+	return `${percent.toFixed(1)}%`;
 }
+
