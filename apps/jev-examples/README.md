@@ -24,7 +24,7 @@ pnpm --filter jev-examples typecheck
 | 3 | `03-writing-check.ts` | Noul + Choice + Score | 写作质检：剥离引用 / 代码块、代码规则先行、受众相关的语气判断 |
 | 4 | `04-rag-filter.ts` | Noul（批量） | RAG 候选过滤：BM25 + 向量 RRF 召回、去重取最新版本、逐条相关性判断、引用核对 |
 | 5 | `05-coding-proposal-review.ts` | Noul + Choice | Coding Agent 提案审查：schema / 路径 / diff 校验、固定模型版本、决策表与审计记录 |
-| 6 | `06-browser-action.ts` | Choice（多轮） | 浏览器动作选择：可见元素编号、动态操作集、执行前复核页面版本、卡住检测、代码验证完成 |
+| 6 | `06-browser-action.ts` | Choice（多轮） | 浏览器动作选择：可见元素编号、动态操作集、执行前复核页面版本、卡住检测；DONE 低置信度先 WAIT，代码核对驳回后反馈给下一轮 |
 
 `shared/jev.ts` 是公共客户端：请求、重试、答案校验（选项必须在 criteria 内、概率和≈1）。
 
