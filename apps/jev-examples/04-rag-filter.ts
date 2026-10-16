@@ -1,7 +1,7 @@
 /**
  * 案例 4：RAG 候选筛选与重排（每个候选一个 Noul）
  *
- * 文档分块 → Query 改写 → 混合检索召回 → 去重/分批 → Jev 逐个判断
+ * 文档分块 → 查询改写 → 混合检索召回 → 去重/分批 → Jev 逐个判断
  * → 代码按概率排序并按阈值过滤 → 生成模型回答 → 引用校验
  */
 import {
@@ -15,7 +15,7 @@ import {
 	type SystemOneRequest,
 } from "./shared/jev.ts";
 
-// 官方 cookbook 示例取值，需要用自己的数据校准
+// 官方示例手册的取值，需要用自己的数据校准
 const KEEP_THRESHOLD = 0.55;
 const TOP_K = 6;
 const BATCH_SIZE = 10;
@@ -31,15 +31,15 @@ interface Chunk {
 }
 
 const LIBRARY: Chunk[] = [
-	{ id: "faq-12", topic: "refund_time", source: "FAQ", updatedAt: "2025-03-01", text: "退款批准后一般 7–14 个工作日原路退回。" },
-	{ id: "terms-4.2", topic: "refund_time", source: "服务条款 v3", updatedAt: "2026-08-01", text: "退款批准后通常在 5–10 个工作日原路退回。" },
-	{ id: "faq-03", topic: "cancel", source: "FAQ", updatedAt: "2026-05-10", text: "订阅可在账户设置中取消。" },
-	{ id: "faq-07", topic: "invoice", source: "FAQ", updatedAt: "2026-02-11", text: "发票会在每月第一个工作日生成。" },
-	{ id: "faq-09", topic: "refund_apply", source: "FAQ", updatedAt: "2026-04-02", text: "在订单页面点击“申请退款”提交退款申请。" },
-	{ id: "blog-21", topic: "release", source: "博客", updatedAt: "2026-09-30", text: "新版仪表盘支持自定义主题。" },
+	{ id: "faq-12", topic: "退款时效", source: "常见问题", updatedAt: "2025-03-01", text: "退款批准后一般 7–14 个工作日原路退回。" },
+	{ id: "terms-4.2", topic: "退款时效", source: "服务条款 v3", updatedAt: "2026-08-01", text: "退款批准后通常在 5–10 个工作日原路退回。" },
+	{ id: "faq-03", topic: "取消订阅", source: "常见问题", updatedAt: "2026-05-10", text: "订阅可在账户设置中取消。" },
+	{ id: "faq-07", topic: "发票", source: "常见问题", updatedAt: "2026-02-11", text: "发票会在每月第一个工作日生成。" },
+	{ id: "faq-09", topic: "申请退款", source: "常见问题", updatedAt: "2026-04-02", text: "在订单页面点击“申请退款”提交退款申请。" },
+	{ id: "blog-21", topic: "版本发布", source: "博客", updatedAt: "2026-09-30", text: "新版仪表盘支持自定义主题。" },
 ];
 
-// ---- 2. Query 改写：补同义词，生成多条查询 ----------------------------------
+// ---- 2. 查询改写：补同义词，生成多条查询 ------------------------------------
 const SYNONYMS: Record<string, string[]> = {
 	到账: ["原路退回", "退回"],
 	多久: ["工作日", "时间"],
@@ -53,7 +53,7 @@ function rewriteQuery(query: string): string[] {
 	return queries;
 }
 
-// ---- 3. 混合检索：关键词（BM25 简化版）+ “向量”（字符 bigram 余弦，演示用） --
+// ---- 3. 混合检索：关键词（BM25 简化版）+ “向量”（字符二元组余弦，演示用） ----
 const bigrams = (s: string) => {
 	const t = s.replace(/[\s，。？！、“”]/g, "");
 	return Array.from({ length: Math.max(0, t.length - 1) }, (_, i) => t.slice(i, i + 2));
@@ -79,7 +79,7 @@ function vectorScore(query: string, doc: string): number {
 }
 
 function hybridRetrieve(queries: string[], k: number): Chunk[] {
-	// Reciprocal Rank Fusion 合并两路结果
+	// 倒数排名融合（RRF）合并两路结果
 	const fused = new Map<string, number>();
 	for (const q of queries) {
 		for (const scorer of [keywordScore, vectorScore]) {
@@ -106,14 +106,16 @@ interface Candidate {
 	chunk: Chunk;
 }
 
+const questionId = (c: Candidate) => `${c.id}能否回答`;
+
 function buildRequest(query: string, batch: Candidate[]): SystemOneRequest {
 	return {
 		model: "jev-latest",
-		state: { query, candidates: batch.map((c) => ({ id: c.id, text: c.chunk.text })) },
+		state: { 查询: query, 候选: batch.map((c) => ({ 编号: c.id, 内容: c.chunk.text })) },
 		questions: Object.fromEntries(
-			batch.map((c, i) => [
-				`answers_${c.id}`,
-				{ type: "noul", instructions: `\`candidates[${i}].text\` 是否包含可以直接回答 \`query\` 的信息？` },
+			batch.map((c) => [
+				questionId(c),
+				{ type: "noul", instructions: `\`候选\` 中编号为「${c.id}」的那一项，其 \`内容\` 是否包含可以直接回答 \`查询\` 的信息？` },
 			]),
 		),
 	};
@@ -127,7 +129,7 @@ function generateAnswer(query: string, kept: Candidate[]): { text: string; citat
 
 printMode();
 const query = "退款到账通常需要多久？";
-section(`Query：${query}`);
+section(`查询：${query}`);
 const queries = rewriteQuery(query);
 console.log("改写后的查询：", queries);
 
@@ -136,14 +138,14 @@ console.log("召回：", recalled.map((c) => c.id));
 const deduped = dedupeLatest(recalled);
 console.log("去重后：", deduped.map((c) => `${c.id}(${c.updatedAt})`));
 
-const candidates: Candidate[] = deduped.map((chunk, i) => ({ id: `c${i + 1}`, chunk }));
+const candidates: Candidate[] = deduped.map((chunk, i) => ({ id: `候选${i + 1}`, chunk }));
 const scored: Array<Candidate & { p: number }> = [];
 for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
 	const batch = candidates.slice(i, i + BATCH_SIZE);
 	const req = buildRequest(query, batch);
 	try {
 		const res = await systemOne(req);
-		for (const c of batch) scored.push({ ...c, p: getNoul(res, req, `answers_${c.id}`) });
+		for (const c of batch) scored.push({ ...c, p: getNoul(res, req, questionId(c)) });
 	} catch (err) {
 		// 判断失败的候选不参与打分
 		if (!(err instanceof JevUnavailableError)) throw err;
@@ -154,7 +156,7 @@ for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
 section("Jev 判定 + 代码排序过滤");
 scored.sort((a, b) => b.p - a.p);
 for (const c of scored) {
-	console.log(`${c.p >= KEEP_THRESHOLD ? "保留" : "丢弃"}  ${c.id}  p=${pct(c.p)}  [${c.chunk.source}] ${c.chunk.text}`);
+	console.log(`${c.p >= KEEP_THRESHOLD ? "保留" : "丢弃"}  ${c.id}  概率 ${pct(c.p)}  [${c.chunk.source}] ${c.chunk.text}`);
 }
 const kept = scored.filter((c) => c.p >= KEEP_THRESHOLD);
 

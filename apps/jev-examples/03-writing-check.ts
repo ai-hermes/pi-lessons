@@ -18,7 +18,7 @@ import {
 	type SystemOneRequest,
 } from "./shared/jev.ts";
 
-// Clarity Judge 默认值，可调；调整阈值只在本地重算，不会再次调用 Jev
+// 清晰度评审（Clarity Judge）默认值，可调；调整阈值只在本地重算，不会再次调用 Jev
 const CONFIDENCE_THRESHOLD = Number(process.env.CLARITY_THRESHOLD ?? 0.7);
 const FORMAL_AUDIENCES = ["项目负责人", "客户", "管理层"];
 
@@ -60,11 +60,11 @@ const BANNED_WORDS = ["赋能", "抓手", "闭环"];
 
 function codeRules(text: string) {
 	return {
-		length: { value: text.length, issue: text.length > 800 },
-		banned_words: { value: BANNED_WORDS.filter((w) => text.includes(w)), issue: BANNED_WORDS.some((w) => text.includes(w)) },
-		dash_count: { value: (text.match(/——|—|--/g) ?? []).length, issue: (text.match(/——|—|--/g) ?? []).length > 2 },
-		has_date: { value: /\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}-\d{2}-\d{2}|周[一二三四五六日]/.test(text) },
-		has_owner: { value: /@\S+|负责人[:：]/.test(text) },
+		长度: { 值: text.length, 有问题: text.length > 800 },
+		禁用词: { 值: BANNED_WORDS.filter((w) => text.includes(w)), 有问题: BANNED_WORDS.some((w) => text.includes(w)) },
+		破折号数量: { 值: (text.match(/——|—|--/g) ?? []).length, 有问题: (text.match(/——|—|--/g) ?? []).length > 2 },
+		包含日期: { 值: /\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}-\d{2}-\d{2}|周[一二三四五六日]/.test(text) },
+		包含负责人: { 值: /@\S+|负责人[:：]/.test(text) },
 	};
 }
 
@@ -76,12 +76,12 @@ type Check =
 function checks(audience: string): Check[] {
 	return [
 		{
-			id: "hedging",
+			id: "弱化表达",
 			issueWhen: true,
 			keywords: ["可能", "有些", "大概", "也许", "似乎", "或许"],
 			question: {
 				type: "noul",
-				instructions: "`text` 是否用“可能”“有些”“大概”之类的说法，不必要地弱化了观点？",
+				instructions: "`正文` 是否用“可能”“有些”“大概”之类的说法，不必要地弱化了观点？",
 				criteria: {
 					true: "本可以直接陈述的观点被修饰语弱化，这些修饰语没有提供额外信息",
 					false: "观点陈述直接，或修饰语反映了真实存在的不确定性",
@@ -89,41 +89,41 @@ function checks(audience: string): Check[] {
 			},
 		},
 		{
-			id: "filler",
+			id: "冗余套话",
 			issueWhen: true,
 			keywords: ["一下", "的话", "其实", "基本上", "总的来说"],
 			question: {
 				type: "noul",
-				instructions: "`text` 是否包含删掉也不影响意思的套话或重复表达？",
+				instructions: "`正文` 是否包含删掉也不影响意思的套话或重复表达？",
 				criteria: { true: "存在可以直接删除、不损失任何信息的说法", false: "每句话都在传递信息" },
 			},
 		},
 		{
-			id: "tone",
-			// 是否接受 casual 由代码按 audience 决定
-			issueOptions: FORMAL_AUDIENCES.includes(audience) ? ["mixed", "casual"] : ["mixed"],
+			id: "语气",
+			// 是否接受“随意”由代码按读者决定
+			issueOptions: FORMAL_AUDIENCES.includes(audience) ? ["混杂", "随意"] : ["混杂"],
 			keywords: ["大家", "有空", "哈", "啦"],
 			question: {
 				type: "choice",
-				instructions: "`text` 的整体语气是什么？",
+				instructions: "`正文` 的整体语气是什么？",
 				criteria: {
-					formal: "通篇是正式、专业的语气",
-					casual: "通篇是轻松、口语化的语气",
-					mixed: "正式和随意的说法混在一起，语气不一致",
+					正式: "通篇是正式、专业的语气",
+					随意: "通篇是轻松、口语化的语气",
+					混杂: "正式和随意的说法混在一起，语气不一致",
 				},
 			},
 		},
 		{
-			id: "actionability",
-			issueOptions: ["vague_next_steps", "no_next_steps"],
+			id: "可执行性",
+			issueOptions: ["下一步含糊", "没有下一步"],
 			keywords: ["看看", "讨论", "之后", "再", "跟进"],
 			question: {
 				type: "choice",
-				instructions: "`text` 对读者接下来要做什么，说得有多清楚？",
+				instructions: "`正文` 对读者接下来要做什么，说得有多清楚？",
 				criteria: {
-					clear_next_steps: "写明了具体动作、负责人或截止时间",
-					vague_next_steps: "提到要做事，但没有具体动作、负责人或时间",
-					no_next_steps: "只描述情况，没有提出任何要求",
+					下一步明确: "写明了具体动作、负责人或截止时间",
+					下一步含糊: "提到要做事，但没有具体动作、负责人或时间",
+					没有下一步: "只描述情况，没有提出任何要求",
 				},
 			},
 		},
@@ -133,7 +133,7 @@ function checks(audience: string): Check[] {
 function buildRequest(text: string, list: Check[]): SystemOneRequest {
 	return {
 		model: "jev-latest",
-		state: { audience: input.audience, scene: input.scene, text },
+		state: { 读者: input.audience, 场景: input.scene, 正文: text },
 		questions: Object.fromEntries(list.map((c) => [c.id, c.question])),
 	};
 }
@@ -152,7 +152,7 @@ section("清理后的正文");
 console.log(text);
 
 section("代码规则");
-printJson("rules", codeRules(text));
+printJson("规则", codeRules(text));
 
 const list = checks(input.audience);
 const req = buildRequest(text, list);
@@ -168,7 +168,7 @@ const results = list.map((check) => {
 		const answer = p >= 0.5;
 		confidence = Math.max(p, 1 - p);
 		issue = answer === check.issueWhen;
-		detail = `p(yes)=${pct(p)}`;
+		detail = `是的概率 ${pct(p)}`;
 	} else {
 		const a = getChoice(res, req, check.id);
 		confidence = a.confidence;
@@ -178,7 +178,7 @@ const results = list.map((check) => {
 	const status = confidence < CONFIDENCE_THRESHOLD ? "需复核" : issue ? "有问题" : "通过";
 	const evidence = issue ? locateEvidence(text, check.keywords) : null;
 	console.log(
-		`${status === "通过" ? "✅" : status === "有问题" ? "❌" : "❓"} ${check.id.padEnd(14)} ${status}  ${detail}  confidence=${pct(confidence)}` +
+		`${status === "通过" ? "✅" : status === "有问题" ? "❌" : "❓"} ${check.id.padEnd(6, "　")} ${status}  ${detail}  置信度 ${pct(confidence)}` +
 			(evidence ? `\n   近似定位（关键词匹配，非 Jev 输出）：「${evidence}」` : ""),
 	);
 	return { id: check.id, status, confidence, issue };
