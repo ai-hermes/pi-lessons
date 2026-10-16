@@ -6,7 +6,8 @@
   "scripts": {
     "dev:pi-chat": "pnpm --filter pi-chat dev",
     "build:pi-chat": "pnpm --filter pi-chat build",
-    "typecheck:pi-codemode": "pnpm --filter pi-codemode typecheck"
+    "typecheck:pi-codemode": "pnpm --filter pi-codemode typecheck",
+    "typecheck:jev-examples": "pnpm --filter jev-examples typecheck"
   },
   "license": "ISC",
   "packageManager": "pnpm@11.22.0"

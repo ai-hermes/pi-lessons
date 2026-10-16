@@ -3,6 +3,7 @@ packages:
   - 'apps/pi-chat'
   - 'apps/pi-sdk'
   - 'apps/pi-codemode'
+  - 'apps/jev-examples'
 allowBuilds:
   '@google/genai': true
   esbuild: true
