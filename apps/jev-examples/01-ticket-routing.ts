@@ -11,15 +11,11 @@ import {
 	getScore,
 	JevAnswerError,
 	JevUnavailableError,
-	mockChoice,
-	mockNoul,
-	mockScore,
 	pct,
 	printJson,
 	printMode,
 	section,
 	systemOne,
-	type MockFn,
 	type SystemOneRequest,
 } from "./shared/jev.ts";
 
@@ -132,23 +128,6 @@ function buildRequest(ticket: Ticket, account: (typeof accounts)[string]): Syste
 	};
 }
 
-const mock: MockFn = (req) => {
-	const { message } = req.state as { message: string };
-	const q = req.questions;
-	if (message.includes("重复扣费")) {
-		return {
-			queue: mockChoice(q.queue, { billing: 0.93, technical: 0.03, account: 0.02, other: 0.02 }),
-			urgency: mockScore(q.urgency, [0, 0.02, 0.08, 0.35, 0.55]),
-			refund_requested: mockNoul(0.96),
-		};
-	}
-	return {
-		queue: mockChoice(q.queue, { billing: 0.62, technical: 0.04, account: 0.04, other: 0.3 }),
-		urgency: mockScore(q.urgency, [0.55, 0.35, 0.08, 0.02, 0]),
-		refund_requested: mockNoul(0.12),
-	};
-};
-
 // ---- 5. 拿到答案之后：由代码负责的决策 --------------------------------------
 function slaFor(score: number, probabilities: Record<string, number>): string {
 	// 不四舍五入成档位：按期望值 + 最高档概率映射 SLA
@@ -178,7 +157,7 @@ async function handle(raw: unknown): Promise<void> {
 
 	let res;
 	try {
-		res = await systemOne(req, mock);
+		res = await systemOne(req);
 	} catch (err) {
 		if (err instanceof JevUnavailableError) {
 			console.log(`→ Jev 不可用（${err.message}），进入人工分拣`);

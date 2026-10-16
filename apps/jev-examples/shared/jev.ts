@@ -1,11 +1,14 @@
 /**
  * Jev（TypeSafe System One）HTTP API 的最小客户端 + 答案校验工具。
  *
- * - 有 TYPESAFE_API_KEY 时调用真实接口 `POST /v1/systemone`；
- * - 没有 Key（或 JEV_MOCK=1）时使用每个案例自带的 mock 答案。mock 只用于跑通控制流，不代表 Jev 的实际效果。
+ * - 自动加载 apps/jev-examples/.env（已存在的环境变量优先）；
+ * - 必须设置 TYPESAFE_API_KEY，调用真实接口 `POST /v1/systemone`；
+ * - 设置了 HTTPS_PROXY / HTTP_PROXY 时经代理请求（API 有地区限制，451 时需要代理）。
  *
  * 接口定义见 https://docs.typesafe.ai/api
  */
+
+import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 
 export type Instructions = string | Record<string, unknown> | unknown[];
 
@@ -61,40 +64,45 @@ export interface SystemOneResponse {
 	model: string;
 	answers: Record<string, Answer>;
 	usage: { input_tokens: number; output_tokens: number };
-	/** 本地字段：是否来自 mock */
-	mocked: boolean;
 	/** 本地字段：耗时（毫秒） */
 	latencyMs: number;
 }
 
-export type MockFn = (req: SystemOneRequest) => Record<string, Answer>;
-
 export class JevUnavailableError extends Error {}
 export class JevAnswerError extends Error {}
+
+try {
+	process.loadEnvFile(new URL("../.env", import.meta.url));
+} catch (err) {
+	if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+}
+
+if (process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy) {
+	setGlobalDispatcher(new EnvHttpProxyAgent());
+}
 
 const BASE_URL = process.env.TYPESAFE_BASE_URL ?? "https://api.typesafe.ai";
 const TIMEOUT_MS = Number(process.env.JEV_TIMEOUT_MS ?? 30_000);
 const MAX_RETRIES = 3;
 
-export function isMockMode(): boolean {
-	return process.env.JEV_MOCK === "1" || !process.env.TYPESAFE_API_KEY;
+function apiKey(): string {
+	const key = process.env.TYPESAFE_API_KEY?.trim();
+	if (!key) {
+		console.error("❌ 未设置 TYPESAFE_API_KEY：请在 apps/jev-examples/.env 中填写（参考 .env.example）。");
+		process.exit(1);
+	}
+	return key;
 }
 
 export function printMode(): void {
-	if (isMockMode()) {
-		console.log("⚠️  MOCK 模式：未设置 TYPESAFE_API_KEY（或 JEV_MOCK=1）。答案为固定样例，只验证控制流，不代表 Jev 实测效果。\n");
-	} else {
-		console.log(`✅ 真实模式：调用 ${BASE_URL}/v1/systemone\n`);
-	}
+	apiKey();
+	console.log(`✅ 调用 ${BASE_URL}/v1/systemone\n`);
 }
 
-/** 调用 Jev；429 / 529 指数退避重试，其余错误直接抛出 JevUnavailableError，不用 mock 冒充结果 */
-export async function systemOne(req: SystemOneRequest, mock: MockFn): Promise<SystemOneResponse> {
+/** 调用 Jev；429 / 529 指数退避重试，其余错误直接抛出 JevUnavailableError */
+export async function systemOne(req: SystemOneRequest): Promise<SystemOneResponse> {
 	const started = Date.now();
-	if (isMockMode()) {
-		const answers = mock(req);
-		return { model: `${req.model} (mock)`, answers, usage: { input_tokens: 0, output_tokens: 0 }, mocked: true, latencyMs: Date.now() - started };
-	}
+	const key = apiKey();
 
 	for (let attempt = 0; ; attempt++) {
 		let res: Response;
@@ -102,7 +110,7 @@ export async function systemOne(req: SystemOneRequest, mock: MockFn): Promise<Sy
 			res = await fetch(`${BASE_URL}/v1/systemone`, {
 				method: "POST",
 				headers: {
-					Authorization: `Bearer ${process.env.TYPESAFE_API_KEY}`,
+					Authorization: `Bearer ${key}`,
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify(req),
@@ -118,11 +126,11 @@ export async function systemOne(req: SystemOneRequest, mock: MockFn): Promise<Sy
 		if (!res.ok) {
 			throw new JevUnavailableError(`HTTP ${res.status}: ${await res.text()}`);
 		}
-		const body = (await res.json()) as Omit<SystemOneResponse, "mocked" | "latencyMs">;
+		const body = (await res.json()) as Omit<SystemOneResponse, "latencyMs">;
 		if (!body || typeof body.answers !== "object") {
 			throw new JevAnswerError("响应缺少 answers");
 		}
-		return { ...body, mocked: false, latencyMs: Date.now() - started };
+		return { ...body, latencyMs: Date.now() - started };
 	}
 }
 
@@ -175,35 +183,6 @@ export function getNoul(res: SystemOneResponse, req: SystemOneRequest, id: strin
 	if (q?.type !== "noul" || a?.type !== "noul") throw new JevAnswerError(`${id}: 不是 noul 答案`);
 	if (!Number.isFinite(a.noul) || a.noul < 0 || a.noul > 1) throw new JevAnswerError(`${id}: noul ${a.noul} 不在 [0,1]`);
 	return a.noul;
-}
-
-// ---------------------------------------------------------------------------
-// mock 构造器：只按 API 的响应格式造数据
-// ---------------------------------------------------------------------------
-
-export function mockNoul(p: number): NoulAnswer {
-	return { type: "noul", noul: p };
-}
-
-/** 给定部分选项的概率，剩余概率平均分给其他选项 */
-export function mockChoice(question: Question | undefined, partial: Record<string, number>): ChoiceAnswer {
-	if (question?.type !== "choice") throw new Error("mockChoice 需要 choice 问题");
-	const keys = Object.keys(question.criteria);
-	const used = Object.values(partial).reduce((a, b) => a + b, 0);
-	const rest = keys.filter((k) => !(k in partial));
-	const probabilities = Object.fromEntries(
-		keys.map((k) => [k, k in partial ? partial[k]! : rest.length ? (1 - used) / rest.length : 0]),
-	);
-	const [choice, top] = Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0]!;
-	return { type: "choice", choice, probabilities, confidence: top };
-}
-
-export function mockScore(question: Question | undefined, probs: number[]): ScoreAnswer {
-	if (question?.type !== "score") throw new Error("mockScore 需要 score 问题");
-	const legend = Object.fromEntries(question.criteria.map((c, i) => [String(i), typeof c === "string" ? c : JSON.stringify(c)]));
-	const probabilities = Object.fromEntries(probs.map((p, i) => [String(i), p]));
-	const score = probs.reduce((acc, p, i) => acc + p * i, 0);
-	return { type: "score", score, legend, probabilities, confidence: Math.max(...probs) };
 }
 
 // ---------------------------------------------------------------------------

@@ -12,12 +12,10 @@ import {
 	getNoul,
 	JevAnswerError,
 	JevUnavailableError,
-	mockNoul,
 	pct,
 	printMode,
 	section,
 	systemOne,
-	type MockFn,
 	type SystemOneRequest,
 } from "./shared/jev.ts";
 
@@ -196,17 +194,6 @@ function decide(reviews: Record<string, Review>, threshold = REVIEW_CONFIDENCE_T
 	return "permit";
 }
 
-const mock: MockFn = (req) => {
-	const { proposal } = req.state as { proposal: Proposal };
-	const read = proposal.tool === "read_file";
-	return {
-		addresses_task: mockNoul(read ? 0.86 : 0.93),
-		evidence_supports: mockNoul(read ? 0.88 : 0.9),
-		unrelated_changes: mockNoul(read ? 0.04 : 0.06),
-		needs_clarification: mockNoul(read ? 0.1 : 0.08),
-	};
-};
-
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
 async function review(label: string, raw: unknown): Promise<void> {
@@ -221,7 +208,7 @@ async function review(label: string, raw: unknown): Promise<void> {
 	let decision: Decision;
 	let reviews: Record<string, Review> = {};
 	try {
-		const res = await systemOne(req, mock);
+		const res = await systemOne(req);
 		reviews = Object.fromEntries(Object.keys(FAVORABLE).map((id) => [id, toReview(getNoul(res, req, id))]));
 		decision = decide(reviews);
 	} catch (err) {

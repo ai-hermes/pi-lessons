@@ -5,20 +5,18 @@
  * → Jev 同时回答“做什么操作”和“每种操作选哪个目标” → 代码只采用对应目标
  * → TYPE_TEXT 交给小模型写值 → 执行前重新检查页面 → 执行 → 循环
  *
- * 为了离线可跑，这里用一个内存里的“航班搜索页”模拟浏览器；真实项目中换成 CDP / Playwright。
+ * 为了无需真实浏览器，这里用一个内存里的“航班搜索页”模拟浏览器；真实项目中换成 CDP / Playwright。
  */
 import {
 	audit,
 	getChoice,
 	JevAnswerError,
 	JevUnavailableError,
-	mockChoice,
 	printMode,
 	section,
 	systemOne,
 	type Answer,
 	type ChoiceQuestion,
-	type MockFn,
 	type SystemOneRequest,
 } from "./shared/jev.ts";
 
@@ -277,46 +275,6 @@ function buildRequest(obs: Observation, recent: RecentAction[]) {
 }
 
 // ===========================================================================
-// mock：一个按页面状态做决定的“假 Jev”，只为驱动控制流
-// ===========================================================================
-function mockPolicy(state: { page: { text: string }; elements: Element[] }): { op: Operation; target?: string } {
-	const find = (pred: (e: Element) => boolean) => state.elements.find(pred)?.index;
-	const byLabel = (label: string) => find((e) => e.label === label);
-	if (state.page.text.includes("加载中")) return { op: "WAIT" };
-	if (state.page.text.includes("航班列表")) return { op: "DONE" };
-	const close = byLabel("关闭 Cookie 提示");
-	if (close) return { op: "CLICK", target: close };
-	const oneWay = find((e) => e.role === "menuitem" && e.label === "单程");
-	if (oneWay) return { op: "CLICK", target: oneWay };
-	const trip = find((e) => e.label === "机票类型" && e.value !== "单程");
-	if (trip) return { op: "CLICK", target: trip };
-	const suggestion = find((e) => e.role === "option");
-	if (suggestion) return { op: "CLICK", target: suggestion };
-	const day = find((e) => e.label === "10月20日" && !e.selected);
-	if (day) return { op: "CLICK", target: day };
-	const done = byLabel("完成");
-	if (done) return { op: "CLICK", target: done };
-	const origin = find((e) => e.label === "出发地" && !e.value);
-	if (origin) return { op: "TYPE_TEXT", target: origin };
-	const dest = find((e) => e.label === "目的地" && !e.value);
-	if (dest) return { op: "TYPE_TEXT", target: dest };
-	const date = find((e) => e.label === "出发日期" && !e.value);
-	if (date) return { op: "CLICK", target: date };
-	return { op: "CLICK", target: byLabel("搜索") };
-}
-
-const mock: MockFn = (req) => {
-	const decision = mockPolicy(req.state as any);
-	const answers: Record<string, Answer> = {};
-	for (const [id, q] of Object.entries(req.questions)) {
-		const keys = Object.keys((q as ChoiceQuestion).criteria);
-		const pick = id === "operation" ? decision.op : id === `${decision.op.toLowerCase()}_target` ? decision.target! : keys[0]!;
-		answers[id] = mockChoice(q, { [pick]: 0.9 });
-	}
-	return answers;
-};
-
-// ===========================================================================
 // 拿到答案之后：小模型填值、执行前复查、DONE 由代码独立核对
 // ===========================================================================
 
@@ -365,7 +323,7 @@ loop: while (actions < MAX_ACTIONS && jevRequests < MAX_JEV_REQUESTS) {
 	let op: Operation;
 	let target: string | undefined;
 	try {
-		const res = await systemOne(req, mock);
+		const res = await systemOne(req);
 		const opAnswer = getChoice(res, req, "operation");
 		op = opAnswer.choice as Operation;
 		if (TARGETED.includes(op)) {

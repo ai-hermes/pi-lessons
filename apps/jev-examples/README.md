@@ -4,17 +4,16 @@
 
 ```bash
 pnpm install
-cp apps/jev-examples/.env.example apps/jev-examples/.env   # 可选，填入 TYPESAFE_API_KEY
+cp apps/jev-examples/.env.example apps/jev-examples/.env   # 填入 TYPESAFE_API_KEY
 pnpm --filter jev-examples run 01   # 01 ~ 06，或 all
 pnpm --filter jev-examples typecheck
 ```
 
-## 运行模式
+## 配置
 
-- **真实模式**：设置 `TYPESAFE_API_KEY` 后直接调用 `POST /v1/systemone`（429 / 529 自动退避重试）。
-- **Mock 模式**：未设置 Key 或 `JEV_MOCK=1` 时使用本地模拟答案，**只用于演示控制流**，不代表 Jev 的真实判断。
+脚本启动时自动加载 `apps/jev-examples/.env`（已存在的环境变量优先），直接调用 `POST /v1/systemone`，429 / 529 自动退避重试。未设置 `TYPESAFE_API_KEY` 时直接报错退出。
 
-可选变量：`TYPESAFE_BASE_URL`、`JEV_TIMEOUT_MS`（默认 30000）。
+可选变量：`TYPESAFE_BASE_URL`、`JEV_TIMEOUT_MS`（默认 30000）。`.env` 已被 git 忽略，不要提交 Key。
 
 ## 案例
 
@@ -27,7 +26,7 @@ pnpm --filter jev-examples typecheck
 | 5 | `05-coding-proposal-review.ts` | Noul + Choice | Coding Agent 提案审查：schema / 路径 / diff 校验、固定模型版本、决策表与审计记录 |
 | 6 | `06-browser-action.ts` | Choice（多轮） | 浏览器动作选择：可见元素编号、动态操作集、执行前复核页面版本、卡住检测、代码验证完成 |
 
-`shared/jev.ts` 是公共客户端：请求、重试、答案校验（选项必须在 criteria 内、概率和≈1）与 mock 构造。
+`shared/jev.ts` 是公共客户端：请求、重试、答案校验（选项必须在 criteria 内、概率和≈1）。
 
 ## 安全边界
 
