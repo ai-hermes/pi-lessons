@@ -1,0 +1,24 @@
+{
+  "name": "jev-examples",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "01": "tsx 01-ticket-routing.ts",
+    "02": "tsx 02-tool-model-routing.ts",
+    "03": "tsx 03-writing-check.ts",
+    "04": "tsx 04-rag-filter.ts",
+    "05": "tsx 05-coding-proposal-review.ts",
+    "06": "tsx 06-browser-action.ts",
+    "all": "tsx 01-ticket-routing.ts && tsx 02-tool-model-routing.ts && tsx 03-writing-check.ts && tsx 04-rag-filter.ts && tsx 05-coding-proposal-review.ts && tsx 06-browser-action.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.0"
+  }
+}

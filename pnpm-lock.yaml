@@ -207,6 +207,18 @@ importers:
 
   .: {}
 
+  apps/jev-examples:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.5
+      tsx:
+        specifier: ^4.23.12
+        version: 4.23.12
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.2
+
   apps/pi-chat:
     dependencies:
       '@earendil-works/pi-agent-core':
@@ -314,15 +326,6 @@ importers:
       tsx:
         specifier: ^4.23.12
         version: 4.23.12
-
-  apps/pi-sdk/extensions/pi-volcengine:
-    dependencies:
-      '@earendil-works/pi-ai':
-        specifier: ^0.84.2
-        version: 0.84.4(@modelcontextprotocol/sdk@1.30.0(supports-color@8.1.1)(zod@4.4.3))(supports-color@8.1.1)(ws@8.21.3)(zod@4.4.3)
-      zod:
-        specifier: ^4.4.3
-        version: 4.4.3
 
 packages:
 
@@ -4666,6 +4669,7 @@ snapshots:
       zod: 4.4.3
     optional: true
 
-  zod@4.4.3: {}
+  zod@4.4.3:
+    optional: true
 
   zwitch@2.0.4: {}
