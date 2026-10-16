@@ -15,9 +15,8 @@ import {
 	printMode,
 	section,
 	systemOne,
-	type Answer,
+	choice,
 	type ChoiceQuestion,
-	type SystemOneRequest,
 } from "./shared/jev.ts";
 
 const GOAL = "Fly from Shanghai to Tokyo, departing October 20, one way, 1 adult";
@@ -187,7 +186,8 @@ class FakeFlightsPage {
 // 2–3. Observe: keep only visible, enabled, in-viewport controls; the index mapping lives only in code
 // ===========================================================================
 /** Control description sent to Jev */
-interface Element {
+// A type alias (not an interface) so it is assignable to the SDK's JSON content type
+type Element = {
 	index: string;
 	role: string;
 	label: string;
@@ -198,7 +198,7 @@ interface Element {
 	draft?: string;
 	/** Field the suggestion belongs to */
 	option_for?: string;
-}
+};
 interface Observation {
 	version: number;
 	page: { url: string; title: string; text: string };
@@ -267,14 +267,14 @@ function describe(el: Element, op: Operation): string {
 	return `[${el.index}] ${prefix}${el.label} (${el.role}${state ? `, ${state}` : ""}${el.selected ? ", selected" : ""})`;
 }
 
-interface RecentAction {
+type RecentAction = {
 	operation: Operation;
 	target?: string;
 	text?: string;
 	page_changed: boolean;
 	/** Why code verification rejected DONE */
 	rejected?: string[];
-}
+};
 
 function buildRequest(obs: Observation, recent: RecentAction[]) {
 	const operations: Operation[] = [];
@@ -290,11 +290,10 @@ function buildRequest(obs: Observation, recent: RecentAction[]) {
 	operations.push("WAIT", "DONE", "BLOCKED");
 
 	const questions: Record<string, ChoiceQuestion> = {
-		operation: {
-			type: "choice",
-			instructions: `Starting from the current page, choose one operation that makes progress toward all requirements in \`goal\`. ${RULES}`,
-			criteria: Object.fromEntries(operations.map((op) => [op, OPERATION_DESC[op]])),
-		},
+		operation: choice(
+			`Starting from the current page, choose one operation that makes progress toward all requirements in \`goal\`. ${RULES}`,
+			Object.fromEntries(operations.map((op) => [op, OPERATION_DESC[op]])),
+		),
 	};
 	// No need to ask when only one compatible control exists
 	const fixedTargets: Partial<Record<Operation, string>> = {};
@@ -303,14 +302,13 @@ function buildRequest(obs: Observation, recent: RecentAction[]) {
 			fixedTargets[op] = els[0]!.index;
 			continue;
 		}
-		questions[`${op.toLowerCase()}_target`] = {
-			type: "choice",
-			instructions: `Assume the next operation is ${op}. Choose the most appropriate observed control for it. A separate question decides which operation actually runs. Do not choose a field that already has the goal value. ${RULES}`,
-			criteria: Object.fromEntries(els.map((e) => [e.index, describe(e, op)])),
-		};
+		questions[`${op.toLowerCase()}_target`] = choice(
+			`Assume the next operation is ${op}. Choose the most appropriate observed control for it. A separate question decides which operation actually runs. Do not choose a field that already has the goal value. ${RULES}`,
+			Object.fromEntries(els.map((e) => [e.index, describe(e, op)])),
+		);
 	}
 
-	const req: SystemOneRequest = {
+	const req = {
 		model: "jev-latest",
 		state: {
 			goal: GOAL,

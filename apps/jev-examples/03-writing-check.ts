@@ -12,10 +12,11 @@ import {
 	printJson,
 	printMode,
 	section,
+	choice,
+	noul,
 	systemOne,
 	type ChoiceQuestion,
 	type NoulQuestion,
-	type SystemOneRequest,
 } from "./shared/jev.ts";
 
 // Clarity Judge default, tunable; changing the threshold only recomputes locally and does not call Jev again
@@ -85,61 +86,45 @@ function checks(audience: string): Check[] {
 			id: "hedging",
 			issueWhen: true,
 			keywords: ["might", "maybe", "perhaps", "some", "i think", "kind of", "sort of", "probably"],
-			question: {
-				type: "noul",
-				instructions: "Does `body` unnecessarily weaken its points with phrases like \"might\", \"maybe\", or \"I think\"?",
-				criteria: {
-					true: "Points that could be stated directly are softened by qualifiers that add no information",
-					false: "Points are stated directly, or the qualifiers reflect genuine uncertainty",
-				},
-			},
+			question: noul("Does `body` unnecessarily weaken its points with phrases like \"might\", \"maybe\", or \"I think\"?", {
+				true: "Points that could be stated directly are softened by qualifiers that add no information",
+				false: "Points are stated directly, or the qualifiers reflect genuine uncertainty",
+			}),
 		},
 		{
 			id: "filler",
 			issueWhen: true,
 			keywords: ["basically", "kind of", "sort of", "actually", "just", "really"],
-			question: {
-				type: "noul",
-				instructions: "Does `body` contain filler or redundant phrasing that could be removed without changing the meaning?",
-				criteria: {
-					true: "There are phrases that could be deleted outright without losing any information",
-					false: "Every sentence carries information",
-				},
-			},
+			question: noul("Does `body` contain filler or redundant phrasing that could be removed without changing the meaning?", {
+				true: "There are phrases that could be deleted outright without losing any information",
+				false: "Every sentence carries information",
+			}),
 		},
 		{
 			id: "tone",
 			// Whether "casual" is acceptable is decided in code based on the audience
 			issueOptions: FORMAL_AUDIENCES.includes(audience) ? ["mixed", "casual"] : ["mixed"],
 			keywords: ["everyone", "chat", "kind of", "take a look", "hey"],
-			question: {
-				type: "choice",
-				instructions: "What is the overall tone of `body`?",
-				criteria: {
-					formal: "Formal, professional tone throughout",
-					casual: "Relaxed, conversational tone throughout",
-					mixed: "Formal and casual phrasing are mixed, so the tone is inconsistent",
-				},
-			},
+			question: choice("What is the overall tone of `body`?", {
+				formal: "Formal, professional tone throughout",
+				casual: "Relaxed, conversational tone throughout",
+				mixed: "Formal and casual phrasing are mixed, so the tone is inconsistent",
+			}),
 		},
 		{
 			id: "actionability",
 			issueOptions: ["vague_next_step", "no_next_step"],
 			keywords: ["take a look", "chat", "later", "discuss", "follow up"],
-			question: {
-				type: "choice",
-				instructions: "How clearly does `body` tell the reader what to do next?",
-				criteria: {
-					clear_next_step: "States a concrete action, an owner, or a deadline",
-					vague_next_step: "Mentions that something should be done, but with no concrete action, owner, or deadline",
-					no_next_step: "Only describes the situation and makes no request",
-				},
-			},
+			question: choice("How clearly does `body` tell the reader what to do next?", {
+				clear_next_step: "States a concrete action, an owner, or a deadline",
+				vague_next_step: "Mentions that something should be done, but with no concrete action, owner, or deadline",
+				no_next_step: "Only describes the situation and makes no request",
+			}),
 		},
 	];
 }
 
-function buildRequest(text: string, list: Check[]): SystemOneRequest {
+function buildRequest(text: string, list: Check[]) {
 	return {
 		model: "jev-latest",
 		state: { audience: input.audience, context: input.context, body: text },
