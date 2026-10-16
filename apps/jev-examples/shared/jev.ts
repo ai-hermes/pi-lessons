@@ -1,11 +1,11 @@
 /**
- * Jev（TypeSafe System One）HTTP API 的最小客户端 + 答案校验工具。
+ * Minimal client for the Jev (TypeSafe System One) HTTP API + answer validation helpers.
  *
- * - 自动加载 apps/jev-examples/.env（已存在的环境变量优先）；
- * - 必须设置 TYPESAFE_API_KEY，调用真实接口 `POST /v1/systemone`；
- * - 设置了 HTTPS_PROXY / HTTP_PROXY 时经代理请求（API 有地区限制，451 时需要代理）。
+ * - Automatically loads apps/jev-examples/.env (existing environment variables take precedence);
+ * - TYPESAFE_API_KEY is required; calls the real endpoint `POST /v1/systemone`;
+ * - Requests go through a proxy when HTTPS_PROXY / HTTP_PROXY is set (the API is region-restricted; use a proxy on 451).
  *
- * 接口定义见 https://docs.typesafe.ai/api
+ * API reference: https://docs.typesafe.ai/api
  */
 
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
@@ -64,7 +64,7 @@ export interface SystemOneResponse {
 	model: string;
 	answers: Record<string, Answer>;
 	usage: { input_tokens: number; output_tokens: number };
-	/** 本地字段：耗时（毫秒） */
+	/** Local field: latency (ms) */
 	latencyMs: number;
 }
 
@@ -88,7 +88,7 @@ const MAX_RETRIES = 3;
 function apiKey(): string {
 	const key = process.env.TYPESAFE_API_KEY?.trim();
 	if (!key) {
-		console.error("❌ 未设置 TYPESAFE_API_KEY：请在 apps/jev-examples/.env 中填写（参考 .env.example）。");
+		console.error("❌ TYPESAFE_API_KEY is not set: add it to apps/jev-examples/.env (see .env.example).");
 		process.exit(1);
 	}
 	return key;
@@ -96,10 +96,10 @@ function apiKey(): string {
 
 export function printMode(): void {
 	apiKey();
-	console.log(`✅ 调用 ${BASE_URL}/v1/systemone\n`);
+	console.log(`✅ Calling ${BASE_URL}/v1/systemone\n`);
 }
 
-/** 调用 Jev；429 / 529 指数退避重试，其余错误直接抛出 JevUnavailableError */
+/** Calls Jev; retries 429 / 529 with exponential backoff, throws JevUnavailableError for other errors */
 export async function systemOne(req: SystemOneRequest): Promise<SystemOneResponse> {
 	const started = Date.now();
 	const key = apiKey();
@@ -117,7 +117,7 @@ export async function systemOne(req: SystemOneRequest): Promise<SystemOneRespons
 				signal: AbortSignal.timeout(TIMEOUT_MS),
 			});
 		} catch (err) {
-			throw new JevUnavailableError(`请求失败：${(err as Error).message}`);
+			throw new JevUnavailableError(`Request failed: ${(err as Error).message}`);
 		}
 		if ((res.status === 429 || res.status === 529) && attempt < MAX_RETRIES) {
 			await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
@@ -128,29 +128,29 @@ export async function systemOne(req: SystemOneRequest): Promise<SystemOneRespons
 		}
 		const body = (await res.json()) as Omit<SystemOneResponse, "latencyMs">;
 		if (!body || typeof body.answers !== "object") {
-			throw new JevAnswerError("响应缺少 answers");
+			throw new JevAnswerError("Response is missing answers");
 		}
 		return { ...body, latencyMs: Date.now() - started };
 	}
 }
 
 // ---------------------------------------------------------------------------
-// 答案校验：选项必须来自本次请求、概率齐全且和约为 1，否则视为失败
+// Answer validation: options must come from this request and probabilities must be complete and sum to ~1, otherwise it fails
 // ---------------------------------------------------------------------------
 
 function checkDistribution(id: string, probabilities: unknown, keys: string[]): Record<string, number> {
 	if (!probabilities || typeof probabilities !== "object") {
-		throw new JevAnswerError(`${id}：缺少概率分布 probabilities`);
+		throw new JevAnswerError(`${id}: missing probability distribution (probabilities)`);
 	}
 	const probs = probabilities as Record<string, number>;
 	const got = Object.keys(probs).sort();
 	const want = [...keys].sort();
 	if (got.length !== want.length || got.some((k, i) => k !== want[i])) {
-		throw new JevAnswerError(`${id}：概率分布的选项 [${got}] 与请求 [${want}] 不一致`);
+		throw new JevAnswerError(`${id}: distribution options [${got}] do not match the request [${want}]`);
 	}
 	const sum = Object.values(probs).reduce((a, b) => a + b, 0);
 	if (Object.values(probs).some((p) => !Number.isFinite(p) || p < 0 || p > 1) || Math.abs(sum - 1) > 0.02) {
-		throw new JevAnswerError(`${id}：概率不合法（和为 ${sum.toFixed(3)}）`);
+		throw new JevAnswerError(`${id}: invalid probabilities (sum ${sum.toFixed(3)})`);
 	}
 	return probs;
 }
@@ -158,9 +158,9 @@ function checkDistribution(id: string, probabilities: unknown, keys: string[]): 
 export function getChoice(res: SystemOneResponse, req: SystemOneRequest, id: string): ChoiceAnswer {
 	const q = req.questions[id];
 	const a = res.answers[id];
-	if (q?.type !== "choice" || a?.type !== "choice") throw new JevAnswerError(`${id}：不是单选（choice）答案`);
+	if (q?.type !== "choice" || a?.type !== "choice") throw new JevAnswerError(`${id}: not a choice answer`);
 	const allowed = Object.keys(q.criteria);
-	if (!allowed.includes(a.choice)) throw new JevAnswerError(`${id}：返回值 ${a.choice} 不在选项 [${allowed}] 中`);
+	if (!allowed.includes(a.choice)) throw new JevAnswerError(`${id}: returned value ${a.choice} is not one of the options [${allowed}]`);
 	checkDistribution(id, a.probabilities, allowed);
 	return a;
 }
@@ -168,11 +168,11 @@ export function getChoice(res: SystemOneResponse, req: SystemOneRequest, id: str
 export function getScore(res: SystemOneResponse, req: SystemOneRequest, id: string): ScoreAnswer {
 	const q = req.questions[id];
 	const a = res.answers[id];
-	if (q?.type !== "score" || a?.type !== "score") throw new JevAnswerError(`${id}：不是评分（score）答案`);
+	if (q?.type !== "score" || a?.type !== "score") throw new JevAnswerError(`${id}: not a score answer`);
 	const levels = q.criteria.map((_, i) => String(i));
 	checkDistribution(id, a.probabilities, levels);
 	if (!Number.isFinite(a.score) || a.score < 0 || a.score > levels.length - 1) {
-		throw new JevAnswerError(`${id}：评分 ${a.score} 超出 0..${levels.length - 1}`);
+		throw new JevAnswerError(`${id}: score ${a.score} is outside 0..${levels.length - 1}`);
 	}
 	return a;
 }
@@ -180,13 +180,13 @@ export function getScore(res: SystemOneResponse, req: SystemOneRequest, id: stri
 export function getNoul(res: SystemOneResponse, req: SystemOneRequest, id: string): number {
 	const q = req.questions[id];
 	const a = res.answers[id];
-	if (q?.type !== "noul" || a?.type !== "noul") throw new JevAnswerError(`${id}：不是是非概率（noul）答案`);
-	if (!Number.isFinite(a.noul) || a.noul < 0 || a.noul > 1) throw new JevAnswerError(`${id}：概率 ${a.noul} 不在 [0,1] 之间`);
+	if (q?.type !== "noul" || a?.type !== "noul") throw new JevAnswerError(`${id}: not a noul answer`);
+	if (!Number.isFinite(a.noul) || a.noul < 0 || a.noul > 1) throw new JevAnswerError(`${id}: probability ${a.noul} is outside [0, 1]`);
 	return a.noul;
 }
 
 // ---------------------------------------------------------------------------
-// 输出
+// Output
 // ---------------------------------------------------------------------------
 
 export function section(title: string): void {
@@ -194,12 +194,12 @@ export function section(title: string): void {
 }
 
 export function printJson(label: string, value: unknown): void {
-	console.log(`${label}：\n${JSON.stringify(value, null, 2)}`);
+	console.log(`${label}:\n${JSON.stringify(value, null, 2)}`);
 }
 
 export const pct = (p: number) => `${(p * 100).toFixed(1)}%`;
 
-/** 审计日志：记录请求、答案和本地决策，用于离线回放、阈值校准和漂移检测 */
+/** Audit log: records requests, answers and local decisions for offline replay, threshold calibration and drift detection */
 export function audit(event: string, data: Record<string, unknown>): void {
-	console.log(`[审计] ${JSON.stringify({ ts: new Date().toISOString(), event, ...data })}`);
+	console.log(`[audit] ${JSON.stringify({ ts: new Date().toISOString(), event, ...data })}`);
 }
