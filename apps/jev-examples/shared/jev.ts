@@ -102,16 +102,17 @@ function checkDistribution(id: string, probabilities: unknown, keys: string[]): 
 type AnswerOf<Q extends Questions, K extends keyof Q, T extends Question["type"]> = Extract<SystemOneResult<Q>["answers"][K], { type: T }>;
 
 /** Looks up a question and its answer, failing unless both are of the expected type */
-function pick<Q extends Questions>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: keyof Q & string, type: Question["type"]) {
+function pick<Q extends Questions, T extends Question["type"]>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: keyof Q & string, type: T) {
 	const q: Question | undefined = req.questions[id];
 	const a = (res.answers as Record<string, any>)[id];
 	if (q?.type !== type || a?.type !== type) throw new JevAnswerError(`${id}: not a ${type} answer`);
-	return { q, a };
+	// The check above guarantees the kind; TS cannot narrow a union by a generic `type`, so state it once here
+	return { q: q as Extract<Question, { type: T }>, a };
 }
 
 export function getChoice<Q extends Questions, K extends keyof Q & string>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: K) {
 	const { q, a } = pick(res, req, id, "choice");
-	const allowed = Object.keys((q as Extract<Question, { type: "choice" }>).criteria);
+	const allowed = Object.keys(q.criteria);
 	if (!allowed.includes(a.choice)) throw new JevAnswerError(`${id}: returned value ${a.choice} is not one of the options [${allowed}]`);
 	checkDistribution(id, a.probabilities, allowed);
 	return a as AnswerOf<Q, K, "choice">;
@@ -119,7 +120,7 @@ export function getChoice<Q extends Questions, K extends keyof Q & string>(res: 
 
 export function getScore<Q extends Questions, K extends keyof Q & string>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: K) {
 	const { q, a } = pick(res, req, id, "score");
-	const levels = (q as Extract<Question, { type: "score" }>).criteria.map((_, i) => String(i));
+	const levels = q.criteria.map((_, i) => String(i));
 	checkDistribution(id, a.probabilities, levels);
 	if (!Number.isFinite(a.score) || a.score < 0 || a.score > levels.length - 1) {
 		throw new JevAnswerError(`${id}: score ${a.score} is outside 0..${levels.length - 1}`);
