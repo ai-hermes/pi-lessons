@@ -1,8 +1,8 @@
 /**
- * 案例 3：写作质量检查（Noul + Choice）
+ * Case 3: Writing quality check (Noul + Choice)
  *
- * 每个检查是一个独立问题，各自给出结论；不合成总分，不让 Jev 改写。
- * 分工：可验证规则 → 代码；语义维度 → Jev；修改建议 → 生成模型或人工。
+ * Each check is an independent question with its own verdict; no aggregate score, and Jev never rewrites.
+ * Division of labor: verifiable rules → code; semantic dimensions → Jev; suggested edits → generative model or a human.
  */
 import {
 	audit,
@@ -18,28 +18,28 @@ import {
 	type SystemOneRequest,
 } from "./shared/jev.ts";
 
-// 清晰度评审（Clarity Judge）默认值，可调；调整阈值只在本地重算，不会再次调用 Jev
+// Clarity Judge default, tunable; changing the threshold only recomputes locally and does not call Jev again
 const CONFIDENCE_THRESHOLD = Number(process.env.CLARITY_THRESHOLD ?? 0.7);
-const FORMAL_AUDIENCES = ["项目负责人", "客户", "管理层"];
+const FORMAL_AUDIENCES = ["project lead", "client", "management"];
 
 const input = {
-	audience: "项目负责人",
-	scene: "周报",
+	audience: "project lead",
+	context: "weekly report",
 	raw: [
-		"这个方案可能有些问题。大家有空的话看看，之后我们再讨论一下。",
+		"I think this plan might have some issues, basically. If everyone has some time, maybe take a look, and we can kind of chat about it later.",
 		"",
-		"> 在 2026-10-10 的邮件中写道：",
-		"> 上周的方案先放一放",
+		"> On 2026-10-10 you wrote:",
+		"> Let's put last week's plan on hold",
 		"",
 		"```",
 		"SELECT * FROM plans;",
 		"```",
 		"--",
-		"张三 | 后端组",
+		"John Smith | Backend Team",
 	].join("\n"),
 };
 
-// ---- 2. 清理文本：去掉引用、代码块、签名 ------------------------------------
+// ---- 2. Clean the text: strip quotes, code blocks, and signature ------------
 function cleanText(raw: string): string {
 	const out: string[] = [];
 	let inCode = false;
@@ -49,26 +49,32 @@ function cleanText(raw: string): string {
 			continue;
 		}
 		if (inCode || line.startsWith(">")) continue;
-		if (line.trim() === "--") break; // 签名分隔符之后全部丢弃
+		if (line.trim() === "--") break; // drop everything after the signature separator
 		out.push(line);
 	}
 	return out.join("\n").trim();
 }
 
-// ---- 3. 代码先跑可验证的规则 -----------------------------------------------
-const BANNED_WORDS = ["赋能", "抓手", "闭环"];
+// ---- 3. Run verifiable rules in code first ---------------------------------
+const BANNED_WORDS = ["synergy", "leverage", "circle back"];
+const DASH_PATTERN = /—|--/g;
 
 function codeRules(text: string) {
+	const lower = text.toLowerCase();
+	const banned = BANNED_WORDS.filter((w) => lower.includes(w));
+	const dashes = (text.match(DASH_PATTERN) ?? []).length;
 	return {
-		长度: { 值: text.length, 有问题: text.length > 800 },
-		禁用词: { 值: BANNED_WORDS.filter((w) => text.includes(w)), 有问题: BANNED_WORDS.some((w) => text.includes(w)) },
-		破折号数量: { 值: (text.match(/——|—|--/g) ?? []).length, 有问题: (text.match(/——|—|--/g) ?? []).length > 2 },
-		包含日期: { 值: /\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}-\d{2}-\d{2}|周[一二三四五六日]/.test(text) },
-		包含负责人: { 值: /@\S+|负责人[:：]/.test(text) },
+		length: { value: text.length, issue: text.length > 800 },
+		banned_words: { value: banned, issue: banned.length > 0 },
+		dash_count: { value: dashes, issue: dashes > 2 },
+		has_date: {
+			value: /\d{4}-\d{2}-\d{2}|\b(mon|tues|wednes|thurs|fri|satur|sun)day\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.? \d{1,2}\b/i.test(text),
+		},
+		has_owner: { value: /@\S+|\bowner:/i.test(text) },
 	};
 }
 
-// ---- 4. 每个检查一个问题，并在代码里声明“哪个答案算问题” -------------------
+// ---- 4. One question per check; code declares which answer counts as an issue ----
 type Check =
 	| { id: string; question: NoulQuestion; issueWhen: boolean; keywords: string[] }
 	| { id: string; question: ChoiceQuestion; issueOptions: string[]; keywords: string[] };
@@ -76,54 +82,57 @@ type Check =
 function checks(audience: string): Check[] {
 	return [
 		{
-			id: "弱化表达",
+			id: "hedging",
 			issueWhen: true,
-			keywords: ["可能", "有些", "大概", "也许", "似乎", "或许"],
+			keywords: ["might", "maybe", "perhaps", "some", "i think", "kind of", "sort of", "probably"],
 			question: {
 				type: "noul",
-				instructions: "`正文` 是否用“可能”“有些”“大概”之类的说法，不必要地弱化了观点？",
+				instructions: "Does `body` unnecessarily weaken its points with phrases like \"might\", \"maybe\", or \"I think\"?",
 				criteria: {
-					true: "本可以直接陈述的观点被修饰语弱化，这些修饰语没有提供额外信息",
-					false: "观点陈述直接，或修饰语反映了真实存在的不确定性",
+					true: "Points that could be stated directly are softened by qualifiers that add no information",
+					false: "Points are stated directly, or the qualifiers reflect genuine uncertainty",
 				},
 			},
 		},
 		{
-			id: "冗余套话",
+			id: "filler",
 			issueWhen: true,
-			keywords: ["一下", "的话", "其实", "基本上", "总的来说"],
+			keywords: ["basically", "kind of", "sort of", "actually", "just", "really"],
 			question: {
 				type: "noul",
-				instructions: "`正文` 是否包含删掉也不影响意思的套话或重复表达？",
-				criteria: { true: "存在可以直接删除、不损失任何信息的说法", false: "每句话都在传递信息" },
-			},
-		},
-		{
-			id: "语气",
-			// 是否接受“随意”由代码按读者决定
-			issueOptions: FORMAL_AUDIENCES.includes(audience) ? ["混杂", "随意"] : ["混杂"],
-			keywords: ["大家", "有空", "哈", "啦"],
-			question: {
-				type: "choice",
-				instructions: "`正文` 的整体语气是什么？",
+				instructions: "Does `body` contain filler or redundant phrasing that could be removed without changing the meaning?",
 				criteria: {
-					正式: "通篇是正式、专业的语气",
-					随意: "通篇是轻松、口语化的语气",
-					混杂: "正式和随意的说法混在一起，语气不一致",
+					true: "There are phrases that could be deleted outright without losing any information",
+					false: "Every sentence carries information",
 				},
 			},
 		},
 		{
-			id: "可执行性",
-			issueOptions: ["下一步含糊", "没有下一步"],
-			keywords: ["看看", "讨论", "之后", "再", "跟进"],
+			id: "tone",
+			// Whether "casual" is acceptable is decided in code based on the audience
+			issueOptions: FORMAL_AUDIENCES.includes(audience) ? ["mixed", "casual"] : ["mixed"],
+			keywords: ["everyone", "chat", "kind of", "take a look", "hey"],
 			question: {
 				type: "choice",
-				instructions: "`正文` 对读者接下来要做什么，说得有多清楚？",
+				instructions: "What is the overall tone of `body`?",
 				criteria: {
-					下一步明确: "写明了具体动作、负责人或截止时间",
-					下一步含糊: "提到要做事，但没有具体动作、负责人或时间",
-					没有下一步: "只描述情况，没有提出任何要求",
+					formal: "Formal, professional tone throughout",
+					casual: "Relaxed, conversational tone throughout",
+					mixed: "Formal and casual phrasing are mixed, so the tone is inconsistent",
+				},
+			},
+		},
+		{
+			id: "actionability",
+			issueOptions: ["vague_next_step", "no_next_step"],
+			keywords: ["take a look", "chat", "later", "discuss", "follow up"],
+			question: {
+				type: "choice",
+				instructions: "How clearly does `body` tell the reader what to do next?",
+				criteria: {
+					clear_next_step: "States a concrete action, an owner, or a deadline",
+					vague_next_step: "Mentions that something should be done, but with no concrete action, owner, or deadline",
+					no_next_step: "Only describes the situation and makes no request",
 				},
 			},
 		},
@@ -133,32 +142,35 @@ function checks(audience: string): Check[] {
 function buildRequest(text: string, list: Check[]): SystemOneRequest {
 	return {
 		model: "jev-latest",
-		state: { 读者: input.audience, 场景: input.scene, 正文: text },
+		state: { audience: input.audience, context: input.context, body: text },
 		questions: Object.fromEntries(list.map((c) => [c.id, c.question])),
 	};
 }
 
-// ---- 拿到答案之后：换算成“通过 / 有问题 / 需复核”，证据句由代码近似定位 ----
+// ---- After the answers: map to pass / issue / needs review; evidence sentence is approximated by code ----
 function locateEvidence(text: string, keywords: string[]): string | null {
-	const sentences = text.split(/(?<=[。！？!?])/).map((s) => s.trim()).filter(Boolean);
-	const scored = sentences.map((s) => ({ s, hits: keywords.filter((k) => s.includes(k)).length }));
+	const sentences = text.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter(Boolean);
+	const scored = sentences.map((s) => {
+		const lower = s.toLowerCase();
+		return { s, hits: keywords.filter((k) => new RegExp(`\\b${k}\\b`).test(lower)).length };
+	});
 	const best = scored.sort((a, b) => b.hits - a.hits)[0];
 	return best && best.hits > 0 ? best.s : null;
 }
 
 printMode();
 const text = cleanText(input.raw);
-section("清理后的正文");
+section("Cleaned body");
 console.log(text);
 
-section("代码规则");
-printJson("规则", codeRules(text));
+section("Code rules");
+printJson("rules", codeRules(text));
 
 const list = checks(input.audience);
 const req = buildRequest(text, list);
 const res = await systemOne(req);
 
-section("Jev 检查结果");
+section("Jev check results");
 const results = list.map((check) => {
 	let issue: boolean;
 	let confidence: number;
@@ -168,21 +180,21 @@ const results = list.map((check) => {
 		const answer = p >= 0.5;
 		confidence = Math.max(p, 1 - p);
 		issue = answer === check.issueWhen;
-		detail = `是的概率 ${pct(p)}`;
+		detail = `P(yes) ${pct(p)}`;
 	} else {
 		const a = getChoice(res, req, check.id);
 		confidence = a.confidence;
 		issue = check.issueOptions.includes(a.choice);
 		detail = `${a.choice}`;
 	}
-	const status = confidence < CONFIDENCE_THRESHOLD ? "需复核" : issue ? "有问题" : "通过";
+	const status = confidence < CONFIDENCE_THRESHOLD ? "review" : issue ? "issue" : "pass";
 	const evidence = issue ? locateEvidence(text, check.keywords) : null;
 	console.log(
-		`${status === "通过" ? "✅" : status === "有问题" ? "❌" : "❓"} ${check.id.padEnd(6, "　")} ${status}  ${detail}  置信度 ${pct(confidence)}` +
-			(evidence ? `\n   近似定位（关键词匹配，非 Jev 输出）：「${evidence}」` : ""),
+		`${status === "pass" ? "✅" : status === "issue" ? "❌" : "❓"} ${check.id.padEnd(14)} ${status.padEnd(7)} ${detail}  confidence ${pct(confidence)}` +
+			(evidence ? `\n   Approximate location (keyword match, not Jev output): "${evidence}"` : ""),
 	);
 	return { id: check.id, status, confidence, issue };
 });
 
 audit("writing.check", { model: res.model, threshold: CONFIDENCE_THRESHOLD, results });
-console.log("\n下一步：如需修改建议，把以上检查结果作为输入交给生成模型或人工；Jev 不负责改写。");
+console.log("\nNext step: for suggested edits, pass the check results above to a generative model or a human; Jev does not rewrite.");
