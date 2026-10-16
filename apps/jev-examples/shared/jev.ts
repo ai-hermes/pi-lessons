@@ -140,17 +140,17 @@ export async function systemOne(req: SystemOneRequest): Promise<SystemOneRespons
 
 function checkDistribution(id: string, probabilities: unknown, keys: string[]): Record<string, number> {
 	if (!probabilities || typeof probabilities !== "object") {
-		throw new JevAnswerError(`${id}: 缺少 probabilities`);
+		throw new JevAnswerError(`${id}：缺少概率分布 probabilities`);
 	}
 	const probs = probabilities as Record<string, number>;
 	const got = Object.keys(probs).sort();
 	const want = [...keys].sort();
 	if (got.length !== want.length || got.some((k, i) => k !== want[i])) {
-		throw new JevAnswerError(`${id}: 概率分布的选项 [${got}] 与请求 [${want}] 不一致`);
+		throw new JevAnswerError(`${id}：概率分布的选项 [${got}] 与请求 [${want}] 不一致`);
 	}
 	const sum = Object.values(probs).reduce((a, b) => a + b, 0);
 	if (Object.values(probs).some((p) => !Number.isFinite(p) || p < 0 || p > 1) || Math.abs(sum - 1) > 0.02) {
-		throw new JevAnswerError(`${id}: 概率不合法（和为 ${sum.toFixed(3)}）`);
+		throw new JevAnswerError(`${id}：概率不合法（和为 ${sum.toFixed(3)}）`);
 	}
 	return probs;
 }
@@ -158,9 +158,9 @@ function checkDistribution(id: string, probabilities: unknown, keys: string[]): 
 export function getChoice(res: SystemOneResponse, req: SystemOneRequest, id: string): ChoiceAnswer {
 	const q = req.questions[id];
 	const a = res.answers[id];
-	if (q?.type !== "choice" || a?.type !== "choice") throw new JevAnswerError(`${id}: 不是 choice 答案`);
+	if (q?.type !== "choice" || a?.type !== "choice") throw new JevAnswerError(`${id}：不是单选（choice）答案`);
 	const allowed = Object.keys(q.criteria);
-	if (!allowed.includes(a.choice)) throw new JevAnswerError(`${id}: 返回值 ${a.choice} 不在选项 [${allowed}] 中`);
+	if (!allowed.includes(a.choice)) throw new JevAnswerError(`${id}：返回值 ${a.choice} 不在选项 [${allowed}] 中`);
 	checkDistribution(id, a.probabilities, allowed);
 	return a;
 }
@@ -168,11 +168,11 @@ export function getChoice(res: SystemOneResponse, req: SystemOneRequest, id: str
 export function getScore(res: SystemOneResponse, req: SystemOneRequest, id: string): ScoreAnswer {
 	const q = req.questions[id];
 	const a = res.answers[id];
-	if (q?.type !== "score" || a?.type !== "score") throw new JevAnswerError(`${id}: 不是 score 答案`);
+	if (q?.type !== "score" || a?.type !== "score") throw new JevAnswerError(`${id}：不是评分（score）答案`);
 	const levels = q.criteria.map((_, i) => String(i));
 	checkDistribution(id, a.probabilities, levels);
 	if (!Number.isFinite(a.score) || a.score < 0 || a.score > levels.length - 1) {
-		throw new JevAnswerError(`${id}: score ${a.score} 超出 0..${levels.length - 1}`);
+		throw new JevAnswerError(`${id}：评分 ${a.score} 超出 0..${levels.length - 1}`);
 	}
 	return a;
 }
@@ -180,8 +180,8 @@ export function getScore(res: SystemOneResponse, req: SystemOneRequest, id: stri
 export function getNoul(res: SystemOneResponse, req: SystemOneRequest, id: string): number {
 	const q = req.questions[id];
 	const a = res.answers[id];
-	if (q?.type !== "noul" || a?.type !== "noul") throw new JevAnswerError(`${id}: 不是 noul 答案`);
-	if (!Number.isFinite(a.noul) || a.noul < 0 || a.noul > 1) throw new JevAnswerError(`${id}: noul ${a.noul} 不在 [0,1]`);
+	if (q?.type !== "noul" || a?.type !== "noul") throw new JevAnswerError(`${id}：不是是非概率（noul）答案`);
+	if (!Number.isFinite(a.noul) || a.noul < 0 || a.noul > 1) throw new JevAnswerError(`${id}：概率 ${a.noul} 不在 [0,1] 之间`);
 	return a.noul;
 }
 
@@ -194,12 +194,12 @@ export function section(title: string): void {
 }
 
 export function printJson(label: string, value: unknown): void {
-	console.log(`${label}:\n${JSON.stringify(value, null, 2)}`);
+	console.log(`${label}：\n${JSON.stringify(value, null, 2)}`);
 }
 
 export const pct = (p: number) => `${(p * 100).toFixed(1)}%`;
 
 /** 审计日志：记录请求、答案和本地决策，用于离线回放、阈值校准和漂移检测 */
 export function audit(event: string, data: Record<string, unknown>): void {
-	console.log(`[audit] ${JSON.stringify({ ts: new Date().toISOString(), event, ...data })}`);
+	console.log(`[审计] ${JSON.stringify({ ts: new Date().toISOString(), event, ...data })}`);
 }
