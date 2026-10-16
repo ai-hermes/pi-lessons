@@ -18,6 +18,7 @@ import {
 	type Fetch,
 	type Question,
 	type Questions,
+	type ResultFor,
 	type SystemOneRequest,
 	type SystemOneResult,
 	TypeSafeClient,
@@ -101,17 +102,33 @@ function checkDistribution(id: string, probabilities: unknown, keys: string[]): 
 /** The SDK's answer type for question K, narrowed to the given kind (needed when questions are built dynamically) */
 type AnswerOf<Q extends Questions, K extends keyof Q, T extends Question["type"]> = Extract<SystemOneResult<Q>["answers"][K], { type: T }>;
 
+/** Any SDK answer (choice / score / noul / box response) */
+type Answer = ResultFor<Question>;
+
 /** Looks up a question and its answer, failing unless both are of the expected type */
 function pick<Q extends Questions, T extends Question["type"]>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: keyof Q & string, type: T) {
 	const q: Question | undefined = req.questions[id];
-	const a = (res.answers as Record<string, any>)[id];
+	const a = (res.answers as Record<string, Answer | undefined>)[id];
 	if (q?.type !== type || a?.type !== type) throw new JevAnswerError(`${id}: not a ${type} answer`);
 	// The check above guarantees the kind; TS cannot narrow a union by a generic `type`, so state it once here
-	return { q: q as Extract<Question, { type: T }>, a };
+	return { q: q as Extract<Question, { type: T }>, a: a as Extract<Answer, { type: T }> };
 }
 
 export function getChoice<Q extends Questions, K extends keyof Q & string>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: K) {
 	const { q, a } = pick(res, req, id, "choice");
+	/*
+	# for choice question, q will be like
+	{
+		category: choice("Which team should handle this `ticket`?", {
+			billing: "Payments, invoices, charges or refunds",
+			technical: "Bugs, errors or product not working as expected",
+			account: "Login, profile, plan or permission changes",
+			other: "Anything that fits none of the above",
+		}),
+	}
+	# so the allowed will be
+	["billing", "technical", "account", "other"]
+	*/
 	const allowed = Object.keys(q.criteria);
 	if (!allowed.includes(a.choice)) throw new JevAnswerError(`${id}: returned value ${a.choice} is not one of the options [${allowed}]`);
 	checkDistribution(id, a.probabilities, allowed);
