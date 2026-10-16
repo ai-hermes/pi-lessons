@@ -9,7 +9,6 @@
 import {
 	audit,
 	getChoice,
-	mockChoice,
 	pct,
 	printJson,
 	printMode,
@@ -17,7 +16,6 @@ import {
 	systemOne,
 	type Answer,
 	type ChoiceAnswer,
-	type MockFn,
 	type SystemOneRequest,
 } from "./shared/jev.ts";
 
@@ -103,13 +101,6 @@ function buildModelRequest(options: RouteOption[]): SystemOneRequest {
 	};
 }
 
-const mock: MockFn = (req): Record<string, Answer> => {
-	if (req.questions.next_step) {
-		return { next_step: mockChoice(req.questions.next_step, { web_search: 0.86, direct_answer: 0.1, ask_user: 0.04 }) };
-	}
-	return { model: mockChoice(req.questions.model, { balanced: 0.58, frontier: 0.3, fast: 0.04, general_model: 0.08 }) };
-};
-
 // ---- 拿到答案之后 ----------------------------------------------------------
 /** Jev 只选路径，不生成参数；参数由代码（或生成模型）生成，执行前再校验一次 */
 function buildSearchArgs(request: string): { query: string; maxResults: number } {
@@ -129,13 +120,13 @@ async function routeTool(): Promise<void> {
 
 	const req = buildToolRequest(options);
 	printJson("state", req.state);
-	const res = await systemOne(req, mock);
+	const res = await systemOne(req);
 	const answer = getChoice(res, req, "next_step"); // 不在列表里或格式异常直接抛错，不猜
 	console.log(`选择：${answer.choice}（confidence ${pct(answer.confidence)}）`, answer.probabilities);
 
 	// 4. 评估时调换选项顺序再跑一遍，检查位置偏差
 	const reversedReq = buildToolRequest(options, true);
-	const reversed = getChoice(await systemOne(reversedReq, mock), reversedReq, "next_step");
+	const reversed = getChoice(await systemOne(reversedReq), reversedReq, "next_step");
 	const consistent = reversed.choice === answer.choice;
 	console.log(`位置偏差检查：倒序后选择 ${reversed.choice} → ${consistent ? "一致" : "不一致，记录为评估样本"}`);
 
@@ -163,7 +154,7 @@ async function routeModel(): Promise<void> {
 	section("模型路由");
 	const options = allowedOptions(MODEL_REGISTRY, MODEL_FALLBACK);
 	const req = buildModelRequest(options);
-	const answer: ChoiceAnswer = getChoice(await systemOne(req, mock), req, "model");
+	const answer: ChoiceAnswer = getChoice(await systemOne(req), req, "model");
 	const model = answer.confidence >= CONFIDENCE_THRESHOLD ? answer.choice : MODEL_FALLBACK;
 	console.log(`选择：${answer.choice}（confidence ${pct(answer.confidence)}）`, answer.probabilities);
 	console.log(`→ 实际使用：${model}${model !== answer.choice ? "（置信度不足，退回通用模型）" : ""}`);

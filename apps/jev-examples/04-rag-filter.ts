@@ -8,12 +8,10 @@ import {
 	audit,
 	getNoul,
 	JevUnavailableError,
-	mockNoul,
 	pct,
 	printMode,
 	section,
 	systemOne,
-	type MockFn,
 	type SystemOneRequest,
 } from "./shared/jev.ts";
 
@@ -121,13 +119,6 @@ function buildRequest(query: string, batch: Candidate[]): SystemOneRequest {
 	};
 }
 
-const mock: MockFn = (req) => {
-	const { candidates } = req.state as { candidates: { id: string; text: string }[] };
-	return Object.fromEntries(
-		candidates.map((c) => [`answers_${c.id}`, mockNoul(c.text.includes("工作日原路退回") ? 0.94 : c.text.includes("退款") ? 0.31 : 0.03)]),
-	);
-};
-
 // ---- 生成 + 引用校验（生成模型用桩代替） -------------------------------------
 function generateAnswer(query: string, kept: Candidate[]): { text: string; citations: string[] } {
 	const top = kept[0]!;
@@ -151,7 +142,7 @@ for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
 	const batch = candidates.slice(i, i + BATCH_SIZE);
 	const req = buildRequest(query, batch);
 	try {
-		const res = await systemOne(req, mock);
+		const res = await systemOne(req);
 		for (const c of batch) scored.push({ ...c, p: getNoul(res, req, `answers_${c.id}`) });
 	} catch (err) {
 		// 判断失败的候选不参与打分

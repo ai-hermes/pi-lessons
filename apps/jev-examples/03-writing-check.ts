@@ -8,15 +8,12 @@ import {
 	audit,
 	getChoice,
 	getNoul,
-	mockChoice,
-	mockNoul,
 	pct,
 	printJson,
 	printMode,
 	section,
 	systemOne,
 	type ChoiceQuestion,
-	type MockFn,
 	type NoulQuestion,
 	type SystemOneRequest,
 } from "./shared/jev.ts";
@@ -141,13 +138,6 @@ function buildRequest(text: string, list: Check[]): SystemOneRequest {
 	};
 }
 
-const mock: MockFn = (req) => ({
-	hedging: mockNoul(0.88),
-	filler: mockNoul(0.42),
-	tone: mockChoice(req.questions.tone, { casual: 0.55, mixed: 0.35, formal: 0.1 }),
-	actionability: mockChoice(req.questions.actionability, { vague_next_steps: 0.9, no_next_steps: 0.06, clear_next_steps: 0.04 }),
-});
-
 // ---- 拿到答案之后：换算成“通过 / 有问题 / 需复核”，证据句由代码近似定位 ----
 function locateEvidence(text: string, keywords: string[]): string | null {
 	const sentences = text.split(/(?<=[。！？!?])/).map((s) => s.trim()).filter(Boolean);
@@ -166,7 +156,7 @@ printJson("rules", codeRules(text));
 
 const list = checks(input.audience);
 const req = buildRequest(text, list);
-const res = await systemOne(req, mock);
+const res = await systemOne(req);
 
 section("Jev 检查结果");
 const results = list.map((check) => {
