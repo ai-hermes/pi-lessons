@@ -319,6 +319,7 @@ function buildRequest(obs: Observation, recent: RecentAction[]) {
 		},
 		questions,
 	};
+	console.log('req', JSON.stringify(req))
 	return { req, fixedTargets };
 }
 
