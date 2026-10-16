@@ -1,72 +1,51 @@
 /**
- * Minimal client for the Jev (TypeSafe System One) HTTP API + answer validation helpers.
+ * Thin wrapper around the official TypeSafe SDK (`@typesafe-ai/sdk`) + answer validation helpers.
  *
  * - Automatically loads apps/jev-examples/.env (existing environment variables take precedence);
- * - TYPESAFE_API_KEY is required; calls the real endpoint `POST /v1/systemone`;
+ * - TYPESAFE_API_KEY is required (read by the SDK); TYPESAFE_BASE_URL optionally overrides the API root;
  * - Requests go through a proxy when HTTPS_PROXY / HTTP_PROXY is set (the API is region-restricted; use a proxy on 451).
  *
- * API reference: https://docs.typesafe.ai/api
+ * Request / answer types come straight from the SDK, so `choice` answers are typed by their option keys.
+ * The SDK handles transport, retries and HTTP errors; the validators below additionally check that
+ * every answer is consistent with the request before any code acts on it.
+ *
+ * SDK: https://www.npmjs.com/package/@typesafe-ai/sdk · API reference: https://docs.typesafe.ai/api
  */
 
-import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
+import {
+	APIConnectionError,
+	APIError,
+	type ChoiceQuestion,
+	type ChoiceResponse,
+	type Fetch,
+	type NoulResponse,
+	type Question,
+	type Questions,
+	type ScoreQuestion,
+	type ScoreResponse,
+	type SystemOneRequest,
+	type SystemOneResult,
+	TypeSafeClient,
+} from "@typesafe-ai/sdk";
+import { EnvHttpProxyAgent } from "undici";
 
-export type Instructions = string | Record<string, unknown> | unknown[];
+export {
+	choice,
+	noul,
+	score,
+	type ChoiceQuestion,
+	type ChoiceResponse,
+	type NoulQuestion,
+	type NoulResponse,
+	type Question,
+	type Questions,
+	type ScoreQuestion,
+	type ScoreResponse,
+	type SystemOneRequest,
+} from "@typesafe-ai/sdk";
 
-export interface NoulQuestion {
-	type: "noul";
-	instructions: Instructions;
-	criteria?: { true?: Instructions; false?: Instructions };
-}
-
-export interface ChoiceQuestion {
-	type: "choice";
-	instructions: Instructions;
-	criteria: Record<string, Instructions | null>;
-}
-
-export interface ScoreQuestion {
-	type: "score";
-	instructions: Instructions;
-	criteria: Instructions[];
-}
-
-export type Question = NoulQuestion | ChoiceQuestion | ScoreQuestion;
-
-export interface NoulAnswer {
-	type: "noul";
-	noul: number;
-}
-
-export interface ChoiceAnswer {
-	type: "choice";
-	choice: string;
-	probabilities: Record<string, number>;
-	confidence: number;
-}
-
-export interface ScoreAnswer {
-	type: "score";
-	score: number;
-	legend: Record<string, string>;
-	probabilities: Record<string, number>;
-	confidence: number;
-}
-
-export type Answer = NoulAnswer | ChoiceAnswer | ScoreAnswer;
-
-export interface SystemOneRequest {
-	model: string;
-	state: unknown;
-	questions: Record<string, Question>;
-}
-
-export interface SystemOneResponse {
-	model: string;
-	answers: Record<string, Answer>;
-	usage: { input_tokens: number; output_tokens: number };
-	/** Local field: latency (ms) */
-	latencyMs: number;
-}
+/** SDK result plus a locally measured latency (ms) */
+export type SystemOneResponse<Q extends Questions = Questions> = SystemOneResult<Q> & { latencyMs: number };
 
 export class JevUnavailableError extends Error {}
 export class JevAnswerError extends Error {}
@@ -77,60 +56,42 @@ try {
 	if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 }
 
-if (process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy) {
-	setGlobalDispatcher(new EnvHttpProxyAgent());
-}
-
-const BASE_URL = process.env.TYPESAFE_BASE_URL ?? "https://api.typesafe.ai";
 const TIMEOUT_MS = Number(process.env.JEV_TIMEOUT_MS ?? 30_000);
 const MAX_RETRIES = 3;
 
-function apiKey(): string {
-	const key = process.env.TYPESAFE_API_KEY?.trim();
-	if (!key) {
+/** Node's built-in fetch ignores HTTPS_PROXY, so hand the SDK a fetch that routes through undici's proxy agent */
+function proxyFetch(): Fetch | undefined {
+	const env = process.env;
+	if (!(env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy)) return undefined;
+	const dispatcher = new EnvHttpProxyAgent();
+	return (input, init) => fetch(input, { ...init, dispatcher } as RequestInit);
+}
+
+let client: TypeSafeClient | undefined;
+
+function getClient(): TypeSafeClient {
+	if (!process.env.TYPESAFE_API_KEY?.trim()) {
 		console.error("❌ TYPESAFE_API_KEY is not set: add it to apps/jev-examples/.env (see .env.example).");
 		process.exit(1);
 	}
-	return key;
+	client ??= new TypeSafeClient({ timeout: TIMEOUT_MS, retry: { maxRetries: MAX_RETRIES }, fetch: proxyFetch() });
+	return client;
 }
 
 export function printMode(): void {
-	apiKey();
-	console.log(`✅ Calling ${BASE_URL}/v1/systemone\n`);
+	console.log(`✅ Calling ${getClient().baseURL}/v1/systemone via @typesafe-ai/sdk\n`);
 }
 
-/** Calls Jev; retries 429 / 529 with exponential backoff, throws JevUnavailableError for other errors */
-export async function systemOne(req: SystemOneRequest): Promise<SystemOneResponse> {
+/** Calls Jev through the SDK (which retries 408 / 429 / 5xx); transport and HTTP failures become JevUnavailableError */
+export async function systemOne<const Q extends Questions>(req: SystemOneRequest<Q>): Promise<SystemOneResponse<Q>> {
 	const started = Date.now();
-	const key = apiKey();
-
-	for (let attempt = 0; ; attempt++) {
-		let res: Response;
-		try {
-			res = await fetch(`${BASE_URL}/v1/systemone`, {
-				method: "POST",
-				headers: {
-					Authorization: `Bearer ${key}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify(req),
-				signal: AbortSignal.timeout(TIMEOUT_MS),
-			});
-		} catch (err) {
-			throw new JevUnavailableError(`Request failed: ${(err as Error).message}`);
-		}
-		if ((res.status === 429 || res.status === 529) && attempt < MAX_RETRIES) {
-			await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
-			continue;
-		}
-		if (!res.ok) {
-			throw new JevUnavailableError(`HTTP ${res.status}: ${await res.text()}`);
-		}
-		const body = (await res.json()) as Omit<SystemOneResponse, "latencyMs">;
-		if (!body || typeof body.answers !== "object") {
-			throw new JevAnswerError("Response is missing answers");
-		}
-		return { ...body, latencyMs: Date.now() - started };
+	try {
+		const res = await getClient().systemOne(req);
+		return { ...res, latencyMs: Date.now() - started };
+	} catch (err) {
+		if (err instanceof APIError) throw new JevUnavailableError(`HTTP ${err.status}: ${err.message}`);
+		if (err instanceof APIConnectionError) throw new JevUnavailableError(`Request failed: ${err.message}`);
+		throw err;
 	}
 }
 
@@ -155,34 +116,51 @@ function checkDistribution(id: string, probabilities: unknown, keys: string[]): 
 	return probs;
 }
 
-export function getChoice(res: SystemOneResponse, req: SystemOneRequest, id: string): ChoiceAnswer {
-	const q = req.questions[id];
-	const a = res.answers[id];
+/** Choice answer typed by the question's option keys when they are known statically */
+type ChoiceAnswerFor<T extends Question> = [T] extends [ChoiceQuestion<infer C>] ? ChoiceResponse<C> : ChoiceResponse;
+/** Score answer typed by the question's rubric when it is known statically */
+type ScoreAnswerFor<T extends Question> = [T] extends [ScoreQuestion<infer C>] ? ScoreResponse<C> : ScoreResponse;
+
+function lookup<Q extends Questions>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: keyof Q & string) {
+	return { q: req.questions[id] as Question | undefined, a: res.answers[id] as { type?: string } | undefined };
+}
+
+export function getChoice<Q extends Questions, K extends keyof Q & string>(
+	res: SystemOneResult<Q>,
+	req: SystemOneRequest<Q>,
+	id: K,
+): ChoiceAnswerFor<Q[K]> {
+	const { q, a } = lookup(res, req, id);
 	if (q?.type !== "choice" || a?.type !== "choice") throw new JevAnswerError(`${id}: not a choice answer`);
+	const answer = a as ChoiceResponse;
 	const allowed = Object.keys(q.criteria);
-	if (!allowed.includes(a.choice)) throw new JevAnswerError(`${id}: returned value ${a.choice} is not one of the options [${allowed}]`);
-	checkDistribution(id, a.probabilities, allowed);
-	return a;
+	if (!allowed.includes(answer.choice)) throw new JevAnswerError(`${id}: returned value ${answer.choice} is not one of the options [${allowed}]`);
+	checkDistribution(id, answer.probabilities, allowed);
+	return answer as ChoiceAnswerFor<Q[K]>;
 }
 
-export function getScore(res: SystemOneResponse, req: SystemOneRequest, id: string): ScoreAnswer {
-	const q = req.questions[id];
-	const a = res.answers[id];
+export function getScore<Q extends Questions, K extends keyof Q & string>(
+	res: SystemOneResult<Q>,
+	req: SystemOneRequest<Q>,
+	id: K,
+): ScoreAnswerFor<Q[K]> {
+	const { q, a } = lookup(res, req, id);
 	if (q?.type !== "score" || a?.type !== "score") throw new JevAnswerError(`${id}: not a score answer`);
+	const answer = a as ScoreResponse;
 	const levels = q.criteria.map((_, i) => String(i));
-	checkDistribution(id, a.probabilities, levels);
-	if (!Number.isFinite(a.score) || a.score < 0 || a.score > levels.length - 1) {
-		throw new JevAnswerError(`${id}: score ${a.score} is outside 0..${levels.length - 1}`);
+	checkDistribution(id, answer.probabilities, levels);
+	if (!Number.isFinite(answer.score) || answer.score < 0 || answer.score > levels.length - 1) {
+		throw new JevAnswerError(`${id}: score ${answer.score} is outside 0..${levels.length - 1}`);
 	}
-	return a;
+	return answer as ScoreAnswerFor<Q[K]>;
 }
 
-export function getNoul(res: SystemOneResponse, req: SystemOneRequest, id: string): number {
-	const q = req.questions[id];
-	const a = res.answers[id];
+export function getNoul<Q extends Questions, K extends keyof Q & string>(res: SystemOneResult<Q>, req: SystemOneRequest<Q>, id: K): number {
+	const { q, a } = lookup(res, req, id);
 	if (q?.type !== "noul" || a?.type !== "noul") throw new JevAnswerError(`${id}: not a noul answer`);
-	if (!Number.isFinite(a.noul) || a.noul < 0 || a.noul > 1) throw new JevAnswerError(`${id}: probability ${a.noul} is outside [0, 1]`);
-	return a.noul;
+	const { noul: p } = a as NoulResponse;
+	if (!Number.isFinite(p) || p < 0 || p > 1) throw new JevAnswerError(`${id}: probability ${p} is outside [0, 1]`);
+	return p;
 }
 
 // ---------------------------------------------------------------------------

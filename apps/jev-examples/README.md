@@ -11,9 +11,9 @@ pnpm --filter jev-examples typecheck
 
 ## Configuration
 
-Each script automatically loads `apps/jev-examples/.env` on startup (existing environment variables take precedence) and calls `POST /v1/systemone` directly; 429 / 529 responses are retried with backoff. If `TYPESAFE_API_KEY` is not set, the script exits with an error.
+Each script automatically loads `apps/jev-examples/.env` on startup (existing environment variables take precedence) and calls `POST /v1/systemone` through the official [`@typesafe-ai/sdk`](https://www.npmjs.com/package/@typesafe-ai/sdk) (`TypeSafeClient`, up to 3 retries with backoff on 408 / 429 / 5xx). If `TYPESAFE_API_KEY` is not set, the script exits with an error.
 
-Optional variables: `TYPESAFE_BASE_URL`, `JEV_TIMEOUT_MS` (default 30000). The API is region-restricted: if it returns 451, set `HTTPS_PROXY` (or `HTTP_PROXY`) and requests will go through that proxy. `.env` is git-ignored; never commit your key.
+Optional variables: `TYPESAFE_BASE_URL`, `TYPESAFE_LOG_LEVEL`, `JEV_TIMEOUT_MS` (default 30000). The API is region-restricted: if it returns 451, set `HTTPS_PROXY` (or `HTTP_PROXY`) and requests will go through that proxy (passed to the SDK via its `fetch` option, using undici's `EnvHttpProxyAgent`). `.env` is git-ignored; never commit your key.
 
 ## Cases
 
@@ -26,7 +26,7 @@ Optional variables: `TYPESAFE_BASE_URL`, `JEV_TIMEOUT_MS` (default 30000). The A
 | 5 | `05-coding-proposal-review.ts` | Noul | Coding agent proposal review: schema / path / diff validation, pinned model version, decision table and audit record |
 | 6 | `06-browser-action.ts` | Choice (multi-turn) | Browser action selection: numbered visible elements, dynamic action set, page-version recheck before execution, stuck detection; a low-probability DONE becomes WAIT, and a DONE rejected by code verification is fed back to the next round |
 
-`shared/jev.ts` is the shared client: requests, retries and answer validation (options must be within `criteria`, probabilities must sum to ≈1).
+`shared/jev.ts` is a thin wrapper around the SDK: question types and the `choice` / `score` / `noul` builders come straight from `@typesafe-ai/sdk`, so answer types are inferred from the questions (e.g. `choice` is typed as the option keys). On top of that it adds latency timing, maps SDK errors to `JevUnavailableError`, and runtime-validates answers (options must be within `criteria`, probabilities must sum to ≈1, scores in range) — the SDK does not check these.
 
 All `state` keys, question IDs, option keys and instructions are in English (e.g. `task`, `evidence`, `addresses_task`, `needs_clarification`, `permit`), and the code branches directly on these keys. When you change question wording, bump the question set version as well (see `QUESTION_SET_VERSION` in case 5).
 

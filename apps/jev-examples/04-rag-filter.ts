@@ -12,7 +12,7 @@ import {
 	printMode,
 	section,
 	systemOne,
-	type SystemOneRequest,
+	noul,
 } from "./shared/jev.ts";
 
 // Values from the official example playbook; calibrate them against your own data
@@ -112,17 +112,14 @@ interface Candidate {
 
 const questionId = (c: Candidate) => `${c.id}_answers_query`;
 
-function buildRequest(query: string, batch: Candidate[]): SystemOneRequest {
+function buildRequest(query: string, batch: Candidate[]) {
 	return {
 		model: "jev-latest",
 		state: { query, candidates: batch.map((c) => ({ id: c.id, content: c.chunk.text })) },
 		questions: Object.fromEntries(
 			batch.map((c) => [
 				questionId(c),
-				{
-					type: "noul",
-					instructions: `Does the \`content\` of the item in \`candidates\` whose \`id\` is "${c.id}" contain information that directly answers \`query\`?`,
-				},
+				noul(`Does the \`content\` of the item in \`candidates\` whose \`id\` is "${c.id}" contain information that directly answers \`query\`?`),
 			]),
 		),
 	};

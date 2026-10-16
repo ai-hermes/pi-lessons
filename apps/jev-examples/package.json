@@ -22,6 +22,7 @@
     "typescript": "^5.9.0"
   },
   "dependencies": {
+    "@typesafe-ai/sdk": "^0.7.0",
     "undici": "^7.30.0"
   }
 }
