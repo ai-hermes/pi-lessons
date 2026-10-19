@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "00": "tsx 00-basic.ts",
     "01": "tsx 01-ticket-routing.ts",
     "02": "tsx 02-tool-model-routing.ts",
     "03": "tsx 03-writing-check.ts",

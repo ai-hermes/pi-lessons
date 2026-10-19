@@ -49,7 +49,7 @@ function proxyFetch(): Fetch | undefined {
 
 let client: TypeSafeClient | undefined;
 
-function getClient(): TypeSafeClient {
+export function getClient(): TypeSafeClient {
 	if (!process.env.TYPESAFE_API_KEY?.trim()) {
 		console.error("❌ TYPESAFE_API_KEY is not set: add it to apps/jev-examples/.env (see .env.example).");
 		process.exit(1);
