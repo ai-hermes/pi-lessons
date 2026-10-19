@@ -26,6 +26,8 @@ flowchart LR
   Router & Gate & V -.-> L[(decisions.jsonl)]
 ```
 
+Detailed diagrams: [inside the loop (Gate)](docs/loop-inner.svg) · [outside the loop (Router / Verifier)](docs/loop-outer.svg)
+
 ## Quick start
 
 Copy `.env.example` to `.env` and fill in the Jev API key and proxy (`TYPESAFE_API_KEY`, `HTTPS_PROXY`) plus `KIMI_API_KEY` for the agent's model (the built-in `kimi-coding` provider, loaded through pi-coding-agent's `ModelRuntime`, as in `apps/pi-sdk`). Then:
