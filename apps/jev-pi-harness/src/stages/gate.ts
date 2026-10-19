@@ -62,7 +62,10 @@ function subjectOf(name: string, args: unknown): string {
 }
 
 function blocked(reason: string): BeforeToolCallResult {
-	return { block: true, reason: `${reason} Do not retry this call or work around it; tell the user what you could not do.` };
+	return {
+		block: true,
+		reason: `${reason} Do not retry this call or work around it; tell the user what you could not do.`
+	};
 }
 
 export function createGate(deps: {
@@ -87,7 +90,11 @@ export function createGate(deps: {
 		const target = PATH_TOOLS.has(tool) && typeof argRecord.path === "string" ? deps.workspace.describe(argRecord.path) : undefined;
 
 		if (target && !target.inside) {
-			const signals: GateSignals = { destructive: 0, irreversible: 0, outsideWorkspace: 1 };
+			const signals: GateSignals = {
+				destructive: 0,
+				irreversible: 0,
+				outsideWorkspace: 1
+			};
 			const verdict = decideGate(signals);
 			deps.log.write({ stage: "gate", verdict: verdict.action, reason: "outside-workspace (code)", subject, signals, latencyMs: ms() });
 			return blocked(`Blocked: ${target.violation}.`);
