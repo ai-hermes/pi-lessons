@@ -125,7 +125,7 @@ export function createGate(deps: {
 
 		const verdict = decideGate(signals);
 		let action = verdict.action;
-		let reason: string = `worst=${verdict.driver}`;
+		let reason: string = `riskiest=${verdict.riskiestSignal}`;
 		if (action === "ask") {
 			const approved = await deps.approver(subject, signals);
 			action = approved ? "allow" : "block";
@@ -137,6 +137,6 @@ export function createGate(deps: {
 			if (tool === "write" && target?.inside && !target.exists && abs) deps.workspace.createdThisRun.add(abs);
 			return undefined;
 		}
-		return blocked(`Blocked: this looks destructive (${verdict.driver}=${verdict.worst.toFixed(2)}).`);
+		return blocked(`Blocked: too risky (${verdict.riskiestSignal}=${verdict.risk.toFixed(2)}).`);
 	};
 }
