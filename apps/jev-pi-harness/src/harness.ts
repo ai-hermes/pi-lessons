@@ -17,7 +17,7 @@ import type { Tier } from "./policies.ts";
 import { type Approver, createGate } from "./stages/gate.ts";
 import { route } from "./stages/router.ts";
 import { verify, type VerifyOutcome } from "./stages/verifier.ts";
-import { createWorkspaceTools, Workspace } from "./workspace.ts";
+import { createTools, Workspace } from "./workspace.ts";
 
 const SYSTEM_PROMPT = `You are a careful assistant working inside a project workspace through tools.
 - Ground every statement about the workspace in a file you read or a tool result. Say so when you could not check something.
@@ -90,7 +90,7 @@ function collectEvidence(messages: AgentMessage[], maxItems = 12): string[] {
 
 export async function runHarness(opts: HarnessOptions): Promise<HarnessResult> {
 	const workspace = new Workspace(opts.workspaceDir);
-	const tools = createWorkspaceTools(workspace);
+	const tools = createTools(workspace);
 
 	const routed = await route(opts.request, opts);
 	const model = kimiModel(routed.tier === "fast" ? env("KIMI_MODEL", "kimi-for-coding") : env("KIMI_POWERFUL_MODEL", "k3"));
@@ -99,7 +99,7 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessResult> {
 		initialState: { systemPrompt: SYSTEM_PROMPT, model, tools, thinkingLevel: "off" },
 		streamFn: (m, context, options) => models.streamSimple(m, context, options),
 		getApiKey: () => env("KIMI_API_KEY"),
-		beforeToolCall: createGate({ jev: opts.jev, log: opts.log, workspace, tools, approver: opts.approver }),
+		beforeToolCall: createGate({ jev: opts.jev, log: opts.log, workspace, tools: tools.map((t) => t.name), approver: opts.approver }),
 		// One call at a time: approvals are serial and a later call may depend on an earlier block
 		toolExecution: "sequential",
 	});

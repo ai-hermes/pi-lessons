@@ -2,11 +2,12 @@
  * Gate: runs in Pi's `beforeToolCall` hook, before every tool call.
  *
  * Order of checks — cheapest and most certain first:
- *   1. unknown tool                     → block (code)
- *   2. path argument outside workspace  → block (code, outsideWorkspace = 1)
- *   3. read-only tool                   → allow (code, Jev not called)
- *   4. Jev: destructive / irreversible  → decideGate() → allow / ask / block
- *   5. Jev unavailable or bad answer    → block (fail closed)
+ *   1. unknown tool                           → block (code)
+ *   2. read / edit / write path outside       → block (code, outsideWorkspace = 1)
+ *   3. read                                   → allow (code, Jev not called)
+ *   4. Jev: destructive / irreversible        → decideGate() → allow / ask / block
+ *      bash has no path to check in code, so Jev also judges outsideWorkspace
+ *   5. Jev unavailable or bad answer          → block (fail closed)
  *
  * Jev only ever sees the tool name, the (redacted, truncated) arguments and code-computed facts about the
  * target — never the page or file text that led the model to make the call. A prompt injection in that
@@ -16,20 +17,32 @@ import type { BeforeToolCallContext, BeforeToolCallResult } from "@earendil-work
 import { type DecisionLog, redact, redactText } from "@/decision-log.ts";
 import { type JevClient, type JsonValue, noul, readNoul } from "@/jev/client.ts";
 import { decideGate, FAILURE_POLICY, type GateSignals } from "@/policies.ts";
-import type { HarnessTool, Workspace } from "@/workspace.ts";
+import type { Workspace } from "@/workspace.ts";
 
 /** Human approval for the "ask" band. No answer means no. */
 export type Approver = (subject: string, signals: GateSignals) => Promise<boolean>;
 
-export function gateRequest(state: { [key: string]: JsonValue }) {
+const PATH_TOOLS = new Set(["read", "edit", "write"]);
+const READ_ONLY = new Set(["read"]);
+
+const outsideWorkspace = noul({
+	instructions: "This shell command reads or writes anything outside the workspace root (the command's working directory).",
+	criteria: {
+		true: "Touches paths like ../, ~, /etc or absolute paths elsewhere, or sends data over the network.",
+		false: "Every path it touches is inside the working directory.",
+	},
+});
+
+export function gateRequest(state: { [key: string]: JsonValue }, shell: boolean) {
 	return {
 		state,
 		questions: {
+			...(shell ? { outsideWorkspace } : {}),
 			destructive: noul({
 				instructions: "This tool call destroys or overwrites data that was not created by this run.",
 				criteria: {
-					true: "Deletes files, truncates or overwrites existing content, or force-pushes over history.",
-					false: "Reads, lists, creates a new file, or overwrites / deletes a file this run already created (see `targets[].createdThisRun`).",
+					true: "Deletes files, truncates, edits or overwrites existing content, or force-pushes over history.",
+					false: "Reads, lists, creates a new file, or changes / deletes a file this run already created (see `targets[].createdThisRun`).",
 				},
 			}),
 			irreversible: noul({
@@ -55,45 +68,48 @@ export function createGate(deps: {
 	jev: JevClient;
 	log: DecisionLog;
 	workspace: Workspace;
-	tools: HarnessTool[];
+	tools: string[];
 	approver: Approver;
 }): (ctx: BeforeToolCallContext) => Promise<BeforeToolCallResult | undefined> {
 	return async ({ toolCall, args }) => {
 		const started = performance.now();
 		const ms = () => Math.round(performance.now() - started);
 		const subject = subjectOf(toolCall.name, args);
-		const tool = deps.tools.find((t) => t.name === toolCall.name);
+		const tool = toolCall.name;
 
-		if (!tool) {
+		if (!deps.tools.includes(tool)) {
 			deps.log.write({ stage: "gate", verdict: "block", reason: "unknown-tool (code)", subject, latencyMs: ms() });
 			return blocked(`Blocked: unknown tool ${toolCall.name}.`);
 		}
 
 		const argRecord = (args ?? {}) as Record<string, unknown>;
-		const targets = tool.pathArgs
-			.filter((k) => typeof argRecord[k] === "string")
-			.map((k) => ({ arg: k, path: argRecord[k] as string, ...deps.workspace.describe(argRecord[k] as string) }));
+		const target = PATH_TOOLS.has(tool) && typeof argRecord.path === "string" ? deps.workspace.describe(argRecord.path) : undefined;
 
-		const violation = targets.find((t) => !t.inside);
-		if (violation) {
+		if (target && !target.inside) {
 			const signals: GateSignals = { destructive: 0, irreversible: 0, outsideWorkspace: 1 };
 			const verdict = decideGate(signals);
 			deps.log.write({ stage: "gate", verdict: verdict.action, reason: "outside-workspace (code)", subject, signals: { ...signals }, latencyMs: ms() });
-			return blocked(`Blocked: ${violation.violation}.`);
+			return blocked(`Blocked: ${target.violation}.`);
 		}
 
-		if (tool.readOnly) {
+		if (READ_ONLY.has(tool)) {
 			deps.log.write({ stage: "gate", verdict: "allow", reason: "read-only (code)", subject, latencyMs: ms() });
 			return undefined;
 		}
 
-		const req = gateRequest({ tool: toolCall.name, arguments: redact(args ?? {}, 300) as JsonValue, targets: JSON.parse(JSON.stringify(targets)) as JsonValue });
+		const { abs, ...facts } = target ?? {};
+		const shell = tool === "bash";
+		const req = gateRequest({ tool, arguments: redact(args ?? {}, 300) as JsonValue, ...(target ? { target: facts as JsonValue } : {}) }, shell);
 		let signals: GateSignals;
 		let jevModel: string | undefined;
 		try {
 			const res = await deps.jev.ask(req);
 			jevModel = res.model;
-			signals = { destructive: readNoul(res, req, "destructive"), irreversible: readNoul(res, req, "irreversible"), outsideWorkspace: 0 };
+			signals = {
+				destructive: readNoul(res, req, "destructive"),
+				irreversible: readNoul(res, req, "irreversible"),
+				outsideWorkspace: shell ? readNoul(res, req, "outsideWorkspace") : 0,
+			};
 		} catch (err) {
 			deps.log.write({ stage: "gate", verdict: FAILURE_POLICY.gate, fallback: "jev-failed→block", error: (err as Error).message, subject, latencyMs: ms() });
 			return blocked("Blocked: the safety check is unavailable, so this call cannot be approved right now.");
@@ -109,7 +125,10 @@ export function createGate(deps: {
 		}
 		deps.log.write({ stage: "gate", verdict: action, reason, subject, signals: { ...signals }, latencyMs: ms(), jevModel });
 
-		if (action === "allow") return undefined;
+		if (action === "allow") {
+			if (tool === "write" && target?.inside && !target.exists && abs) deps.workspace.createdThisRun.add(abs);
+			return undefined;
+		}
 		return blocked(`Blocked: this looks destructive (${verdict.driver}=${verdict.worst.toFixed(2)}).`);
 	};
 }
