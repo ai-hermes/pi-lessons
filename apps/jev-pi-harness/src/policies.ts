@@ -56,9 +56,15 @@ export function decideGate(signals: GateSignals, policy: GatePolicy = DEFAULT_GA
 export type Tier = "fast" | "powerful";
 
 export interface RouterSignals {
-	tier: { choice: Tier; confidence: number };
+	tier: {
+		choice: Tier;
+		confidence: number
+	};
 	/** Expected score on a 0..max rubric (0 = mechanical, max = architectural) */
-	complexity: { score: number; max: number };
+	complexity: {
+		score: number;
+		max: number
+	};
 }
 
 export interface RouterPolicy {
@@ -69,7 +75,11 @@ export interface RouterPolicy {
 	fallbackTier: Tier;
 }
 
-export const DEFAULT_ROUTER_POLICY: RouterPolicy = { escalateAtComplexity: 1.5, minConfidence: 0.7, fallbackTier: "powerful" };
+export const DEFAULT_ROUTER_POLICY: RouterPolicy = {
+	escalateAtComplexity: 1.5,
+	minConfidence: 0.7,
+	fallbackTier: "powerful"
+};
 
 export interface RouteVerdict {
 	tier: Tier;
@@ -77,9 +87,32 @@ export interface RouteVerdict {
 }
 
 export function decideRoute(signals: RouterSignals, policy: RouterPolicy = DEFAULT_ROUTER_POLICY): RouteVerdict {
-	if (signals.complexity.score >= policy.escalateAtComplexity) return { tier: "powerful", reason: "escalated-by-complexity" };
-	if (signals.tier.confidence < policy.minConfidence) return { tier: policy.fallbackTier, reason: "low-confidence-fallback" };
-	return { tier: signals.tier.choice, reason: "jev-choice" };
+	/*
+	0 -> Mechanical
+	1 -> Localized
+	2 -> Architectural
+
+	default threshold is 1.5
+	1 < 1.5 < 2, if score for complexity greater than 1.5,means user_request is a little bit hard, and need powerful model
+	*/
+	if (signals.complexity.score >= policy.escalateAtComplexity) {
+		return {
+			tier: "powerful",
+			reason: "escalated-by-complexity"
+		};
+	}
+	// if the jev not very sure for the result, then it will fallback to default model
+	if (signals.tier.confidence < policy.minConfidence) {
+		return {
+			tier: policy.fallbackTier,
+			reason: "low-confidence-fallback"
+		};
+	}
+	// judge by jev, trust the choice
+	return {
+		tier: signals.tier.choice,
+		reason: "jev-choice"
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -88,7 +121,10 @@ export function decideRoute(signals: RouterSignals, policy: RouterPolicy = DEFAU
 
 export interface VerifierSignals {
 	/** Expected score on 0..2: 0 = does not answer, 1 = partial, 2 = fully answers */
-	quality: { score: number; confidence: number };
+	quality: {
+		score: number;
+		confidence: number
+	};
 	/** Probability that every factual claim is backed by files / tool results in the transcript */
 	grounded: number;
 }
@@ -101,7 +137,12 @@ export interface VerifierPolicy {
 	maxAttempts: number;
 }
 
-export const DEFAULT_VERIFIER_POLICY: VerifierPolicy = { acceptQualityAt: 1.5, minGrounded: 0.6, minJudgeConfidence: 0.5, maxAttempts: 2 };
+export const DEFAULT_VERIFIER_POLICY: VerifierPolicy = {
+	acceptQualityAt: 1.5,
+	minGrounded: 0.6,
+	minJudgeConfidence: 0.5,
+	maxAttempts: 2
+};
 
 export interface VerifyVerdict {
 	action: "accept" | "retry" | "give-up";

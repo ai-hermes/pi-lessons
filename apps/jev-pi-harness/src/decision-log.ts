@@ -45,10 +45,15 @@ export class DecisionLog {
 		readonly runId: string,
 		private readonly file: string,
 		private readonly echo: (record: DecisionRecord) => void,
-	) {}
+	) { }
 
 	write(entry: Omit<DecisionRecord, "runId" | "at">): void {
-		const record = { ...entry, subject: redactText(entry.subject, 200), runId: this.runId, at: new Date().toISOString() };
+		const record = {
+			...entry,
+			subject: redactText(entry.subject, 200),
+			runId: this.runId,
+			at: new Date().toISOString()
+		};
 		this.records.push(record);
 		appendFileSync(this.file, `${JSON.stringify(record)}\n`, { mode: 0o600 });
 		this.echo(record);

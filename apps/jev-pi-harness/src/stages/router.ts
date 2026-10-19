@@ -33,25 +33,35 @@ export interface RouteOutcome {
 	signals?: Record<string, number>;
 }
 
-export async function route(request: string, deps: { jev: JevClient; log: DecisionLog }): Promise<RouteOutcome> {
+export async function route(request: string, jev: JevClient, log: DecisionLog): Promise<RouteOutcome> {
 	const started = performance.now();
 	const jevRequest = buildTierQuestions(request);
 	try {
-		const res = await deps.jev.ask(jevRequest);
+		const res = await jev.ask(jevRequest);
 		const tier = readChoice(res, jevRequest, "tier");
 		const complexity = readScore(res, jevRequest, "complexity");
 		const verdict = decideRoute({
 			tier: {
 				choice: tier.choice as Tier,
 				confidence: tier.confidence
-			}, complexity
+			},
+			complexity
 		});
-		const signals = { [`tier:${tier.choice}`]: tier.confidence, complexity: complexity.score };
-		deps.log.write({ stage: "router", verdict: verdict.tier, reason: verdict.reason, subject: request, signals, latencyMs: Math.round(performance.now() - started), jevModel: res.model });
+		const signals = {
+			[`tier:${tier.choice}`]: tier.confidence,
+			complexity: complexity.score
+		};
+		log.write({
+			stage: "router",
+			verdict: verdict.tier,
+			reason: verdict.reason,
+			subject: request,
+			signals, latencyMs: Math.round(performance.now() - started), jevModel: res.model
+		});
 		return { ...verdict, signals };
 	} catch (err) {
 		const tier = FAILURE_POLICY.router;
-		deps.log.write({ stage: "router", verdict: tier, fallback: "jev-failed→powerful", error: (err as Error).message, subject: request, latencyMs: Math.round(performance.now() - started) });
+		log.write({ stage: "router", verdict: tier, fallback: "jev-failed→powerful", error: (err as Error).message, subject: request, latencyMs: Math.round(performance.now() - started) });
 		return { tier, reason: "jev-failed" };
 	}
 }
