@@ -7,7 +7,9 @@
     "dev:pi-chat": "pnpm --filter pi-chat dev",
     "build:pi-chat": "pnpm --filter pi-chat build",
     "typecheck:pi-codemode": "pnpm --filter pi-codemode typecheck",
-    "typecheck:jev-examples": "pnpm --filter jev-examples typecheck"
+    "typecheck:jev-examples": "pnpm --filter jev-examples typecheck",
+    "typecheck:jev-pi-harness": "pnpm --filter jev-pi-harness typecheck",
+    "test:jev-pi-harness": "pnpm --filter jev-pi-harness test"
   },
   "license": "ISC",
   "packageManager": "pnpm@11.22.0"

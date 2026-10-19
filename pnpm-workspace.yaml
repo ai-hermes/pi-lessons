@@ -4,6 +4,7 @@ packages:
   - 'apps/pi-sdk'
   - 'apps/pi-codemode'
   - 'apps/jev-examples'
+  - 'apps/jev-pi-harness'
 allowBuilds:
   '@google/genai': true
   esbuild: true
