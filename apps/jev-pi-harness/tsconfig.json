@@ -9,8 +9,7 @@
     "noEmit": true,
     "types": ["node"],
     "allowImportingTsExtensions": true,
-    "baseUrl": ".",
-    "paths": { "@/*": ["src/*"] }
+    "paths": { "@/*": ["./src/*"] }
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "cases/**/*.ts"]
 }
