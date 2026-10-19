@@ -150,5 +150,12 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessResult> {
 		prompt = `A reviewer checked your answer and found gaps:\n${verification.feedback.map((f) => `- ${f}`).join("\n")}\nFix them and give the complete final answer again.`;
 	} while (verification.action === "retry");
 
-	return { answer, tier: routed.tier, model: model.id, attempts: attempt, verification, decisions: opts.log.records };
+	return {
+		answer,
+		tier: routed.tier,
+		model: model.id,
+		attempts: attempt,
+		verification,
+		decisions: opts.log.records
+	};
 }

@@ -44,7 +44,8 @@ export async function route(request: string, jev: JevClient, log: DecisionLog): 
 			reason: verdict.reason,
 			subject: request,
 			signals,
-			latencyMs: Math.round(performance.now() - started), jevModel: res.model
+			latencyMs: Math.round(performance.now() - started),
+			jevModel: res.model
 		});
 		return verdict;
 	} catch (err) {
