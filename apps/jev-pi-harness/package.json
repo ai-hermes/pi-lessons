@@ -1,0 +1,27 @@
+{
+  "name": "jev-pi-harness",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Agent harness demo: Pi runs the agent loop, Jev answers the small judgement calls (Router / Gate / Verifier)",
+  "scripts": {
+    "cases": "tsx cases/run.ts",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.84.4",
+    "@earendil-works/pi-ai": "^0.84.4",
+    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@typesafe-ai/sdk": "^0.7.0",
+    "undici": "^7.30.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.0"
+  }
+}
