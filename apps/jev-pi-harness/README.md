@@ -117,7 +117,7 @@ test/                    node:test suites
 The design holds up: Jev only produces calibrated numbers, code owns every action, and failures have an explicit policy. Building it surfaced these points, which the implementation addresses:
 
 1. **Endpoint and version.** The article calls OpenRouter `/api/alpha/decisions` with `typesafe/jev-1.13`, while `apps/jev-examples` uses the TypeSafe SDK (`/v1/systemone`, `jev-1.13.0`). Pick one and pin an exact version, because every threshold is calibrated against it.
-2. **Broken snippet.** The `Authorization` line in the client example is masked (`******`) and leaves the template literal unclosed, so it doesn't compile when copied.
+2. **Client snippet.** The `Authorization` line came back masked (`******`) through the Notion API, which turned out to be the API redacting it rather than a broken page. The rewritten article uses the SDK, so there is no hand-built header left to copy wrong.
 3. **Timeout.** A 2 s timeout combined with SDK retries is either too tight or silently 3× longer. The Gate is on the hot path of every write, so set one explicit budget (here 8 s, 1 retry).
 4. **`outsideWorkspace` belongs in code.** The article's §8 itself says hard boundaries are code, yet the Gate example asks Jev for it. Here it's computed by `Workspace.resolve` and short-circuits before any Jev call.
 5. **Read-only tools** don't need a Gate question; skipping them saves latency and cost deterministically.
