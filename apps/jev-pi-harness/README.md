@@ -28,7 +28,7 @@ flowchart LR
 
 ## Quick start
 
-Copy `.env.example` to `.env` and fill in the Jev API key and proxy (`TYPESAFE_API_KEY`, `HTTPS_PROXY`) plus `KIMI_API_KEY` for the agent's model (pi-ai's built-in `kimi-coding` provider). Then:
+Copy `.env.example` to `.env` and fill in the Jev API key and proxy (`TYPESAFE_API_KEY`, `HTTPS_PROXY`) plus `KIMI_API_KEY` for the agent's model (the built-in `kimi-coding` provider, loaded through pi-coding-agent's `ModelRuntime`, as in `apps/pi-sdk`). Then:
 
 ```bash
 pnpm install
@@ -75,7 +75,7 @@ A malformed answer counts as a failure: wrong kind, an option that wasn't offere
 
 Some checks are left to code and never handed to Jev:
 
-- The agent gets Pi's built-in `read` / `edit` / `write` / `bash` tools (pi-coding-agent). They accept any path, so the Gate checks the `path` of read / edit / write with `Workspace.resolve`: `..`, `~`, absolute paths outside the root and symlink escapes (including not-yet-existing children) are blocked in code.
+- The agent gets Pi's built-in `read` / `edit` / `write` / `bash` tools (`createCodingTools` from pi-coding-agent). They accept any path, so the Gate checks the `path` of read / edit / write with `Workspace.resolve`: `..`, `~`, absolute paths outside the root and symlink escapes (including not-yet-existing children) are blocked in code.
 - `bash` has no path to check in code; Jev gets one more question, `outsideWorkspace`, for shell commands.
 - Unknown tools are blocked.
 - The Gate state Jev receives contains redacted, truncated args plus facts about each target (exists, kind, created this run), never file contents.
@@ -97,8 +97,8 @@ Strings are redacted before they are written (e-mails, `sk-`/`ghp_` keys, Bearer
 ```
 src/policies.ts          pure decideRoute / decideGate / decideVerify + FAILURE_POLICY
 src/stages/              router.ts, gate.ts (beforeToolCall), verifier.ts: build Jev questions, apply policies
-src/harness.ts           runHarness: route → Pi Agent → verify → retry
-src/workspace.ts         Pi's read / edit / write / bash tools + the path boundary the Gate enforces
+src/harness.ts           runHarness: route → Pi Agent → verify → retry (ModelRuntime, createCodingTools, serializeConversation from pi-coding-agent)
+src/workspace.ts         the path boundary the Gate enforces for Pi's tools
 src/jev/                 TypeSafe SDK client (proxy, timeout) with answer validation
 src/decision-log.ts      redaction + jsonl log
 cases/                   the 6 scenarios and the runner

@@ -1,11 +1,9 @@
 /**
- * The agent gets Pi's built-in read / edit / write / bash tools, rooted at the workspace.
- * Pi's tools accept any path, so the boundary is enforced by the Gate, in code, with `Workspace.describe`.
+ * Workspace boundary for Pi's built-in tools. The tools accept any path, so the Gate checks each
+ * path argument here, in code, before the call runs.
  */
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-coding-agent";
 
 const isInside = (root: string, target: string) => {
 	const rel = relative(root, target);
@@ -40,13 +38,15 @@ export class Workspace {
 		try {
 			const abs = this.resolve(input);
 			if (!existsSync(abs)) return { inside: true, abs, exists: false };
-			return { inside: true, abs, exists: true, kind: statSync(abs).isDirectory() ? "dir" : "file", createdThisRun: this.createdThisRun.has(abs) };
+			return {
+				inside: true,
+				abs,
+				exists: true,
+				kind: statSync(abs).isDirectory() ? "dir" : "file",
+				createdThisRun: this.createdThisRun.has(abs)
+			};
 		} catch (err) {
 			return { inside: false, violation: (err as Error).message };
 		}
 	}
-}
-
-export function createTools(ws: Workspace): AgentTool<any>[] {
-	return [createReadTool(ws.root), createEditTool(ws.root), createWriteTool(ws.root), createBashTool(ws.root)];
 }
