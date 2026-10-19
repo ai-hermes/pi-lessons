@@ -40,10 +40,6 @@ function proxyFetch(): Fetch | undefined {
 	return (input, init) => fetch(input, { ...init, dispatcher } as RequestInit);
 }
 
-export function hasJevCredentials(): boolean {
-	return Boolean(env("TYPESAFE_API_KEY"));
-}
-
 /** Real Jev through `@typesafe-ai/sdk`. One quick retry only: a stuck decision blocks the agent loop. */
 export function createTypeSafeJev(): JevClient {
 	const model = env("JEV_MODEL") ?? DEFAULT_JEV_MODEL;

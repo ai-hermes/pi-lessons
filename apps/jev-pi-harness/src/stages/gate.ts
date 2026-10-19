@@ -13,11 +13,13 @@
  * text still has to surface as a concrete tool call, and that is what gets judged.
  */
 import type { BeforeToolCallContext, BeforeToolCallResult } from "@earendil-works/pi-agent-core";
-import type { Approver } from "../approver.ts";
 import { type DecisionLog, redact, redactText } from "../decision-log.ts";
 import { type JevClient, type JsonValue, noul, readNoul } from "../jev/client.ts";
-import { decideGate, DEFAULT_GATE_POLICY, FAILURE_POLICY, type GatePolicy, type GateSignals } from "../policies.ts";
+import { decideGate, FAILURE_POLICY, type GateSignals } from "../policies.ts";
 import type { HarnessTool, Workspace } from "../workspace.ts";
+
+/** Human approval for the "ask" band. No answer means no. */
+export type Approver = (subject: string, signals: GateSignals) => Promise<boolean>;
 
 export function gateRequest(state: { [key: string]: JsonValue }) {
 	return {
@@ -55,10 +57,7 @@ export function createGate(deps: {
 	workspace: Workspace;
 	tools: HarnessTool[];
 	approver: Approver;
-	policy?: GatePolicy;
 }): (ctx: BeforeToolCallContext) => Promise<BeforeToolCallResult | undefined> {
-	const policy = deps.policy ?? DEFAULT_GATE_POLICY;
-
 	return async ({ toolCall, args }) => {
 		const started = performance.now();
 		const ms = () => Math.round(performance.now() - started);
@@ -78,7 +77,7 @@ export function createGate(deps: {
 		const violation = targets.find((t) => !t.inside);
 		if (violation) {
 			const signals: GateSignals = { destructive: 0, irreversible: 0, outsideWorkspace: 1 };
-			const verdict = decideGate(signals, policy);
+			const verdict = decideGate(signals);
 			deps.log.write({ stage: "gate", verdict: verdict.action, reason: "outside-workspace (code)", subject, signals: { ...signals }, latencyMs: ms() });
 			return blocked(`Blocked: ${violation.violation}.`);
 		}
@@ -100,11 +99,11 @@ export function createGate(deps: {
 			return blocked("Blocked: the safety check is unavailable, so this call cannot be approved right now.");
 		}
 
-		const verdict = decideGate(signals, policy);
+		const verdict = decideGate(signals);
 		let action = verdict.action;
 		let reason: string = `worst=${verdict.driver}`;
 		if (action === "ask") {
-			const approved = await deps.approver({ subject, verdict, signals });
+			const approved = await deps.approver(subject, signals);
 			action = approved ? "allow" : "block";
 			reason = `${reason}; human ${approved ? "approved" : "denied / unavailable"}`;
 		}

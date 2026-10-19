@@ -15,10 +15,6 @@ export interface LlmBackend {
 	models: Record<Tier, Model<any>>;
 }
 
-export function hasLlmCredentials(): boolean {
-	return Boolean(env("LLM_API_KEY") ?? env("DEEPSEEK_API_KEY"));
-}
-
 function openAICompatibleModel(id: string, baseUrl: string): Model<"openai-completions"> {
 	return {
 		id,
@@ -50,8 +46,8 @@ export function createOnlineLlm(): LlmBackend {
 	};
 }
 
-/** Scripted LLM: each agent turn consumes the next step (a message, or a factory that sees the context). */
-export function createOfflineLlm(steps: FauxResponseStep[]): LlmBackend & { pending: () => number } {
+/** Scripted LLM: each agent turn consumes the next step. */
+export function createOfflineLlm(steps: FauxResponseStep[]): LlmBackend {
 	const core = createFauxCore({
 		provider: "faux",
 		models: [{ id: "faux-fast" }, { id: "faux-powerful" }],
@@ -63,6 +59,5 @@ export function createOfflineLlm(steps: FauxResponseStep[]): LlmBackend & { pend
 		streamFn: core.streamSimple as StreamFn,
 		getApiKey: () => "offline",
 		models: { fast: core.getModel("faux-fast")!, powerful: core.getModel("faux-powerful")! },
-		pending: () => core.getPendingResponseCount(),
 	};
 }
