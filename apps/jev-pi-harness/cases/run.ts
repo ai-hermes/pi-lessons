@@ -1,5 +1,5 @@
 /**
- * pnpm --filter jev-pi-harness cases [<id>|all] [--offline]
+ * pnpm --filter jev-pi-harness cases [<id>|all]
  *
  * Runs demo cases on a scratch copy of fixtures/workspace and appends every decision to decisions.jsonl.
  */
@@ -12,14 +12,11 @@ import { type DecisionRecord, DecisionLog } from "@/decision-log.ts";
 import { env } from "@/env.ts";
 import { type HarnessEvent, runHarness } from "@/harness.ts";
 import { createTypeSafeJev } from "@/jev/client.ts";
-import { scriptedJev, unavailableJev } from "@/jev/fake.ts";
-import { createOfflineLlm, createOnlineLlm } from "@/llm.ts";
+import { createOnlineLlm } from "@/llm.ts";
 import type { Approver } from "@/stages/gate.ts";
 import { SCENARIOS, type Scenario } from "./scenarios.ts";
 
-const args = process.argv.slice(2);
-const offline = args.includes("--offline");
-const which = args.find((a) => !a.startsWith("--")) ?? "all";
+const which = process.argv[2] ?? "all";
 const logFile = env("DECISION_LOG") ?? new URL("../decisions.jsonl", import.meta.url).pathname;
 
 const selected = which === "all" ? SCENARIOS : SCENARIOS.filter((s) => s.id.startsWith(which));
@@ -27,8 +24,10 @@ if (selected.length === 0) {
 	console.error(`Unknown case "${which}". Available: ${SCENARIOS.map((s) => s.id).join(", ")}`);
 	process.exit(1);
 }
-if (!offline && !(env("TYPESAFE_API_KEY") && (env("LLM_API_KEY") ?? env("DEEPSEEK_API_KEY")))) {
-	console.error("❌ Online mode needs TYPESAFE_API_KEY and LLM_API_KEY (see .env.example). Add --offline to run the scripted version.");
+const missing = ["TYPESAFE_API_KEY", "HTTPS_PROXY"].filter((name) => !env(name));
+if (!(env("LLM_API_KEY") ?? env("DEEPSEEK_API_KEY"))) missing.push("LLM_API_KEY");
+if (missing.length > 0) {
+	console.error(`❌ Missing ${missing.join(", ")}: copy .env.example to .env and fill them in.`);
 	process.exit(1);
 }
 
@@ -62,17 +61,17 @@ function printEvent(e: HarnessEvent): void {
 }
 
 async function runCase(s: Scenario): Promise<void> {
-	console.log(`\n\n████ ${s.id} · ${s.title}${offline ? " (offline)" : ""}\n📘 ${s.teaches}\n🙋 ${s.request}`);
+	console.log(`\n\n████ ${s.id} · ${s.title}\n👀 ${s.watch}\n🙋 ${s.request}`);
 
-	const jev = s.outage ? unavailableJev() : offline ? scriptedJev(s.offline.jev()) : createTypeSafeJev();
-	const llm = offline ? createOfflineLlm(s.offline.llm) : createOnlineLlm();
-	const approver: Approver = offline ? async () => Boolean(s.offline.approve) : askHuman;
+	// Port 9 (discard) has nothing listening: the real client fails with a connection error
+	const jev = createTypeSafeJev(s.jevDown ? { baseURL: "http://127.0.0.1:9" } : {});
+	const llm = createOnlineLlm();
 	const log = new DecisionLog(`${s.id}-${randomUUID().slice(0, 8)}`, logFile, printDecision);
 	// Cases delete and overwrite files, so they run on a throwaway copy
 	const workspaceDir = mkdtempSync(join(tmpdir(), "jev-pi-harness-"));
 	cpSync(new URL("../fixtures/workspace", import.meta.url).pathname, workspaceDir, { recursive: true });
 
-	const r = await runHarness({ request: s.request, workspaceDir, jev, llm, approver, log, onEvent: printEvent });
+	const r = await runHarness({ request: s.request, workspaceDir, jev, llm, approver: askHuman, log, onEvent: printEvent });
 	console.log(`\n\n━━ tier=${r.tier} attempts=${r.attempts} verified=${r.verification.verified} (${r.verification.reason}) decisions=${r.decisions.length}\n${r.answer}`);
 }
 

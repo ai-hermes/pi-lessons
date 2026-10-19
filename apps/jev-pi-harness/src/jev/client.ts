@@ -1,9 +1,8 @@
 /**
  * Jev access for the harness.
  *
- * Everything that talks to Jev goes through the tiny `JevClient` interface, so the stages can be driven by
- * the real TypeSafe SDK, by a scripted fake (tests / offline cases) or by a client that always fails
- * (outage drills) without changing any stage code.
+ * TYPESAFE_API_KEY is read by the SDK. The API is region-restricted, so requests go through HTTPS_PROXY.
+ * Node's built-in fetch ignores proxy variables, hence the undici dispatcher.
  */
 import {
 	APIConnectionError,
@@ -40,12 +39,13 @@ function proxyFetch(): Fetch | undefined {
 	return (input, init) => fetch(input, { ...init, dispatcher } as RequestInit);
 }
 
-/** Real Jev through `@typesafe-ai/sdk`. One quick retry only: a stuck decision blocks the agent loop. */
-export function createTypeSafeJev(): JevClient {
+/** One quick retry only: a stuck decision blocks the agent loop. `baseURL` defaults to TYPESAFE_BASE_URL. */
+export function createTypeSafeJev(opts: { baseURL?: string } = {}): JevClient {
 	const model = env("JEV_MODEL") ?? DEFAULT_JEV_MODEL;
 	const client = new TypeSafeClient({
 		timeout: Number(env("JEV_TIMEOUT_MS") ?? 8_000),
 		retry: { maxRetries: 1 },
+		baseURL: opts.baseURL,
 		fetch: proxyFetch(),
 	});
 	return {

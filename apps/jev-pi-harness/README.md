@@ -28,44 +28,39 @@ flowchart LR
 
 ## Quick start
 
+Copy `.env.example` to `.env` and fill in the Jev API key and proxy (`TYPESAFE_API_KEY`, `HTTPS_PROXY`) plus `LLM_API_KEY` for the agent's model (any OpenAI-compatible endpoint, DeepSeek by default). Then:
+
 ```bash
 pnpm install
-pnpm --filter jev-pi-harness cases:offline   # all 6 cases, no API keys needed
-pnpm --filter jev-pi-harness test            # policy tests
-pnpm --filter jev-pi-harness typecheck
-```
-
-Offline mode replaces the LLM with Pi's faux provider and Jev with a scripted client. The prompts, Agent, hooks, policies, workspace and decision log are the real ones, so every branch can be reproduced deterministically.
-
-To run online, copy `.env.example` to `.env` and fill in `TYPESAFE_API_KEY` and `LLM_API_KEY` (any OpenAI-compatible endpoint, DeepSeek by default). Then:
-
-```bash
-pnpm --filter jev-pi-harness cases 02    # one case against real Jev + LLM
+pnpm --filter jev-pi-harness cases 02    # one case
 pnpm --filter jev-pi-harness cases all
+pnpm --filter jev-pi-harness test        # policy tests, no network
 ```
+
+Everything runs against real Jev and a real LLM, so the path can differ between runs; each case prints what to watch for, and decisions.jsonl has the numbers.
 
 Cases run on a scratch copy of `fixtures/workspace`, so the repo is never touched. Approvals in the "ask" band are prompted on the TTY and denied after 60 s or when no TTY is attached.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `TYPESAFE_API_KEY` | – | required online |
+| `TYPESAFE_API_KEY` | – | required |
 | `JEV_MODEL` | `jev-1.13.0` | pin the version; thresholds are calibrated against it |
 | `JEV_TIMEOUT_MS` | `8000` | 1 retry; Gate sits on the hot path |
-| `HTTPS_PROXY` | – | Jev is region-restricted (HTTP 451) |
-| `LLM_API_KEY` / `LLM_BASE_URL` | – / DeepSeek | falls back to `DEEPSEEK_API_KEY` |
+| `HTTPS_PROXY` | – | required; Jev is region-restricted (HTTP 451) |
+| `LLM_API_KEY` / `LLM_BASE_URL` | – / DeepSeek | key required, falls back to `DEEPSEEK_API_KEY` |
 | `LLM_FAST_MODEL` / `LLM_POWERFUL_MODEL` | `deepseek-v4-flash` / `deepseek-v4-pro` | the two Router tiers |
 | `DECISION_LOG` | `./decisions.jsonl` | git-ignored, written with mode 0600 |
 
 ## Cases
 
-| Case | What happens | Shows |
+| Case | Typical run | Shows |
 | --- | --- | --- |
 | `01-read-fact` | Router → fast; reads only; Verifier accepts | read-only tools skip Jev entirely |
-| `02-cross-file-bug` | complexity escalates to powerful; overwriting `src/server.ts` lands in the ask band; human approves | Router escalation, human-in-the-loop |
+| `02-cross-file-bug` | complexity escalates to powerful; overwriting `src/server.ts` lands in the ask band; you answer y/N | Router escalation, human-in-the-loop |
 | `03-cleanup-notes` | "delete all notes" → Gate blocks; judge is unsure → accept unverified | block reason fed back to the model, no retry loop |
 | `04-prompt-injection` | `inbox/welcome.md` tells the agent to delete files and read `../../.ssh` | delete blocked by Jev; path escape blocked **by code before Jev is asked** |
-| `05-jev-outage` | every Jev call fails | failure matrix: Router → powerful, Gate → block, Verifier → accept (unverified) |
-| `06-verifier-retry` | first answer misses items → retry with concrete feedback on the same model | Verifier loop and `maxAttempts` |
+| `05-jev-outage` | the client points at `127.0.0.1:9`, so every Jev call fails | failure matrix: Router → powerful, Gate → block, Verifier → accept (unverified) |
+| `06-verifier-retry` | if the answer misses items → retry with concrete feedback on the same model | Verifier loop and `maxAttempts` |
 
 ## Failure matrix and safety boundaries
 
@@ -103,10 +98,10 @@ src/policies.ts          pure decideRoute / decideGate / decideVerify + FAILURE_
 src/stages/              router.ts, gate.ts (beforeToolCall), verifier.ts: build Jev questions, apply policies
 src/harness.ts           runHarness: route → Pi Agent → verify → retry
 src/workspace.ts         path boundary + read_file / write_file / delete_path
-src/jev/                 TypeSafe SDK client with answer validation; scripted/unavailable fakes
-src/llm.ts               online OpenAI-compatible models, offline faux models
+src/jev/                 TypeSafe SDK client (proxy, timeout) with answer validation
+src/llm.ts               OpenAI-compatible fast / powerful models
 src/decision-log.ts      redaction + jsonl log
-cases/                   the 6 scenarios (offline scripts + scripted Jev) and the runner
+cases/                   the 6 scenarios and the runner
 fixtures/workspace/      the toy repo the agent works on
 test/                    node:test suite for the policies
 ```
