@@ -1,7 +1,7 @@
 /** Router: one Jev call before the first turn picks the model tier for the whole request. */
 import type { DecisionLog } from "../decision-log.ts";
 import { choice, type JevClient, readChoice, readScore, score } from "../jev/client.ts";
-import { DEFAULT_ROUTER_POLICY, decideRoute, FAILURE_POLICY, type RouterPolicy, type Tier } from "../policies.ts";
+import { decideRoute, FAILURE_POLICY, type Tier } from "../policies.ts";
 
 export function routerRequest(request: string) {
 	return {
@@ -26,17 +26,14 @@ export interface RouteOutcome {
 	signals?: Record<string, number>;
 }
 
-export async function route(request: string, deps: { jev: JevClient; log: DecisionLog; policy?: RouterPolicy }): Promise<RouteOutcome> {
+export async function route(request: string, deps: { jev: JevClient; log: DecisionLog }): Promise<RouteOutcome> {
 	const started = performance.now();
 	const req = routerRequest(request);
 	try {
 		const res = await deps.jev.ask(req);
 		const tier = readChoice(res, req, "tier");
 		const complexity = readScore(res, req, "complexity");
-		const verdict = decideRoute(
-			{ tier: { choice: tier.choice as Tier, confidence: tier.confidence }, complexity },
-			deps.policy ?? DEFAULT_ROUTER_POLICY,
-		);
+		const verdict = decideRoute({ tier: { choice: tier.choice as Tier, confidence: tier.confidence }, complexity });
 		const signals = { [`tier:${tier.choice}`]: tier.confidence, complexity: complexity.score };
 		deps.log.write({ stage: "router", verdict: verdict.tier, reason: verdict.reason, subject: request, signals, latencyMs: Math.round(performance.now() - started), jevModel: res.model });
 		return { ...verdict, signals };

@@ -5,7 +5,6 @@
   "type": "module",
   "description": "Agent harness demo: Pi runs the agent loop, Jev answers the small judgement calls (Router / Gate / Verifier)",
   "scripts": {
-    "start": "tsx src/cli.ts",
     "cases": "tsx cases/run.ts",
     "cases:offline": "tsx cases/run.ts all --offline",
     "test": "tsx --test test/*.test.ts",

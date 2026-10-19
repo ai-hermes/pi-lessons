@@ -1,18 +1,20 @@
 /**
  * pnpm --filter jev-pi-harness cases [<id>|all] [--offline]
  *
- * Runs one or all demo cases on a scratch copy of fixtures/workspace and appends every decision to
- * decisions.jsonl (or $DECISION_LOG).
+ * Runs demo cases on a scratch copy of fixtures/workspace and appends every decision to decisions.jsonl.
  */
 import { randomUUID } from "node:crypto";
-import { approveAll, denyAll, ttyApprover } from "../src/approver.ts";
-import { DecisionLog } from "../src/decision-log.ts";
+import { cpSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createInterface } from "node:readline/promises";
+import { type DecisionRecord, DecisionLog } from "../src/decision-log.ts";
 import { env } from "../src/env.ts";
-import { runHarness } from "../src/harness.ts";
-import { createTypeSafeJev, hasJevCredentials, type JevClient } from "../src/jev/client.ts";
+import { type HarnessEvent, runHarness } from "../src/harness.ts";
+import { createTypeSafeJev } from "../src/jev/client.ts";
 import { scriptedJev, unavailableJev } from "../src/jev/fake.ts";
-import { createOfflineLlm, createOnlineLlm, hasLlmCredentials, type LlmBackend } from "../src/llm.ts";
-import { printDecision, printEvent, printResult, scratchWorkspace } from "../src/report.ts";
+import { createOfflineLlm, createOnlineLlm } from "../src/llm.ts";
+import type { Approver } from "../src/stages/gate.ts";
 import { SCENARIOS, type Scenario } from "./scenarios.ts";
 
 const args = process.argv.slice(2);
@@ -20,35 +22,58 @@ const offline = args.includes("--offline");
 const which = args.find((a) => !a.startsWith("--")) ?? "all";
 const logFile = env("DECISION_LOG") ?? new URL("../decisions.jsonl", import.meta.url).pathname;
 
-const selected = which === "all" ? SCENARIOS : SCENARIOS.filter((s) => s.id === which || s.id.startsWith(`${which}-`));
+const selected = which === "all" ? SCENARIOS : SCENARIOS.filter((s) => s.id.startsWith(which));
 if (selected.length === 0) {
 	console.error(`Unknown case "${which}". Available: ${SCENARIOS.map((s) => s.id).join(", ")}`);
 	process.exit(1);
 }
-if (!offline && !(hasJevCredentials() && hasLlmCredentials())) {
+if (!offline && !(env("TYPESAFE_API_KEY") && (env("LLM_API_KEY") ?? env("DEEPSEEK_API_KEY")))) {
 	console.error("❌ Online mode needs TYPESAFE_API_KEY and LLM_API_KEY (see .env.example). Add --offline to run the scripted version.");
 	process.exit(1);
 }
 
-async function runCase(s: Scenario): Promise<void> {
-	console.log(`\n\n████ ${s.id} · ${s.title} ${offline ? "(offline)" : ""}`);
-	console.log(`📘 ${s.teaches}`);
-	console.log(`🙋 ${s.request}`);
-
-	let jev: JevClient;
-	let llm: LlmBackend;
-	if (offline) {
-		jev = s.outage ? unavailableJev() : scriptedJev(s.offline.jev());
-		llm = createOfflineLlm(s.offline.llm);
-	} else {
-		jev = s.outage ? unavailableJev() : createTypeSafeJev();
-		llm = createOnlineLlm();
+/** Asks on the terminal; no TTY or no answer within 60 s means "no". */
+const askHuman: Approver = async (subject, signals) => {
+	if (!process.stdin.isTTY) return false;
+	const rl = createInterface({ input: process.stdin, output: process.stdout });
+	try {
+		const answer = await rl.question(`\n⚠️  Allow ${subject}? ${JSON.stringify(signals)} [y/N] `, { signal: AbortSignal.timeout(60_000) });
+		return /^y(es)?$/i.test(answer.trim());
+	} catch {
+		return false;
+	} finally {
+		rl.close();
 	}
-	const approver = offline ? (s.offline.approve ? approveAll : denyAll) : ttyApprover();
-	const log = new DecisionLog(`${s.id}-${randomUUID().slice(0, 8)}`, logFile, printDecision);
+};
 
-	const result = await runHarness({ request: s.request, workspaceDir: scratchWorkspace(), jev, llm, approver, log, onEvent: printEvent });
-	printResult(result);
+const ICON: Record<string, string> = { allow: "✅", block: "⛔", fast: "⚡", powerful: "🧠", accept: "✅", retry: "🔁", "give-up": "🏳️" };
+
+function printDecision(r: DecisionRecord): void {
+	const signals = Object.entries(r.signals ?? {}).map(([k, v]) => `${k}=${v.toFixed(2)}`).join(" ");
+	const why = r.fallback ? `FALLBACK ${r.fallback} (${r.error})` : (r.reason ?? "");
+	console.log(`\n  ${ICON[r.verdict] ?? "•"} [${r.stage}] ${r.verdict} ${r.subject.replace(/\s+/g, " ").slice(0, 70)}\n       ${[signals, why].filter(Boolean).join(" · ")}`);
+}
+
+function printEvent(e: HarnessEvent): void {
+	if (e.type === "attempt") console.log(`\n── attempt ${e.attempt} · ${e.tier} (${e.model}) ──`);
+	if (e.type === "text") process.stdout.write(e.delta);
+	if (e.type === "tool") console.log(`\n  🔧 ${e.name} ${JSON.stringify(e.args).slice(0, 120)}`);
+	if (e.type === "tool-result") console.log(`  ${e.isError ? "✗" : "↳"} ${e.text.split("\n")[0]?.slice(0, 120)}`);
+}
+
+async function runCase(s: Scenario): Promise<void> {
+	console.log(`\n\n████ ${s.id} · ${s.title}${offline ? " (offline)" : ""}\n📘 ${s.teaches}\n🙋 ${s.request}`);
+
+	const jev = s.outage ? unavailableJev() : offline ? scriptedJev(s.offline.jev()) : createTypeSafeJev();
+	const llm = offline ? createOfflineLlm(s.offline.llm) : createOnlineLlm();
+	const approver: Approver = offline ? async () => Boolean(s.offline.approve) : askHuman;
+	const log = new DecisionLog(`${s.id}-${randomUUID().slice(0, 8)}`, logFile, printDecision);
+	// Cases delete and overwrite files, so they run on a throwaway copy
+	const workspaceDir = mkdtempSync(join(tmpdir(), "jev-pi-harness-"));
+	cpSync(new URL("../fixtures/workspace", import.meta.url).pathname, workspaceDir, { recursive: true });
+
+	const r = await runHarness({ request: s.request, workspaceDir, jev, llm, approver, log, onEvent: printEvent });
+	console.log(`\n\n━━ tier=${r.tier} attempts=${r.attempts} verified=${r.verification.verified} (${r.verification.reason}) decisions=${r.decisions.length}\n${r.answer}`);
 }
 
 for (const s of selected) await runCase(s);

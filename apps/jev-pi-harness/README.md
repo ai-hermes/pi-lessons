@@ -31,7 +31,7 @@ flowchart LR
 ```bash
 pnpm install
 pnpm --filter jev-pi-harness cases:offline   # all 6 cases, no API keys needed
-pnpm --filter jev-pi-harness test            # policy, workspace and harness tests
+pnpm --filter jev-pi-harness test            # policy tests
 pnpm --filter jev-pi-harness typecheck
 ```
 
@@ -40,12 +40,11 @@ Offline mode replaces the LLM with Pi's faux provider and Jev with a scripted cl
 To run online, copy `.env.example` to `.env` and fill in `TYPESAFE_API_KEY` and `LLM_API_KEY` (any OpenAI-compatible endpoint, DeepSeek by default). Then:
 
 ```bash
-pnpm --filter jev-pi-harness cases 02                 # one case against real Jev + LLM
-pnpm --filter jev-pi-harness start "why does the server listen on NaN?"
-pnpm --filter jev-pi-harness start "..." --workspace ./some/dir --jev-outage
+pnpm --filter jev-pi-harness cases 02    # one case against real Jev + LLM
+pnpm --filter jev-pi-harness cases all
 ```
 
-By default, `start` and `cases` work on a scratch copy of `fixtures/workspace`, so the repo is never touched. Approvals in the "ask" band are prompted on the TTY and denied after 60 s or when no TTY is attached.
+Cases run on a scratch copy of `fixtures/workspace`, so the repo is never touched. Approvals in the "ask" band are prompted on the TTY and denied after 60 s or when no TTY is attached.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
@@ -80,8 +79,8 @@ A malformed answer counts as a failure: wrong kind, an option that wasn't offere
 
 Some checks are left to code and never handed to Jev:
 
-- `Workspace.resolve` rejects `..`, absolute paths outside the root, symlink escapes (including not-yet-existing children), and protected names (`.env*`, `.git`, `.ssh`, `node_modules`).
-- `delete_path` refuses the root and non-empty directories.
+- `Workspace.resolve` rejects `..`, absolute paths outside the root, and symlink escapes (including not-yet-existing children).
+- `delete_path` deletes files only, never directories.
 - Unknown tools are blocked.
 - The Gate state Jev receives contains redacted, truncated args plus facts about each target (exists, kind, created this run), never file contents.
 - The Verifier gets the evidence as clearly marked untrusted data.
@@ -103,13 +102,13 @@ Strings are redacted before they are written (e-mails, `sk-`/`ghp_` keys, Bearer
 src/policies.ts          pure decideRoute / decideGate / decideVerify + FAILURE_POLICY
 src/stages/              router.ts, gate.ts (beforeToolCall), verifier.ts: build Jev questions, apply policies
 src/harness.ts           runHarness: route → Pi Agent → verify → retry
-src/workspace.ts         path boundary + list_dir / read_file / write_file / delete_path
+src/workspace.ts         path boundary + read_file / write_file / delete_path
 src/jev/                 TypeSafe SDK client with answer validation; scripted/unavailable fakes
 src/llm.ts               online OpenAI-compatible models, offline faux models
 src/decision-log.ts      redaction + jsonl log
 cases/                   the 6 scenarios (offline scripts + scripted Jev) and the runner
 fixtures/workspace/      the toy repo the agent works on
-test/                    node:test suites
+test/                    node:test suite for the policies
 ```
 
 ## Review of the Notion article

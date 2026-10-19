@@ -1,7 +1,7 @@
 /** Verifier: after the agent answers, Jev grades completeness and grounding before the answer is returned. */
 import type { DecisionLog } from "../decision-log.ts";
 import { type JevClient, noul, readNoul, readScore, score } from "../jev/client.ts";
-import { decideVerify, DEFAULT_VERIFIER_POLICY, type VerifierPolicy, type VerifyVerdict } from "../policies.ts";
+import { decideVerify, type VerifyVerdict } from "../policies.ts";
 
 export function verifierRequest(request: string, answer: string, evidence: string[]) {
 	return {
@@ -22,7 +22,7 @@ export interface VerifyOutcome extends VerifyVerdict {
 
 export async function verify(
 	input: { request: string; answer: string; evidence: string[]; attempt: number },
-	deps: { jev: JevClient; log: DecisionLog; policy?: VerifierPolicy },
+	deps: { jev: JevClient; log: DecisionLog },
 ): Promise<VerifyOutcome> {
 	const started = performance.now();
 	const req = verifierRequest(input.request, input.answer, input.evidence);
@@ -31,7 +31,7 @@ export async function verify(
 		const res = await deps.jev.ask(req);
 		const quality = readScore(res, req, "quality");
 		const grounded = readNoul(res, req, "grounded");
-		const verdict = decideVerify({ quality, grounded }, input.attempt, deps.policy ?? DEFAULT_VERIFIER_POLICY);
+		const verdict = decideVerify({ quality, grounded }, input.attempt);
 		const signals = { quality: quality.score, qualityConfidence: quality.confidence, grounded };
 		deps.log.write({ stage: "verifier", verdict: verdict.action, reason: verdict.reason, subject, signals, latencyMs: Math.round(performance.now() - started), jevModel: res.model });
 		return { ...verdict, signals };
