@@ -133,11 +133,18 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessResult> {
 		attempt += 1;
 		opts.onEvent({ type: "attempt", attempt, tier: routed.tier, model: model.id });
 		await agent.prompt(prompt);
-		if (agent.state.errorMessage) throw new Error(`Agent failed: ${agent.state.errorMessage}`);
-		answer = textOf([...agent.state.messages].reverse().find((m) => "role" in m && m.role === "assistant"));
+		if (agent.state.errorMessage) {
+			throw new Error(`Agent failed: ${agent.state.errorMessage}`);
+		}
+		answer = textOf(agent.state.messages.findLast((m) => m.role === "assistant"));
 
 		verification = await verify(
-			{ request: opts.request, answer, evidence: redactText(serializeConversation(convertToLlm(agent.state.messages)), Infinity).slice(-8_000), attempt },
+			{
+				request: opts.request,
+				answer,
+				evidence: redactText(serializeConversation(convertToLlm(agent.state.messages)), Infinity).slice(-8_000),
+				attempt
+			},
 			opts.jev,
 			opts.log,
 		);
