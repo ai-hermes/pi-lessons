@@ -36,7 +36,7 @@ function kimiModel(id: string) {
 	}
 	return {
 		...model,
-		baseUrl: env("KIMI_BASE_URL") ?? model.baseUrl
+		baseUrl: env("KIMI_BASE_URL", model.baseUrl)
 	};
 }
 
@@ -93,7 +93,7 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessResult> {
 	const tools = createWorkspaceTools(workspace);
 
 	const routed = await route(opts.request, opts);
-	const model = kimiModel(routed.tier === "fast" ? (env("KIMI_MODEL") ?? "kimi-for-coding") : (env("KIMI_POWERFUL_MODEL") ?? "k3"));
+	const model = kimiModel(routed.tier === "fast" ? env("KIMI_MODEL", "kimi-for-coding") : env("KIMI_POWERFUL_MODEL", "k3"));
 
 	const agent = new Agent({
 		initialState: { systemPrompt: SYSTEM_PROMPT, model, tools, thinkingLevel: "off" },

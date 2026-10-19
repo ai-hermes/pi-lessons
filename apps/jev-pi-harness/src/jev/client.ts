@@ -41,9 +41,9 @@ function proxyFetch(): Fetch | undefined {
 
 /** One quick retry only: a stuck decision blocks the agent loop. `baseURL` defaults to TYPESAFE_BASE_URL. */
 export function createTypeSafeJev(opts: { baseURL?: string } = {}): JevClient {
-	const model = env("JEV_MODEL") ?? DEFAULT_JEV_MODEL;
+	const model = env("JEV_MODEL", DEFAULT_JEV_MODEL);
 	const client = new TypeSafeClient({
-		timeout: Number(env("JEV_TIMEOUT_MS") ?? 8_000),
+		timeout: Number(env("JEV_TIMEOUT_MS", "8000")),
 		retry: { maxRetries: 1 },
 		baseURL: opts.baseURL,
 		fetch: proxyFetch(),
