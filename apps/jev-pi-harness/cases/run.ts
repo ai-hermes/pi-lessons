@@ -16,7 +16,7 @@ import type { Approver } from "@/stages/gate.ts";
 import { SCENARIOS, type Scenario } from "./scenarios.ts";
 
 const which = process.argv[2] ?? "all";
-const logFile = env("DECISION_LOG") ?? new URL("../decisions.jsonl", import.meta.url).pathname;
+const logFile = env("DECISION_LOG", new URL("../decisions.jsonl", import.meta.url).pathname);
 
 const selected = which === "all" ? SCENARIOS : SCENARIOS.filter((s) => s.id.startsWith(which));
 if (selected.length === 0) {
