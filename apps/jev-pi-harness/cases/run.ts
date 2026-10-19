@@ -23,7 +23,7 @@ if (selected.length === 0) {
 	console.error(`Unknown case "${which}". Available: ${SCENARIOS.map((s) => s.id).join(", ")}`);
 	process.exit(1);
 }
-const missing = ["TYPESAFE_API_KEY", "HTTPS_PROXY", "DEEPSEEK_API_KEY"].filter((name) => !env(name));
+const missing = ["TYPESAFE_API_KEY", "HTTPS_PROXY", "KIMI_API_KEY"].filter((name) => !env(name));
 if (missing.length > 0) {
 	console.error(`❌ Missing ${missing.join(", ")}: copy .env.example to .env and fill them in.`);
 	process.exit(1);
