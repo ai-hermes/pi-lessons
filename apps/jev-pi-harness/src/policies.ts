@@ -83,7 +83,7 @@ export const DEFAULT_ROUTER_POLICY: RouterPolicy = {
 
 export interface RouteVerdict {
 	tier: Tier;
-	reason: "escalated-by-complexity" | "low-confidence-fallback" | "jev-choice";
+	reason: "escalated-by-complexity" | "low-confidence-fallback" | "jev-choice" | "jev-failed";
 }
 
 export function decideRoute(signals: RouterSignals, policy: RouterPolicy = DEFAULT_ROUTER_POLICY): RouteVerdict {

@@ -89,7 +89,7 @@ export function createGate(deps: {
 		if (target && !target.inside) {
 			const signals: GateSignals = { destructive: 0, irreversible: 0, outsideWorkspace: 1 };
 			const verdict = decideGate(signals);
-			deps.log.write({ stage: "gate", verdict: verdict.action, reason: "outside-workspace (code)", subject, signals: { ...signals }, latencyMs: ms() });
+			deps.log.write({ stage: "gate", verdict: verdict.action, reason: "outside-workspace (code)", subject, signals, latencyMs: ms() });
 			return blocked(`Blocked: ${target.violation}.`);
 		}
 
@@ -124,7 +124,7 @@ export function createGate(deps: {
 			action = approved ? "allow" : "block";
 			reason = `${reason}; human ${approved ? "approved" : "denied / unavailable"}`;
 		}
-		deps.log.write({ stage: "gate", verdict: action, reason, subject, signals: { ...signals }, latencyMs: ms(), jevModel });
+		deps.log.write({ stage: "gate", verdict: action, reason, subject, signals, latencyMs: ms(), jevModel });
 
 		if (action === "allow") {
 			if (tool === "write" && target?.inside && !target.exists && abs) deps.workspace.createdThisRun.add(abs);

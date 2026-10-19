@@ -13,10 +13,10 @@ import { convertToLlm, createCodingTools, ModelRuntime, serializeConversation } 
 import { DecisionLog, redactText } from "./decision-log.ts";
 import { env } from "./env.ts";
 import type { JevClient } from "./jev/client.ts";
-import type { Tier } from "./policies.ts";
+import type { Tier, VerifyVerdict } from "./policies.ts";
 import { type Approver, createGate } from "./stages/gate.ts";
 import { route } from "./stages/router.ts";
-import { verify, type VerifyOutcome } from "./stages/verifier.ts";
+import { verify } from "./stages/verifier.ts";
 import { Workspace } from "./workspace.ts";
 
 const SYSTEM_PROMPT = `You are a careful assistant working inside a project workspace through tools.
@@ -66,7 +66,7 @@ export interface HarnessResult {
 	tier: Tier;
 	model: string;
 	attempts: number;
-	verification: VerifyOutcome;
+	verification: VerifyVerdict;
 	decisions: DecisionLog["records"];
 }
 
@@ -105,7 +105,7 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessResult> {
 
 	let attempt = 0;
 	let answer = "";
-	let verification: VerifyOutcome;
+	let verification: VerifyVerdict;
 	let next = opts.request;
 	for (; ;) {
 		attempt += 1;

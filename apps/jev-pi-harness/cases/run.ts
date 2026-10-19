@@ -46,7 +46,7 @@ const askHuman: Approver = async (subject, signals) => {
 const ICON: Record<string, string> = { allow: "✅", block: "⛔", fast: "⚡", powerful: "🧠", accept: "✅", retry: "🔁", "give-up": "🏳️" };
 
 function printDecision(r: DecisionRecord): void {
-	const signals = Object.entries(r.signals ?? {}).map(([k, v]) => `${k}=${v.toFixed(2)}`).join(" ");
+	const signals = r.signals ? JSON.stringify(r.signals, (_, v) => (typeof v === "number" ? Number(v.toFixed(2)) : v)) : "";
 	const why = r.fallback ? `FALLBACK ${r.fallback} (${r.error})` : (r.reason ?? "");
 	console.log(`\n  ${ICON[r.verdict] ?? "•"} [${r.stage}] ${r.verdict} ${r.subject.replace(/\s+/g, " ").slice(0, 70)}\n       ${[signals, why].filter(Boolean).join(" · ")}`);
 }

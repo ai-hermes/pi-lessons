@@ -8,7 +8,8 @@ export interface DecisionRecord {
 	stage: "router" | "gate" | "verifier";
 	verdict: string;
 	subject: string;
-	signals?: Record<string, number>;
+	/** The Jev answers the policy decided on, exactly as passed to it */
+	signals?: object;
 	/** Set when Jev failed and the stage applied its failure policy */
 	fallback?: string;
 	error?: string;

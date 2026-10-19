@@ -1,7 +1,7 @@
 /** Router: one Jev call before the first turn picks the model tier for the whole request. */
 import type { DecisionLog } from "@/decision-log.ts";
 import { choice, type JevClient, readChoice, readScore, score } from "@/jev/client.ts";
-import { decideRoute, FAILURE_POLICY, type Tier } from "@/policies.ts";
+import { decideRoute, FAILURE_POLICY, type RouterSignals, type RouteVerdict, type Tier } from "@/policies.ts";
 
 /** Asks Jev which model tier `userRequest` needs and how much reasoning it takes */
 function buildTierQuestions(userRequest: string) {
@@ -27,38 +27,26 @@ function buildTierQuestions(userRequest: string) {
 	};
 }
 
-export interface RouteOutcome {
-	tier: Tier;
-	reason: string;
-	signals?: Record<string, number>;
-}
-
-export async function route(request: string, jev: JevClient, log: DecisionLog): Promise<RouteOutcome> {
+export async function route(request: string, jev: JevClient, log: DecisionLog): Promise<RouteVerdict> {
 	const started = performance.now();
 	const jevRequest = buildTierQuestions(request);
 	try {
 		const res = await jev.ask(jevRequest);
-		const tier = readChoice(res, jevRequest, "tier");
-		const complexity = readScore(res, jevRequest, "complexity");
-		const verdict = decideRoute({
-			tier: {
-				choice: tier.choice as Tier,
-				confidence: tier.confidence
-			},
-			complexity
-		});
-		const signals = {
-			[`tier:${tier.choice}`]: tier.confidence,
-			complexity: complexity.score
+		const { choice, confidence } = readChoice(res, jevRequest, "tier");
+		const signals: RouterSignals = {
+			tier: { choice: choice as Tier, confidence },
+			complexity: readScore(res, jevRequest, "complexity"),
 		};
+		const verdict = decideRoute(signals);
 		log.write({
 			stage: "router",
 			verdict: verdict.tier,
 			reason: verdict.reason,
 			subject: request,
-			signals, latencyMs: Math.round(performance.now() - started), jevModel: res.model
+			signals,
+			latencyMs: Math.round(performance.now() - started), jevModel: res.model
 		});
-		return { ...verdict, signals };
+		return verdict;
 	} catch (err) {
 		const tier = FAILURE_POLICY.router;
 		log.write({ stage: "router", verdict: tier, fallback: "jev-failed→powerful", error: (err as Error).message, subject: request, latencyMs: Math.round(performance.now() - started) });
