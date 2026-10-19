@@ -9,9 +9,9 @@
  * The model never changes inside a request: switching mid-task would throw away the provider's prompt cache.
  */
 import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
+import { getModel, streamSimple } from "@earendil-works/pi-ai/compat";
 import { DecisionLog, redactText } from "./decision-log.ts";
 import type { JevClient } from "./jev/client.ts";
-import type { LlmBackend } from "./llm.ts";
 import type { Tier } from "./policies.ts";
 import { type Approver, createGate } from "./stages/gate.ts";
 import { route } from "./stages/router.ts";
@@ -24,11 +24,16 @@ const SYSTEM_PROMPT = `You are a careful assistant working inside a project work
 - If a tool call is blocked, do not retry it or look for a workaround; explain what you could not do.
 - Keep the final answer short and specific.`;
 
+/** pi-ai's built-in DeepSeek models; the key comes from DEEPSEEK_API_KEY */
+const MODELS = {
+	fast: getModel("deepseek", "deepseek-v4-flash"),
+	powerful: getModel("deepseek", "deepseek-v4-pro"),
+} satisfies Record<Tier, unknown>;
+
 export interface HarnessOptions {
 	request: string;
 	workspaceDir: string;
 	jev: JevClient;
-	llm: LlmBackend;
 	approver: Approver;
 	log: DecisionLog;
 	onEvent: (event: HarnessEvent) => void;
@@ -78,12 +83,11 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessResult> {
 	const tools = createWorkspaceTools(workspace);
 
 	const routed = await route(opts.request, opts);
-	const model = opts.llm.models[routed.tier];
+	const model = MODELS[routed.tier];
 
 	const agent = new Agent({
 		initialState: { systemPrompt: SYSTEM_PROMPT, model, tools, thinkingLevel: "off" },
-		streamFn: opts.llm.streamFn,
-		getApiKey: opts.llm.getApiKey,
+		streamFn: streamSimple,
 		beforeToolCall: createGate({ jev: opts.jev, log: opts.log, workspace, tools, approver: opts.approver }),
 		// One call at a time: approvals are serial and a later call may depend on an earlier block
 		toolExecution: "sequential",

@@ -12,7 +12,6 @@ import { type DecisionRecord, DecisionLog } from "@/decision-log.ts";
 import { env } from "@/env.ts";
 import { type HarnessEvent, runHarness } from "@/harness.ts";
 import { createTypeSafeJev } from "@/jev/client.ts";
-import { createOnlineLlm } from "@/llm.ts";
 import type { Approver } from "@/stages/gate.ts";
 import { SCENARIOS, type Scenario } from "./scenarios.ts";
 
@@ -24,8 +23,7 @@ if (selected.length === 0) {
 	console.error(`Unknown case "${which}". Available: ${SCENARIOS.map((s) => s.id).join(", ")}`);
 	process.exit(1);
 }
-const missing = ["TYPESAFE_API_KEY", "HTTPS_PROXY"].filter((name) => !env(name));
-if (!(env("LLM_API_KEY") ?? env("DEEPSEEK_API_KEY"))) missing.push("LLM_API_KEY");
+const missing = ["TYPESAFE_API_KEY", "HTTPS_PROXY", "DEEPSEEK_API_KEY"].filter((name) => !env(name));
 if (missing.length > 0) {
 	console.error(`❌ Missing ${missing.join(", ")}: copy .env.example to .env and fill them in.`);
 	process.exit(1);
@@ -65,13 +63,12 @@ async function runCase(s: Scenario): Promise<void> {
 
 	// Port 9 (discard) has nothing listening: the real client fails with a connection error
 	const jev = createTypeSafeJev(s.jevDown ? { baseURL: "http://127.0.0.1:9" } : {});
-	const llm = createOnlineLlm();
 	const log = new DecisionLog(`${s.id}-${randomUUID().slice(0, 8)}`, logFile, printDecision);
 	// Cases delete and overwrite files, so they run on a throwaway copy
 	const workspaceDir = mkdtempSync(join(tmpdir(), "jev-pi-harness-"));
 	cpSync(new URL("../fixtures/workspace", import.meta.url).pathname, workspaceDir, { recursive: true });
 
-	const r = await runHarness({ request: s.request, workspaceDir, jev, llm, approver: askHuman, log, onEvent: printEvent });
+	const r = await runHarness({ request: s.request, workspaceDir, jev, approver: askHuman, log, onEvent: printEvent });
 	console.log(`\n\n━━ tier=${r.tier} attempts=${r.attempts} verified=${r.verification.verified} (${r.verification.reason}) decisions=${r.decisions.length}\n${r.answer}`);
 }
 

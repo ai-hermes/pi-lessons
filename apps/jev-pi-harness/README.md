@@ -28,7 +28,7 @@ flowchart LR
 
 ## Quick start
 
-Copy `.env.example` to `.env` and fill in the Jev API key and proxy (`TYPESAFE_API_KEY`, `HTTPS_PROXY`) plus `LLM_API_KEY` for the agent's model (any OpenAI-compatible endpoint, DeepSeek by default). Then:
+Copy `.env.example` to `.env` and fill in the Jev API key and proxy (`TYPESAFE_API_KEY`, `HTTPS_PROXY`) plus `DEEPSEEK_API_KEY` for the agent's model (pi-ai's built-in `deepseek` provider). Then:
 
 ```bash
 pnpm install
@@ -47,8 +47,7 @@ Cases run on a scratch copy of `fixtures/workspace`, so the repo is never touche
 | `JEV_MODEL` | `jev-1.13.0` | pin the version; thresholds are calibrated against it |
 | `JEV_TIMEOUT_MS` | `8000` | 1 retry; Gate sits on the hot path |
 | `HTTPS_PROXY` | – | required; Jev is region-restricted (HTTP 451) |
-| `LLM_API_KEY` / `LLM_BASE_URL` | – / DeepSeek | key required, falls back to `DEEPSEEK_API_KEY` |
-| `LLM_FAST_MODEL` / `LLM_POWERFUL_MODEL` | `deepseek-v4-flash` / `deepseek-v4-pro` | the two Router tiers |
+| `DEEPSEEK_API_KEY` | – | required; fast = `deepseek-v4-flash`, powerful = `deepseek-v4-pro` |
 | `DECISION_LOG` | `./decisions.jsonl` | git-ignored, written with mode 0600 |
 
 ## Cases
@@ -99,7 +98,6 @@ src/stages/              router.ts, gate.ts (beforeToolCall), verifier.ts: build
 src/harness.ts           runHarness: route → Pi Agent → verify → retry
 src/workspace.ts         path boundary + read_file / write_file / delete_path
 src/jev/                 TypeSafe SDK client (proxy, timeout) with answer validation
-src/llm.ts               OpenAI-compatible fast / powerful models
 src/decision-log.ts      redaction + jsonl log
 cases/                   the 6 scenarios and the runner
 fixtures/workspace/      the toy repo the agent works on
