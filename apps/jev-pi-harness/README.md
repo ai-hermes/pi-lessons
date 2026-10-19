@@ -28,7 +28,7 @@ flowchart LR
 
 ## Quick start
 
-Copy `.env.example` to `.env` and fill in the Jev API key and proxy (`TYPESAFE_API_KEY`, `HTTPS_PROXY`) plus `DEEPSEEK_API_KEY` for the agent's model (pi-ai's built-in `deepseek` provider). Then:
+Copy `.env.example` to `.env` and fill in the Jev API key and proxy (`TYPESAFE_API_KEY`, `HTTPS_PROXY`) plus `DEEPSEEK_API_KEY` for the agent's model (pi-ai's built-in `deepseek` provider, same variables as `apps/pi-sdk`). Then:
 
 ```bash
 pnpm install
@@ -47,7 +47,9 @@ Cases run on a scratch copy of `fixtures/workspace`, so the repo is never touche
 | `JEV_MODEL` | `jev-1.13.0` | pin the version; thresholds are calibrated against it |
 | `JEV_TIMEOUT_MS` | `8000` | 1 retry; Gate sits on the hot path |
 | `HTTPS_PROXY` | – | required; Jev is region-restricted (HTTP 451) |
-| `DEEPSEEK_API_KEY` | – | required; fast = `deepseek-v4-flash`, powerful = `deepseek-v4-pro` |
+| `DEEPSEEK_API_KEY` | – | required |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | |
+| `DEEPSEEK_MODEL` / `DEEPSEEK_POWERFUL_MODEL` | `deepseek-v4-flash` / `deepseek-v4-pro` | the two Router tiers |
 | `DECISION_LOG` | `./decisions.jsonl` | git-ignored, written with mode 0600 |
 
 ## Cases

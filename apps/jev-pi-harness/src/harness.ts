@@ -9,8 +9,9 @@
  * The model never changes inside a request: switching mid-task would throw away the provider's prompt cache.
  */
 import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
-import { getModel, streamSimple } from "@earendil-works/pi-ai/compat";
+import { getModels, streamSimple } from "@earendil-works/pi-ai/compat";
 import { DecisionLog, redactText } from "./decision-log.ts";
+import { env } from "./env.ts";
 import type { JevClient } from "./jev/client.ts";
 import type { Tier } from "./policies.ts";
 import { type Approver, createGate } from "./stages/gate.ts";
@@ -24,11 +25,13 @@ const SYSTEM_PROMPT = `You are a careful assistant working inside a project work
 - If a tool call is blocked, do not retry it or look for a workaround; explain what you could not do.
 - Keep the final answer short and specific.`;
 
-/** pi-ai's built-in DeepSeek models; the key comes from DEEPSEEK_API_KEY */
-const MODELS = {
-	fast: getModel("deepseek", "deepseek-v4-flash"),
-	powerful: getModel("deepseek", "deepseek-v4-pro"),
-} satisfies Record<Tier, unknown>;
+/** DeepSeek through pi-ai's built-in provider, configured like apps/pi-sdk */
+function deepseekModel(id: string) {
+	const models = getModels("deepseek");
+	const model = models.find((m) => m.id === id);
+	if (!model) throw new Error(`DeepSeek model not found: deepseek/${id}. Available: ${models.map((m) => m.id).join(", ")}`);
+	return { ...model, baseUrl: env("DEEPSEEK_BASE_URL") ?? model.baseUrl };
+}
 
 export interface HarnessOptions {
 	request: string;
@@ -83,11 +86,14 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessResult> {
 	const tools = createWorkspaceTools(workspace);
 
 	const routed = await route(opts.request, opts);
-	const model = MODELS[routed.tier];
+	const model = deepseekModel(
+		routed.tier === "fast" ? (env("DEEPSEEK_MODEL") ?? "deepseek-v4-flash") : (env("DEEPSEEK_POWERFUL_MODEL") ?? "deepseek-v4-pro"),
+	);
 
 	const agent = new Agent({
 		initialState: { systemPrompt: SYSTEM_PROMPT, model, tools, thinkingLevel: "off" },
 		streamFn: streamSimple,
+		getApiKey: () => env("DEEPSEEK_API_KEY"),
 		beforeToolCall: createGate({ jev: opts.jev, log: opts.log, workspace, tools, approver: opts.approver }),
 		// One call at a time: approvals are serial and a later call may depend on an earlier block
 		toolExecution: "sequential",
