@@ -1,10 +1,11 @@
 /**
- * File tools for the agent. The workspace boundary is enforced here, in code, whatever Jev says.
+ * The agent gets Pi's built-in read / edit / write / bash tools, rooted at the workspace.
+ * Pi's tools accept any path, so the boundary is enforced by the Gate, in code, with `Workspace.describe`.
  */
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
-import { Type } from "@earendil-works/pi-ai";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-coding-agent";
 
 const isInside = (root: string, target: string) => {
 	const rel = relative(root, target);
@@ -20,9 +21,14 @@ export class Workspace {
 		this.root = realpathSync(root);
 	}
 
-	/** Absolute path inside the workspace, or throws. Symlinks are checked through the nearest existing ancestor. */
+	/**
+	 * Absolute path inside the workspace, or throws. Mirrors how Pi's tools read a path (`@` prefix stripped,
+	 * `~` expanded, so rejected here). Symlinks are checked through the nearest existing ancestor.
+	 */
 	resolve(input: string): string {
-		const target = resolve(this.root, input);
+		const path = input.replace(/^@/, "");
+		if (path.startsWith("~")) throw new Error(`"${input}" is outside the workspace`);
+		const target = resolve(this.root, path);
 		let probe = target;
 		while (!existsSync(probe)) probe = dirname(probe);
 		if (!isInside(this.root, target) || !isInside(this.root, realpathSync(probe))) throw new Error(`"${input}" is outside the workspace`);
@@ -33,66 +39,14 @@ export class Workspace {
 	describe(input: string) {
 		try {
 			const abs = this.resolve(input);
-			if (!existsSync(abs)) return { inside: true, exists: false };
-			return { inside: true, exists: true, kind: statSync(abs).isDirectory() ? "dir" : "file", createdThisRun: this.createdThisRun.has(abs) };
+			if (!existsSync(abs)) return { inside: true, abs, exists: false };
+			return { inside: true, abs, exists: true, kind: statSync(abs).isDirectory() ? "dir" : "file", createdThisRun: this.createdThisRun.has(abs) };
 		} catch (err) {
 			return { inside: false, violation: (err as Error).message };
 		}
 	}
 }
 
-export interface HarnessTool extends AgentTool {
-	/** Read-only tools skip Jev */
-	readOnly: boolean;
-	/** Arguments holding workspace paths, checked by code before Jev is asked */
-	pathArgs: string[];
-}
-
-const text = (content: string): AgentToolResult<unknown> => ({ content: [{ type: "text", text: content }], details: {} });
-
-export function createWorkspaceTools(ws: Workspace): HarnessTool[] {
-	const path = Type.String({ description: "Path relative to the workspace root" });
-	return [
-		{
-			name: "read_file",
-			label: "Read file",
-			description: "Read a UTF-8 text file from the workspace.",
-			parameters: Type.Object({ path }),
-			readOnly: true,
-			pathArgs: ["path"],
-			async execute(_id, params) {
-				return text(readFileSync(ws.resolve((params as { path: string }).path), "utf8"));
-			},
-		},
-		{
-			name: "write_file",
-			label: "Write file",
-			description: "Create a file, or replace the whole content of an existing file.",
-			parameters: Type.Object({ path, content: Type.String() }),
-			readOnly: false,
-			pathArgs: ["path"],
-			async execute(_id, params) {
-				const { path: p, content } = params as { path: string; content: string };
-				const abs = ws.resolve(p);
-				const existed = existsSync(abs);
-				mkdirSync(dirname(abs), { recursive: true });
-				writeFileSync(abs, content);
-				if (!existed) ws.createdThisRun.add(abs);
-				return text(`${existed ? "Overwrote" : "Created"} ${p}`);
-			},
-		},
-		{
-			name: "delete_path",
-			label: "Delete file",
-			description: "Delete a file from the workspace.",
-			parameters: Type.Object({ path }),
-			readOnly: false,
-			pathArgs: ["path"],
-			async execute(_id, params) {
-				const p = (params as { path: string }).path;
-				rmSync(ws.resolve(p));
-				return text(`Deleted ${p}`);
-			},
-		},
-	];
+export function createTools(ws: Workspace): AgentTool<any>[] {
+	return [createReadTool(ws.root), createEditTool(ws.root), createWriteTool(ws.root), createBashTool(ws.root)];
 }
