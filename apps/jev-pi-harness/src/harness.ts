@@ -86,7 +86,7 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessResult> {
 	// Pi's read / bash / edit / write, rooted at the workspace; the Gate keeps them inside it
 	const tools = createCodingTools(workspace.root);
 
-	const routed = await route(opts.request, opts);
+	const routed = await route(opts.request, opts.jev, opts.log);
 	const model = kimiModel(routed.tier === "fast" ? env("KIMI_MODEL", "kimi-for-coding") : env("KIMI_POWERFUL_MODEL", "k3"));
 
 	const agent = new Agent({
@@ -116,7 +116,8 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessResult> {
 
 		verification = await verify(
 			{ request: opts.request, answer, evidence: redactText(serializeConversation(convertToLlm(agent.state.messages)), Infinity).slice(-8_000), attempt },
-			opts,
+			opts.jev,
+			opts.log,
 		);
 		if (verification.action !== "retry") break;
 		next = `A reviewer checked your answer and found gaps:\n${verification.feedback.map((f) => `- ${f}`).join("\n")}\nFix them and give the complete final answer again.`;

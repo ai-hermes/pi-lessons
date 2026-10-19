@@ -23,21 +23,22 @@ export interface VerifyOutcome extends VerifyVerdict {
 
 export async function verify(
 	input: { request: string; answer: string; evidence: string; attempt: number },
-	deps: { jev: JevClient; log: DecisionLog },
+	jev: JevClient,
+	log: DecisionLog,
 ): Promise<VerifyOutcome> {
 	const started = performance.now();
 	const jevRequest = buildAnswerReviewQuestions(input.request, input.answer, input.evidence);
 	const subject = `attempt ${input.attempt}: ${input.answer}`;
 	try {
-		const res = await deps.jev.ask(jevRequest);
+		const res = await jev.ask(jevRequest);
 		const quality = readScore(res, jevRequest, "quality");
 		const grounded = readNoul(res, jevRequest, "grounded");
 		const verdict = decideVerify({ quality, grounded }, input.attempt);
 		const signals = { quality: quality.score, qualityConfidence: quality.confidence, grounded };
-		deps.log.write({ stage: "verifier", verdict: verdict.action, reason: verdict.reason, subject, signals, latencyMs: Math.round(performance.now() - started), jevModel: res.model });
+		log.write({ stage: "verifier", verdict: verdict.action, reason: verdict.reason, subject, signals, latencyMs: Math.round(performance.now() - started), jevModel: res.model });
 		return { ...verdict, signals };
 	} catch (err) {
-		deps.log.write({ stage: "verifier", verdict: "accept", fallback: "jev-failed→accept-unverified", error: (err as Error).message, subject, latencyMs: Math.round(performance.now() - started) });
+		log.write({ stage: "verifier", verdict: "accept", fallback: "jev-failed→accept-unverified", error: (err as Error).message, subject, latencyMs: Math.round(performance.now() - started) });
 		return { action: "accept", verified: false, reason: "judge-unavailable", feedback: [] };
 	}
 }
