@@ -1,10 +1,11 @@
 /**
- * pnpm --filter jev-pi-harness cases [<id>|all]
+ * pnpm --filter jev-pi-harness cases [<id>|all] [--fresh]
  *
  * Runs demo cases on a scratch copy of fixtures/workspace and appends every decision to decisions.jsonl.
+ * --fresh empties decisions.jsonl first.
  */
 import { randomUUID } from "node:crypto";
-import { cpSync, mkdtempSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -15,7 +16,9 @@ import { createTypeSafeJev } from "@/jev/client.ts";
 import type { Approver } from "@/stages/gate.ts";
 import { SCENARIOS, type Scenario } from "./scenarios.ts";
 
-const which = process.argv[2] ?? "all";
+const args = process.argv.slice(2);
+const fresh = args.includes("--fresh");
+const which = args.find((a) => !a.startsWith("--")) ?? "all";
 const logFile = env("DECISION_LOG", new URL("../decisions.jsonl", import.meta.url).pathname);
 
 const selected = which === "all" ? SCENARIOS : SCENARIOS.filter((s) => s.id.startsWith(which));
@@ -28,6 +31,7 @@ if (missing.length > 0) {
 	console.error(`❌ Missing ${missing.join(", ")}: copy .env.example to .env and fill them in.`);
 	process.exit(1);
 }
+if (fresh) rmSync(logFile, { force: true });
 
 /** Asks on the terminal; no TTY or no answer within 60 s means "no". */
 const askHuman: Approver = async (subject, signals) => {
@@ -72,5 +76,7 @@ async function runCase(s: Scenario): Promise<void> {
 	console.log(`\n\n━━ tier=${r.tier} attempts=${r.attempts} verified=${r.verification.verified} (${r.verification.reason}) decisions=${r.decisions.length}\n${r.answer}`);
 }
 
-for (const s of selected) await runCase(s);
+for (const s of selected) {
+	await runCase(s);
+}
 console.log(`\n📝 Decisions appended to ${logFile}`);

@@ -34,6 +34,7 @@ Copy `.env.example` to `.env` and fill in the Jev API key and proxy (`TYPESAFE_A
 pnpm install
 pnpm --filter jev-pi-harness cases 02    # one case
 pnpm --filter jev-pi-harness cases all
+pnpm --filter jev-pi-harness cases 01 --fresh   # empty decisions.jsonl first
 pnpm --filter jev-pi-harness test        # policy tests, no network
 ```
 
