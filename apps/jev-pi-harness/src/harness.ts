@@ -87,12 +87,27 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessResult> {
 	const tools = createCodingTools(workspace.root);
 
 	const routed = await route(opts.request, opts.jev, opts.log);
-	const model = kimiModel(routed.tier === "fast" ? env("KIMI_MODEL", "kimi-for-coding") : env("KIMI_POWERFUL_MODEL", "k3"));
+	const model = kimiModel(
+		routed.tier === "fast" ?
+			env("KIMI_MODEL", "kimi-for-coding") :
+			env("KIMI_POWERFUL_MODEL", "k3")
+	);
 
 	const agent = new Agent({
-		initialState: { systemPrompt: SYSTEM_PROMPT, model, tools, thinkingLevel: "off" },
+		initialState: {
+			systemPrompt: SYSTEM_PROMPT,
+			model,
+			tools,
+			thinkingLevel: "off"
+		},
 		streamFn: (m, context, options) => runtime.streamSimple(m, context, options),
-		beforeToolCall: createGate({ jev: opts.jev, log: opts.log, workspace, tools: tools.map((t) => t.name), approver: opts.approver }),
+		beforeToolCall: createGate({
+			jev: opts.jev,
+			log: opts.log,
+			workspace,
+			tools: tools.map((t) => t.name),
+			approver: opts.approver
+		}),
 		// One call at a time: approvals are serial and a later call may depend on an earlier block
 		toolExecution: "sequential",
 	});

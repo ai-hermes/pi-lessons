@@ -14,7 +14,7 @@ export interface GateSignals {
 	destructive: number;
 	/** Jev: hard or impossible to undo */
 	irreversible: number;
-	/** Code, not Jev: 1 when any path argument resolves outside the workspace, otherwise 0 */
+	/** File tools: computed by code (1 when the path resolves outside the workspace, else 0). bash: asked of Jev */
 	outsideWorkspace: number;
 }
 
@@ -34,19 +34,17 @@ export interface GateVerdict {
 	driver: keyof GateSignals;
 }
 
-export function decideGate(signals: GateSignals, policy: GatePolicy = DEFAULT_GATE_POLICY): GateVerdict {
-	const entries = Object.entries(signals) as Array<[keyof GateSignals, number]>;
-	// A missing or malformed signal must never look safe: fail closed.
-	const bad = entries.find(([, v]) => !Number.isFinite(v) || v < 0 || v > 1);
-	if (bad) return { action: "block", worst: 1, driver: bad[0] };
+const GATE_SIGNALS: Array<keyof GateSignals> = ["destructive", "irreversible", "outsideWorkspace"];
 
-	let [driver, worst] = entries[0]!;
-	for (const [k, v] of entries) {
-		if (v > worst) [driver, worst] = [k, v];
-	}
-	if (worst >= policy.blockAt) return { action: "block", worst, driver };
-	if (worst >= policy.askAt) return { action: "ask", worst, driver };
-	return { action: "allow", worst, driver };
+/** The riskiest signal decides. A missing or out-of-range signal counts as risk 1, so it can never look safe. */
+export function decideGate(signals: GateSignals, policy: GatePolicy = DEFAULT_GATE_POLICY): GateVerdict {
+	const risks = GATE_SIGNALS.map((name) => {
+		const value = signals[name];
+		return { name, risk: Number.isFinite(value) && value >= 0 && value <= 1 ? value : 1 };
+	});
+	const { name: driver, risk: worst } = risks.reduce((max, r) => (r.risk > max.risk ? r : max));
+	const action: GateAction = worst >= policy.blockAt ? "block" : worst >= policy.askAt ? "ask" : "allow";
+	return { action, worst, driver };
 }
 
 // ---------------------------------------------------------------------------
