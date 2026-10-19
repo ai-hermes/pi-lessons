@@ -113,19 +113,26 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessResult> {
 	});
 
 	agent.subscribe((event) => {
-		if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") opts.onEvent({ type: "text", delta: event.assistantMessageEvent.delta });
-		if (event.type === "tool_execution_start") opts.onEvent({ type: "tool", name: event.toolName, args: event.args });
-		if (event.type === "tool_execution_end") opts.onEvent({ type: "tool-result", name: event.toolName, isError: event.isError, text: textOf(event.result) });
+		if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+			opts.onEvent({ type: "text", delta: event.assistantMessageEvent.delta })
+		};
+		if (event.type === "tool_execution_start") {
+			opts.onEvent({ type: "tool", name: event.toolName, args: event.args })
+		};
+		if (event.type === "tool_execution_end") {
+			opts.onEvent({ type: "tool-result", name: event.toolName, isError: event.isError, text: textOf(event.result) });
+		}
 	});
 
 	let attempt = 0;
-	let answer = "";
+	let prompt = opts.request;
+	let answer: string;
 	let verification: VerifyVerdict;
-	let next = opts.request;
-	for (; ;) {
+	// Run at least once; run again only while the Verifier asks for a retry (decideVerify caps the attempts)
+	do {
 		attempt += 1;
 		opts.onEvent({ type: "attempt", attempt, tier: routed.tier, model: model.id });
-		await agent.prompt(next);
+		await agent.prompt(prompt);
 		if (agent.state.errorMessage) throw new Error(`Agent failed: ${agent.state.errorMessage}`);
 		answer = textOf([...agent.state.messages].reverse().find((m) => "role" in m && m.role === "assistant"));
 
@@ -134,9 +141,8 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessResult> {
 			opts.jev,
 			opts.log,
 		);
-		if (verification.action !== "retry") break;
-		next = `A reviewer checked your answer and found gaps:\n${verification.feedback.map((f) => `- ${f}`).join("\n")}\nFix them and give the complete final answer again.`;
-	}
+		prompt = `A reviewer checked your answer and found gaps:\n${verification.feedback.map((f) => `- ${f}`).join("\n")}\nFix them and give the complete final answer again.`;
+	} while (verification.action === "retry");
 
 	return { answer, tier: routed.tier, model: model.id, attempts: attempt, verification, decisions: opts.log.records };
 }
