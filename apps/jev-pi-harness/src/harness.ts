@@ -25,12 +25,12 @@ const SYSTEM_PROMPT = `You are a careful assistant working inside a project work
 - If a tool call is blocked, do not retry it or look for a workaround; explain what you could not do.
 - Keep the final answer short and specific.`;
 
-/** DeepSeek through pi-ai's built-in provider, configured like apps/pi-sdk */
-function deepseekModel(id: string) {
-	const models = getModels("deepseek");
+/** Kimi through pi-ai's built-in kimi-coding provider */
+function kimiModel(id: string) {
+	const models = getModels("kimi-coding");
 	const model = models.find((m) => m.id === id);
-	if (!model) throw new Error(`DeepSeek model not found: deepseek/${id}. Available: ${models.map((m) => m.id).join(", ")}`);
-	return { ...model, baseUrl: env("DEEPSEEK_BASE_URL") ?? model.baseUrl };
+	if (!model) throw new Error(`Kimi model not found: kimi-coding/${id}. Available: ${models.map((m) => m.id).join(", ")}`);
+	return { ...model, baseUrl: env("KIMI_BASE_URL") ?? model.baseUrl };
 }
 
 export interface HarnessOptions {
@@ -86,14 +86,12 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessResult> {
 	const tools = createWorkspaceTools(workspace);
 
 	const routed = await route(opts.request, opts);
-	const model = deepseekModel(
-		routed.tier === "fast" ? (env("DEEPSEEK_MODEL") ?? "deepseek-v4-flash") : (env("DEEPSEEK_POWERFUL_MODEL") ?? "deepseek-v4-pro"),
-	);
+	const model = kimiModel(routed.tier === "fast" ? (env("KIMI_MODEL") ?? "kimi-for-coding") : (env("KIMI_POWERFUL_MODEL") ?? "k3"));
 
 	const agent = new Agent({
 		initialState: { systemPrompt: SYSTEM_PROMPT, model, tools, thinkingLevel: "off" },
 		streamFn: streamSimple,
-		getApiKey: () => env("DEEPSEEK_API_KEY"),
+		getApiKey: () => env("KIMI_API_KEY"),
 		beforeToolCall: createGate({ jev: opts.jev, log: opts.log, workspace, tools, approver: opts.approver }),
 		// One call at a time: approvals are serial and a later call may depend on an earlier block
 		toolExecution: "sequential",
