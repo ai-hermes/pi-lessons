@@ -9,6 +9,7 @@
  * The model never changes inside a request: switching mid-task would throw away the provider's prompt cache.
  */
 import { Agent } from "@earendil-works/pi-agent-core";
+import type { TextContent } from "@earendil-works/pi-ai";
 import { convertToLlm, createCodingTools, ModelRuntime, serializeConversation } from "@earendil-works/pi-coding-agent";
 import { DecisionLog, redactText } from "./decision-log.ts";
 import { env } from "./env.ts";
@@ -70,12 +71,10 @@ export interface HarnessResult {
 	decisions: DecisionLog["records"];
 }
 
-function textOf(message: unknown): string {
-	const content = (message as { content?: unknown } | undefined)?.content;
-	if (typeof content === "string") return content.trim();
-	if (!Array.isArray(content)) return "";
-	return content
-		.filter((c): c is { type: "text"; text: string } => c?.type === "text")
+/** Text blocks of an assistant message or a tool result, joined */
+function textOf(message: { content: Array<{ type: string }> } | undefined): string {
+	return (message?.content ?? [])
+		.filter((c): c is TextContent => c.type === "text")
 		.map((c) => c.text)
 		.join("")
 		.trim();
