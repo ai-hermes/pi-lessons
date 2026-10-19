@@ -1,7 +1,7 @@
 /** Verifier: after the agent answers, Jev grades completeness and grounding before the answer is returned. */
-import type { DecisionLog } from "../decision-log.ts";
-import { type JevClient, noul, readNoul, readScore, score } from "../jev/client.ts";
-import { decideVerify, type VerifyVerdict } from "../policies.ts";
+import type { DecisionLog } from "@/decision-log.ts";
+import { type JevClient, noul, readNoul, readScore, score } from "@/jev/client.ts";
+import { decideVerify, type VerifyVerdict } from "@/policies.ts";
 
 export function verifierRequest(request: string, answer: string, evidence: string[]) {
 	return {

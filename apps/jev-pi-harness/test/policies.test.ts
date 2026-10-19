@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { decideGate, decideRoute, decideVerify, DEFAULT_GATE_POLICY, DEFAULT_VERIFIER_POLICY } from "../src/policies.ts";
+import { decideGate, decideRoute, decideVerify, DEFAULT_GATE_POLICY, DEFAULT_VERIFIER_POLICY } from "@/policies.ts";
 
 const gate = (destructive: number, irreversible: number, outsideWorkspace = 0) => decideGate({ destructive, irreversible, outsideWorkspace });
 
