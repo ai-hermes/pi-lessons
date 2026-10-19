@@ -1,7 +1,7 @@
 /** Router: one Jev call before the first turn picks the model tier for the whole request. */
-import type { DecisionLog } from "../decision-log.ts";
-import { choice, type JevClient, readChoice, readScore, score } from "../jev/client.ts";
-import { decideRoute, FAILURE_POLICY, type Tier } from "../policies.ts";
+import type { DecisionLog } from "@/decision-log.ts";
+import { choice, type JevClient, readChoice, readScore, score } from "@/jev/client.ts";
+import { decideRoute, FAILURE_POLICY, type Tier } from "@/policies.ts";
 
 export function routerRequest(request: string) {
 	return {

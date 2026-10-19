@@ -17,7 +17,7 @@ import {
 	TypeSafeClient,
 } from "@typesafe-ai/sdk";
 import { EnvHttpProxyAgent } from "undici";
-import { env } from "../env.ts";
+import { env } from "@/env.ts";
 
 export { choice, noul, score } from "@typesafe-ai/sdk";
 export type { JsonValue, Questions, SystemOneRequest, SystemOneResult } from "@typesafe-ai/sdk";

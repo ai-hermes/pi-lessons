@@ -8,7 +8,9 @@
     "skipLibCheck": true,
     "noEmit": true,
     "types": ["node"],
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    "baseUrl": ".",
+    "paths": { "@/*": ["src/*"] }
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "cases/**/*.ts"]
 }

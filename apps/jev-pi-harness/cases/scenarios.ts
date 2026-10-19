@@ -6,7 +6,7 @@
  * every branch is reproducible without API keys.
  */
 import { fauxAssistantMessage, fauxText, fauxToolCall, type FauxResponseStep } from "@earendil-works/pi-ai";
-import { type FakeHandler, stageOf } from "../src/jev/fake.ts";
+import { type FakeHandler, stageOf } from "@/jev/fake.ts";
 
 export interface Scenario {
 	id: string;

@@ -13,10 +13,10 @@
  * text still has to surface as a concrete tool call, and that is what gets judged.
  */
 import type { BeforeToolCallContext, BeforeToolCallResult } from "@earendil-works/pi-agent-core";
-import { type DecisionLog, redact, redactText } from "../decision-log.ts";
-import { type JevClient, type JsonValue, noul, readNoul } from "../jev/client.ts";
-import { decideGate, FAILURE_POLICY, type GateSignals } from "../policies.ts";
-import type { HarnessTool, Workspace } from "../workspace.ts";
+import { type DecisionLog, redact, redactText } from "@/decision-log.ts";
+import { type JevClient, type JsonValue, noul, readNoul } from "@/jev/client.ts";
+import { decideGate, FAILURE_POLICY, type GateSignals } from "@/policies.ts";
+import type { HarnessTool, Workspace } from "@/workspace.ts";
 
 /** Human approval for the "ask" band. No answer means no. */
 export type Approver = (subject: string, signals: GateSignals) => Promise<boolean>;
