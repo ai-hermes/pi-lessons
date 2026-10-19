@@ -166,13 +166,45 @@ export interface VerifyVerdict {
 
 export function decideVerify(signals: VerifierSignals, attempt: number, policy: VerifierPolicy = DEFAULT_VERIFIER_POLICY): VerifyVerdict {
 	const feedback: string[] = [];
-	if (signals.quality.score < policy.acceptQualityAt) feedback.push("The answer does not fully address the request.");
-	if (signals.grounded < policy.minGrounded) feedback.push("Some claims are not backed by a file you read or a tool result; read the source or drop the claim.");
+	if (signals.quality.score < policy.acceptQualityAt) {
+		feedback.push("The answer does not fully address the request.");
+	}
+	if (signals.grounded < policy.minGrounded) {
+		feedback.push("Some claims are not backed by a file you read or a tool result; read the source or drop the claim.");
+	}
 
-	if (feedback.length === 0) return { action: "accept", verified: true, reason: "passed", feedback };
-	if (signals.quality.confidence < policy.minJudgeConfidence) return { action: "accept", verified: false, reason: "judge-unsure", feedback };
-	if (attempt >= policy.maxAttempts) return { action: "give-up", verified: false, reason: "attempts-exhausted", feedback };
-	return { action: "retry", verified: false, reason: "below-bar", feedback };
+	if (feedback.length === 0) {
+		return {
+			action: "accept",
+			verified: true,
+			reason: "passed",
+			feedback
+		};
+	}
+	// here we can assert that feedback.length > 0 & feedback.length <= 2
+	// which means the quality of answer is low
+	// if jev very sure about that, we'll try it again
+	// otherwise jev is not very sure about the judgement, we can accept it first, instead of retry again.
+	if (signals.quality.confidence < policy.minJudgeConfidence) {
+		return {
+			action: "accept",
+			verified: false,
+			reason: "judge-unsure",
+			feedback
+		};
+	}
+	if (attempt >= policy.maxAttempts) return {
+		action: "give-up",
+		verified: false,
+		reason: "attempts-exhausted",
+		feedback
+	};
+	return {
+		action: "retry",
+		verified: false,
+		reason: "below-bar",
+		feedback
+	};
 }
 
 // ---------------------------------------------------------------------------
