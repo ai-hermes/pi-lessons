@@ -17,10 +17,10 @@ describe("decideGate", () => {
 		assert.equal(gate(DEFAULT_GATE_POLICY.askAt - 0.0001, 0).action, "allow");
 	});
 
-	it("uses the worst signal and reports which one drove it", () => {
+	it("lets the riskiest signal decide and reports which one it was", () => {
 		const v = gate(0.1, 0.9);
 		assert.equal(v.action, "block");
-		assert.equal(v.driver, "irreversible");
+		assert.equal(v.riskiestSignal, "irreversible");
 	});
 
 	it("blocks when the code-computed outsideWorkspace signal is set", () => {

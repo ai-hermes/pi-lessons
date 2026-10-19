@@ -29,9 +29,10 @@ export type GateAction = "allow" | "ask" | "block";
 
 export interface GateVerdict {
 	action: GateAction;
-	worst: number;
-	/** Signal that produced `worst`, for logs and approval prompts */
-	driver: keyof GateSignals;
+	/** The signal with the highest risk; it alone decides `action` */
+	riskiestSignal: keyof GateSignals;
+	/** Its value, 0..1 */
+	risk: number;
 }
 
 const GATE_SIGNALS: Array<keyof GateSignals> = ["destructive", "irreversible", "outsideWorkspace"];
@@ -40,11 +41,23 @@ const GATE_SIGNALS: Array<keyof GateSignals> = ["destructive", "irreversible", "
 export function decideGate(signals: GateSignals, policy: GatePolicy = DEFAULT_GATE_POLICY): GateVerdict {
 	const risks = GATE_SIGNALS.map((name) => {
 		const value = signals[name];
-		return { name, risk: Number.isFinite(value) && value >= 0 && value <= 1 ? value : 1 };
+		return {
+			name,
+			risk: Number.isFinite(value) && value >= 0 && value <= 1 ? value : 1
+		};
 	});
-	const { name: driver, risk: worst } = risks.reduce((max, r) => (r.risk > max.risk ? r : max));
-	const action: GateAction = worst >= policy.blockAt ? "block" : worst >= policy.askAt ? "ask" : "allow";
-	return { action, worst, driver };
+	const { name: riskiestSignal, risk } = risks.reduce((max, r) => (r.risk > max.risk ? r : max));
+	const action: GateAction =
+		risk >= policy.blockAt ?
+			"block" :
+			risk >= policy.askAt ?
+				"ask" :
+				"allow";
+	return {
+		action,
+		riskiestSignal,
+		risk
+	};
 }
 
 // ---------------------------------------------------------------------------

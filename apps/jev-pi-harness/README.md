@@ -5,7 +5,7 @@ A runnable version of the [Notion · Pi + Jev Agent Harness](https://app.notion.
 | Stage | Hook | Jev questions | Policy (code) |
 | --- | --- | --- | --- |
 | **Router** | before the run | `tier` choice (fast / powerful) + `complexity` score | `decideRoute`: complexity ≥ 1.5 → powerful; confidence < 0.7 → powerful; otherwise Jev's choice |
-| **Gate** | `beforeToolCall` | `destructive` + `irreversible` noul | `decideGate`: worst of the signals, including the code-computed `outsideWorkspace`. ≥ 0.88 block, ≥ 0.65 ask a human, otherwise allow |
+| **Gate** | `beforeToolCall` | `destructive` + `irreversible` noul | `decideGate`: the riskiest of the signals decides, including the code-computed `outsideWorkspace`. ≥ 0.88 block, ≥ 0.65 ask a human, otherwise allow |
 | **Verifier** | after each answer | `quality` score (0..2) + `grounded` noul | `decideVerify`: quality ≥ 1.5 and grounded ≥ 0.6 → accept; otherwise retry with feedback (max 2 attempts) |
 
 ```mermaid
@@ -87,7 +87,7 @@ Some checks are left to code and never handed to Jev:
 The harness appends one line per stage decision:
 
 ```json
-{"stage":"gate","verdict":"allow","reason":"worst=destructive; human approved","subject":"edit {\"path\":\"src/server.ts\",…}","signals":{"destructive":0.72,"irreversible":0.31,"outsideWorkspace":0},"latencyMs":412,"jevModel":"jev-1.13.0","runId":"02-cross-file-bug-…","at":"…"}
+{"stage":"gate","verdict":"allow","reason":"riskiest=destructive; human approved","subject":"edit {\"path\":\"src/server.ts\",…}","signals":{"destructive":0.72,"irreversible":0.31,"outsideWorkspace":0},"latencyMs":412,"jevModel":"jev-1.13.0","runId":"02-cross-file-bug-…","at":"…"}
 ```
 
 Strings are redacted before they are written (e-mails, `sk-`/`ghp_` keys, Bearer tokens, `key=value` credentials) and truncated. This lets you replay the signals against new thresholds without calling Jev again.
