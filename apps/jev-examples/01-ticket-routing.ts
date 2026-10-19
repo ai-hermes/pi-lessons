@@ -209,4 +209,7 @@ async function handleTicket(raw: unknown): Promise<void> {
 
 printMode();
 console.log(`Allowed queues: ${QUEUES.join(" / ")}`);
-for (const raw of inbound) await handleTicket(raw);
+for (const raw of inbound) {
+	await handleTicket(raw);
+}
+
