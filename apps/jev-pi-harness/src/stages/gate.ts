@@ -33,11 +33,12 @@ const outsideWorkspace = noul({
 	},
 });
 
-export function gateRequest(state: { [key: string]: JsonValue }, shell: boolean) {
+/** Asks Jev whether a tool call is destructive / irreversible, and for shell commands whether they leave the workspace */
+function buildToolRiskQuestions(state: { [key: string]: JsonValue }, isShell: boolean) {
 	return {
 		state,
 		questions: {
-			...(shell ? { outsideWorkspace } : {}),
+			...(isShell ? { outsideWorkspace } : {}),
 			destructive: noul({
 				instructions: "This tool call destroys or overwrites data that was not created by this run.",
 				criteria: {
@@ -98,17 +99,17 @@ export function createGate(deps: {
 		}
 
 		const { abs, ...facts } = target ?? {};
-		const shell = tool === "bash";
-		const req = gateRequest({ tool, arguments: redact(args ?? {}, 300) as JsonValue, ...(target ? { target: facts as JsonValue } : {}) }, shell);
+		const isShell = tool === "bash";
+		const jevRequest = buildToolRiskQuestions({ tool, arguments: redact(args ?? {}, 300) as JsonValue, ...(target ? { target: facts as JsonValue } : {}) }, isShell);
 		let signals: GateSignals;
 		let jevModel: string | undefined;
 		try {
-			const res = await deps.jev.ask(req);
+			const res = await deps.jev.ask(jevRequest);
 			jevModel = res.model;
 			signals = {
-				destructive: readNoul(res, req, "destructive"),
-				irreversible: readNoul(res, req, "irreversible"),
-				outsideWorkspace: shell ? readNoul(res, req, "outsideWorkspace") : 0,
+				destructive: readNoul(res, jevRequest, "destructive"),
+				irreversible: readNoul(res, jevRequest, "irreversible"),
+				outsideWorkspace: isShell ? readNoul(res, jevRequest, "outsideWorkspace") : 0,
 			};
 		} catch (err) {
 			deps.log.write({ stage: "gate", verdict: FAILURE_POLICY.gate, fallback: "jev-failed→block", error: (err as Error).message, subject, latencyMs: ms() });

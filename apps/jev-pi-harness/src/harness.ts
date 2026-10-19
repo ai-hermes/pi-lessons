@@ -28,9 +28,14 @@ const SYSTEM_PROMPT = `You are a careful assistant working inside a project work
 /** Pi's model runtime with the built-in kimi-coding provider, set up the same way as apps/pi-sdk */
 const runtime = await ModelRuntime.create();
 const baseUrl = env("KIMI_BASE_URL");
-if (baseUrl) runtime.registerProvider("kimi-coding", { baseUrl });
+if (baseUrl) {
+	runtime.registerProvider("kimi-coding", { baseUrl });
+}
+
 const apiKey = env("KIMI_API_KEY");
-if (apiKey) await runtime.setRuntimeApiKey("kimi-coding", apiKey);
+if (apiKey) {
+	await runtime.setRuntimeApiKey("kimi-coding", apiKey);
+}
 
 function kimiModel(id: string) {
 	const model = runtime.getModel("kimi-coding", id);
