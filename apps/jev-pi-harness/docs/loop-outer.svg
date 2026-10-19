@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900" font-family="-apple-system, 'PingFang SC', 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <marker id="a-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#64748b"/></marker>
+    <marker id="a-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/></marker>
+    <marker id="a-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
+  </defs>
+  <rect width="1280" height="900" fill="#ffffff"/>
+
+  <text x="40" y="52" font-size="26" font-weight="700" fill="#0f172a">Loop 外：循环前选模型，循环后验回答</text>
+  <text x="40" y="84" font-size="15" fill="#475569">一次请求只路由一次，中途不换模型（换了会丢掉服务商的 prompt cache）；回答不达标，就带着具体反馈在同一个 Agent 里再跑一轮。</text>
+
+  <!-- band labels -->
+  <g font-size="14" font-weight="700" text-anchor="middle">
+    <rect x="40" y="124" width="84" height="150" rx="10" fill="#f1f5f9"/><text x="82" y="204" fill="#334155">循环前</text>
+    <rect x="40" y="320" width="84" height="130" rx="10" fill="#eff6ff"/><text x="82" y="390" fill="#1d4ed8">循环中</text>
+    <rect x="40" y="496" width="84" height="300" rx="10" fill="#f1f5f9"/><text x="82" y="650" fill="#334155">循环后</text>
+  </g>
+
+  <!-- Band 1: Router -->
+  <rect x="150" y="154" width="170" height="90" rx="12" fill="#ffffff" stroke="#334155" stroke-width="2"/>
+  <text x="235" y="194" font-size="17" font-weight="700" fill="#0f172a" text-anchor="middle">用户请求</text>
+  <text x="235" y="220" font-size="13" fill="#64748b" text-anchor="middle">同时交给 Router 和 Agent</text>
+
+  <rect x="360" y="124" width="290" height="150" rx="12" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
+  <text x="380" y="156" font-size="17" font-weight="700" fill="#5b21b6">Router · 问 Jev（一次）</text>
+  <text x="380" y="188" font-size="14" fill="#5b21b6">tier：fast 还是 powerful（单选）</text>
+  <text x="380" y="214" font-size="14" fill="#5b21b6">complexity：要多少推理（0–2 打分）</text>
+  <text x="380" y="248" font-size="12" fill="#7c3aed">0 机械 · 1 局部 · 2 跨模块或原因不明</text>
+
+  <rect x="690" y="124" width="300" height="150" rx="12" fill="#ffffff" stroke="#334155" stroke-width="2"/>
+  <text x="710" y="156" font-size="17" font-weight="700" fill="#0f172a">decideRoute（代码）</text>
+  <text x="710" y="186" font-size="14" fill="#334155">complexity ≥ 1.5 → powerful</text>
+  <text x="710" y="210" font-size="14" fill="#334155">tier 置信度 &lt; 0.7 → powerful</text>
+  <text x="710" y="234" font-size="14" fill="#334155">否则用 Jev 选的档</text>
+  <text x="710" y="258" font-size="14" fill="#b45309">Jev 不可用 → powerful（多花钱，活照干）</text>
+
+  <rect x="1030" y="124" width="210" height="150" rx="12" fill="#ffffff" stroke="#2563eb" stroke-width="2"/>
+  <text x="1135" y="156" font-size="17" font-weight="700" fill="#1d4ed8" text-anchor="middle">选定模型</text>
+  <rect x="1046" y="172" width="178" height="34" rx="8" fill="#eff6ff"/>
+  <text x="1135" y="194" font-size="13" fill="#1e3a8a" text-anchor="middle">fast → kimi-for-coding</text>
+  <rect x="1046" y="214" width="178" height="34" rx="8" fill="#eff6ff"/>
+  <text x="1135" y="236" font-size="13" fill="#1e3a8a" text-anchor="middle">powerful → k3</text>
+
+  <line x1="320" y1="199" x2="354" y2="199" stroke="#7c3aed" stroke-width="2" marker-end="url(#a-purple)"/>
+  <line x1="650" y1="199" x2="684" y2="199" stroke="#64748b" stroke-width="2" marker-end="url(#a-gray)"/>
+  <line x1="990" y1="199" x2="1024" y2="199" stroke="#64748b" stroke-width="2" marker-end="url(#a-gray)"/>
+
+  <!-- Band 2: agent loop -->
+  <rect x="360" y="320" width="830" height="130" rx="14" fill="#eff6ff" stroke="#2563eb" stroke-width="2" stroke-dasharray="8 6"/>
+  <text x="380" y="356" font-size="18" font-weight="700" fill="#1d4ed8">Pi Agent 循环</text>
+  <text x="380" y="386" font-size="14" fill="#1e3a8a">模型 ⇄ 工具，直到不再调用工具、给出回答。整次请求都用同一个模型。</text>
+  <text x="380" y="412" font-size="14" fill="#1e3a8a">每次工具调用先过 Gate，见《Loop 内》。</text>
+  <text x="380" y="436" font-size="12" fill="#64748b">工具按顺序执行（toolExecution: "sequential"），问人确认时不会并发。</text>
+
+  <line x1="1135" y1="274" x2="1135" y2="314" stroke="#2563eb" stroke-width="2" marker-end="url(#a-blue)"/>
+  <text x="1145" y="300" font-size="13" fill="#1d4ed8">模型</text>
+  <path d="M235,244 V385 H354" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-gray)"/>
+  <text x="245" y="300" font-size="13" fill="#64748b">第 1 轮提示</text>
+
+  <!-- Band 3: Verifier -->
+  <rect x="150" y="520" width="350" height="180" rx="12" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
+  <text x="170" y="552" font-size="17" font-weight="700" fill="#5b21b6">Verifier · 问 Jev</text>
+  <text x="170" y="584" font-size="14" fill="#5b21b6">quality：回答满足请求的程度（0–2 打分）</text>
+  <text x="170" y="610" font-size="14" fill="#5b21b6">grounded：说法都有依据吗（是非题）</text>
+  <text x="170" y="644" font-size="13" fill="#7c3aed">证据：本轮对话转写（serializeConversation）</text>
+  <text x="170" y="666" font-size="13" fill="#7c3aed">脱敏后取最后 8000 字</text>
+
+  <path d="M600,450 V490 H325 V514" fill="none" stroke="#7c3aed" stroke-width="2" marker-end="url(#a-purple)"/>
+  <text x="610" y="478" font-size="13" fill="#5b21b6">最终回答 + 对话转写</text>
+
+  <rect x="540" y="520" width="300" height="180" rx="12" fill="#ffffff" stroke="#334155" stroke-width="2"/>
+  <text x="560" y="552" font-size="17" font-weight="700" fill="#0f172a">decideVerify（代码）</text>
+  <text x="560" y="582" font-size="14" fill="#334155">按顺序判断，命中即停：</text>
+  <text x="560" y="608" font-size="14" fill="#334155">1. 都达标？</text>
+  <text x="560" y="632" font-size="14" fill="#334155">2. Jev 对自己的打分没把握？</text>
+  <text x="560" y="656" font-size="14" fill="#334155">3. 已经试满 2 次？</text>
+  <text x="560" y="680" font-size="14" fill="#334155">4. 否则重试</text>
+  <line x1="500" y1="610" x2="534" y2="610" stroke="#64748b" stroke-width="2" marker-end="url(#a-gray)"/>
+
+  <!-- outcomes -->
+  <g font-size="13">
+    <rect x="880" y="508" width="340" height="56" rx="10" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+    <text x="896" y="531" font-size="15" font-weight="700" fill="#15803d">接受 · 已验证</text>
+    <text x="896" y="551" fill="#14532d">quality ≥ 1.5 且 grounded ≥ 0.6</text>
+
+    <rect x="880" y="576" width="340" height="56" rx="10" fill="#fffbeb" stroke="#d97706" stroke-width="2"/>
+    <text x="896" y="599" font-size="15" font-weight="700" fill="#b45309">接受 · 未验证</text>
+    <text x="896" y="619" fill="#78350f">不达标但 quality 置信度 &lt; 0.5；或 Jev 不可用</text>
+
+    <rect x="880" y="644" width="340" height="56" rx="10" fill="#f8fafc" stroke="#64748b" stroke-width="2"/>
+    <text x="896" y="667" font-size="15" font-weight="700" fill="#334155">放弃 · 未验证</text>
+    <text x="896" y="687" fill="#475569">仍不达标且已试满 2 次，交回最后的回答</text>
+
+    <rect x="880" y="712" width="340" height="56" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+    <text x="896" y="735" font-size="15" font-weight="700" fill="#1d4ed8">重试</text>
+    <text x="896" y="755" fill="#1e3a8a">把具体缺口写成反馈，发给同一个 Agent</text>
+  </g>
+  <g stroke="#64748b" stroke-width="2" fill="none">
+    <path d="M840,580 H860 V536 H874" marker-end="url(#a-gray)"/>
+    <path d="M840,600 H874" marker-end="url(#a-gray)"/>
+    <path d="M840,620 H860 V672 H874" marker-end="url(#a-gray)"/>
+    <path d="M840,640 H850 V740 H874" marker-end="url(#a-gray)"/>
+  </g>
+
+  <!-- retry loop back -->
+  <path d="M1220,740 H1250 V400 H1196" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#a-blue)"/>
+  <text x="1240" y="482" font-size="13" font-weight="600" fill="#1d4ed8" text-anchor="end">重试：反馈作下一轮提示</text>
+
+  <!-- footer -->
+  <rect x="40" y="820" width="1200" height="52" rx="10" fill="#f1f5f9"/>
+  <text x="60" y="852" font-size="14" fill="#334155">Jev 只给数字（概率、分数、置信度），阈值和动作都写在代码里，同样的输入永远得到同样的决定。Router 和 Verifier 的决策也都写进 decisions.jsonl。</text>
+</svg>

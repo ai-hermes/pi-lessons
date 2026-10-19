@@ -226,6 +226,34 @@ importers:
         specifier: ^5.9.0
         version: 5.9.2
 
+  apps/jev-pi-harness:
+    dependencies:
+      '@earendil-works/pi-agent-core':
+        specifier: ^0.84.4
+        version: 0.84.4(@modelcontextprotocol/sdk@1.30.0(supports-color@8.1.1)(zod@4.4.3))(supports-color@8.1.1)(ws@8.21.3)(zod@4.4.3)
+      '@earendil-works/pi-ai':
+        specifier: ^0.84.4
+        version: 0.84.4(@modelcontextprotocol/sdk@1.30.0(supports-color@8.1.1)(zod@4.4.3))(supports-color@8.1.1)(ws@8.21.3)(zod@4.4.3)
+      '@earendil-works/pi-coding-agent':
+        specifier: ^0.84.4
+        version: 0.84.4(@modelcontextprotocol/sdk@1.30.0(supports-color@8.1.1)(zod@4.4.3))(supports-color@8.1.1)(ws@8.21.3)(zod@4.4.3)
+      '@typesafe-ai/sdk':
+        specifier: ^0.7.0
+        version: 0.7.0
+      undici:
+        specifier: ^7.30.0
+        version: 7.30.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.5
+      tsx:
+        specifier: ^4.23.12
+        version: 4.23.12
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.2
+
   apps/pi-chat:
     dependencies:
       '@earendil-works/pi-agent-core':
