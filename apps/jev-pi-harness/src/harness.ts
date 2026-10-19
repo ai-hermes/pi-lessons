@@ -9,7 +9,7 @@
  * The model never changes inside a request: switching mid-task would throw away the provider's prompt cache.
  */
 import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
-import { getModels, streamSimple } from "@earendil-works/pi-ai/compat";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { DecisionLog, redactText } from "./decision-log.ts";
 import { env } from "./env.ts";
 import type { JevClient } from "./jev/client.ts";
@@ -25,12 +25,19 @@ const SYSTEM_PROMPT = `You are a careful assistant working inside a project work
 - If a tool call is blocked, do not retry it or look for a workaround; explain what you could not do.
 - Keep the final answer short and specific.`;
 
-/** Kimi through pi-ai's built-in kimi-coding provider */
+/** pi-ai's built-in providers; the agent uses kimi-coding */
+const models = builtinModels();
+
 function kimiModel(id: string) {
-	const models = getModels("kimi-coding");
-	const model = models.find((m) => m.id === id);
-	if (!model) throw new Error(`Kimi model not found: kimi-coding/${id}. Available: ${models.map((m) => m.id).join(", ")}`);
-	return { ...model, baseUrl: env("KIMI_BASE_URL") ?? model.baseUrl };
+	const model = models.getModel("kimi-coding", id);
+	if (!model) {
+		const available = models.getModels("kimi-coding").map((m) => m.id).join(", ");
+		throw new Error(`Kimi model not found: kimi-coding/${id}. Available: ${available}`);
+	}
+	return {
+		...model,
+		baseUrl: env("KIMI_BASE_URL") ?? model.baseUrl
+	};
 }
 
 export interface HarnessOptions {
@@ -90,7 +97,7 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessResult> {
 
 	const agent = new Agent({
 		initialState: { systemPrompt: SYSTEM_PROMPT, model, tools, thinkingLevel: "off" },
-		streamFn: streamSimple,
+		streamFn: (m, context, options) => models.streamSimple(m, context, options),
 		getApiKey: () => env("KIMI_API_KEY"),
 		beforeToolCall: createGate({ jev: opts.jev, log: opts.log, workspace, tools, approver: opts.approver }),
 		// One call at a time: approvals are serial and a later call may depend on an earlier block
@@ -107,7 +114,7 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessResult> {
 	let answer = "";
 	let verification: VerifyOutcome;
 	let next = opts.request;
-	for (;;) {
+	for (; ;) {
 		attempt += 1;
 		opts.onEvent({ type: "attempt", attempt, tier: routed.tier, model: model.id });
 		await agent.prompt(next);
