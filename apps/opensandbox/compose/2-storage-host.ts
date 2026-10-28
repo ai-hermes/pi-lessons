@@ -1,5 +1,5 @@
 import { ConnectionConfig, Sandbox, SandboxException } from "@alibaba-group/opensandbox";
-import { opensandboxConnectionOptions, requiredEnv } from "../config.ts";
+import { opensandboxConnectionOptions, requiredEnv } from "../config";
 let sandbox: Sandbox | null = null;
 const config = new ConnectionConfig({
   ...opensandboxConnectionOptions,

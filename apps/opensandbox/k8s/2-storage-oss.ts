@@ -2,7 +2,7 @@ import { ConnectionConfig, Sandbox } from "@alibaba-group/opensandbox";
 import {
   opensandboxConnectionOptions,
   requiredEnv,
-} from "../config.ts";
+} from "../config";
 
 const config = new ConnectionConfig({
   ...opensandboxConnectionOptions,
