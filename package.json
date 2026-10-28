@@ -9,7 +9,8 @@
     "typecheck:pi-codemode": "pnpm --filter pi-codemode typecheck",
     "typecheck:jev-examples": "pnpm --filter jev-examples typecheck",
     "typecheck:jev-pi-harness": "pnpm --filter jev-pi-harness typecheck",
-    "test:jev-pi-harness": "pnpm --filter jev-pi-harness test"
+    "test:jev-pi-harness": "pnpm --filter jev-pi-harness test",
+    "typecheck:opensandbox": "pnpm --filter opensandbox typecheck"
   },
   "license": "ISC",
   "packageManager": "pnpm@11.22.0"

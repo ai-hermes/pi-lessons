@@ -1,0 +1,33 @@
+{
+  "name": "opensandbox",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "k8s:1": "tsx k8s/1-basic.ts",
+    "k8s:2-host": "tsx k8s/2-storage-host.ts",
+    "k8s:2-pvc": "tsx k8s/2-storage-pvc.ts",
+    "k8s:2-s3-pvc": "tsx k8s/2-storage-s3-pvc.ts",
+    "k8s:2-oss": "tsx k8s/2-storage-oss.ts",
+    "k8s:3": "tsx k8s/3-network.ts",
+    "k8s:4": "tsx k8s/4-credential.ts",
+    "compose:1": "tsx compose/1-basic.ts",
+    "compose:2-host": "tsx compose/2-storage-host.ts",
+    "compose:2-pvc": "tsx compose/2-storage-pvc.ts",
+    "compose:3": "tsx compose/3-network.ts",
+    "compose:4": "tsx compose/4-credential.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@alibaba-group/opensandbox": "^0.1.11",
+    "dotenv": "^18.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.0"
+  }
+}
