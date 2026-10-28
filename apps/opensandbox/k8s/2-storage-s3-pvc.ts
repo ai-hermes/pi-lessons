@@ -1,5 +1,5 @@
 import { ConnectionConfig, Sandbox } from "@alibaba-group/opensandbox";
-import { opensandboxConnectionOptions } from "../config.ts";
+import { opensandboxConnectionOptions } from "../config";
 
 const storageClass = process.env.S3_STORAGE_CLASS?.trim() || "oss-aliyun-s3";
 const claimName = process.env.S3_PVC_NAME?.trim() || "opensandbox-object-data";

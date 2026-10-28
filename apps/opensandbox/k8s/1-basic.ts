@@ -1,5 +1,5 @@
 import { ConnectionConfig, Sandbox, SandboxException } from "@alibaba-group/opensandbox";
-import { opensandboxConnectionOptions } from "../config.ts";
+import { opensandboxConnectionOptions } from "../config";
 
 function sleepN(second: number) {
   return new Promise(resolve => {
