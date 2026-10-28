@@ -5,6 +5,7 @@ packages:
   - 'apps/pi-codemode'
   - 'apps/jev-examples'
   - 'apps/jev-pi-harness'
+  - 'apps/opensandbox'
 allowBuilds:
   '@google/genai': true
   esbuild: true
