@@ -139,7 +139,9 @@ for (const check of jevChecks) {
 		issue = check.issueOptions.includes(a.choice);
 		detail = `${a.choice}`;
 	}
-	const status = confidence < CONFIDENCE_THRESHOLD ? "review" : issue ? "issue" : "pass";
+	const status = confidence < CONFIDENCE_THRESHOLD ?
+		"review" :
+		issue ? "issue" : "pass";
 	console.log(
 		`${status === "pass" ? "✅" : status === "issue" ? "❌" : "❓"} ${check.id.padEnd(14)} ${status.padEnd(7)} ${detail}  confidence ${formatPercent(confidence)}`,
 	);
