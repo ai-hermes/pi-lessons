@@ -6,6 +6,7 @@ packages:
   - 'apps/jev-examples'
   - 'apps/jev-pi-harness'
   - 'apps/opensandbox'
+  - 'apps/extensions/*'
 allowBuilds:
   '@google/genai': true
   esbuild: true

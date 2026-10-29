@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "k8s:1": "tsx k8s/1-basic.ts",
+    "k8s:1-basic": "tsx k8s/1-basic.ts",
     "k8s:2-host": "tsx k8s/2-storage-host.ts",
     "k8s:2-pvc": "tsx k8s/2-storage-pvc.ts",
     "k8s:2-s3-pvc": "tsx k8s/2-storage-s3-pvc.ts",
