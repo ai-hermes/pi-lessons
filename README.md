@@ -18,6 +18,18 @@ pnpm dev:pi-chat
 
 会话、记录和工作区数据默认保存在 `~/.pi/agent/pi-chat`，可通过 `PI_CHAT_ROOT_DIR` 修改。
 
+## 扩展案例
+
+`apps/extensions/` 用于存放独立的 Pi 扩展案例，每个扩展使用单独的子目录和 `package.json`，自动加入 pnpm workspace。
+
+当前包含 [pi-opensandbox](./apps/extensions/pi-opensandbox/README.md)：将 Pi 的文件、搜索和 Shell 工具接入 OpenSandbox，支持可选的 Skill 镜像同步。
+
+```bash
+pnpm build:pi-opensandbox
+pnpm typecheck:pi-opensandbox
+pnpm test:pi-opensandbox
+```
+
 ## 安全
 
 不要提交 `.env`、API Key、会话记录或本机路径；提交配置示例时使用占位值。
