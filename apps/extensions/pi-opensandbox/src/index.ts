@@ -6,18 +6,19 @@ import {
   getPiOpenSandboxUserConfigPath,
   loadInstalledPiOpenSandboxConfig,
 } from "./config.ts";
-import { registerOpenSandboxConfigCommand } from "./config-command.ts";
+import { registerOpenSandboxCommand } from "./config-command.ts";
 
 /**
  * Pi package entry point.
- * Configure it with /opensandbox-config or the legacy environment variables.
+ * Configure it with /opensandbox or the legacy environment variables.
  */
 export default async function piOpenSandbox(pi: ExtensionAPI): Promise<void> {
   const configPath = getPiOpenSandboxUserConfigPath();
-  registerOpenSandboxConfigCommand(pi, configPath);
   const config = await loadInstalledPiOpenSandboxConfig(process.env, configPath);
   if (config.runtime !== undefined) {
-    await createPiOpenSandboxExtensionFromConfig(config.runtime)(pi);
+    await createPiOpenSandboxExtensionFromConfig(config.runtime, configPath)(pi);
+  } else {
+    registerOpenSandboxCommand(pi, configPath);
   }
 }
 

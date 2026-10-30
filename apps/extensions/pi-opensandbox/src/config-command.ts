@@ -11,23 +11,29 @@ import {
   type InstalledPiOpenSandboxConfig,
   type PiOpenSandboxOptions,
 } from "./config.ts";
+import type { ActiveOpenSandbox } from "./sandbox/client.ts";
 
-export function registerOpenSandboxConfigCommand(
+export function registerOpenSandboxCommand(
   pi: ExtensionAPI,
   configPath: string,
+  getActiveSandbox: () => ActiveOpenSandbox | null | undefined = () => undefined,
 ): void {
-  pi.registerCommand("opensandbox-config", {
-    description: "Configure the OpenSandbox extension",
+  pi.registerCommand("opensandbox", {
+    description: "Show or configure OpenSandbox",
     handler: async (_args, ctx) => {
       if (!ctx.hasUI) return;
       const stored = await readStoredPiOpenSandboxConfig(configPath);
-      const action = await ctx.ui.select("OpenSandbox configuration", [
-        "Show status",
+      const action = await ctx.ui.select("OpenSandbox", [
+        "Status",
         "Configure and enable",
         "Disable",
       ]);
-      if (action === "Show status") {
-        showStatus(ctx, await loadInstalledPiOpenSandboxConfig(process.env, configPath));
+      if (action === "Status") {
+        showStatus(
+          ctx,
+          await loadInstalledPiOpenSandboxConfig(process.env, configPath),
+          getActiveSandbox(),
+        );
         return;
       }
       if (action === "Disable") {
@@ -114,6 +120,7 @@ export function registerOpenSandboxConfigCommand(
 function showStatus(
   ctx: ExtensionCommandContext,
   config: InstalledPiOpenSandboxConfig,
+  activeSandbox: ActiveOpenSandbox | null | undefined,
 ): void {
   const sandboxConfig = config.runtime?.sandboxSettings ?? config.options?.sandboxConfig;
   ctx.ui.notify([
@@ -122,6 +129,13 @@ function showStatus(
     `Domain: ${stringValue(sandboxConfig?.domain) ?? "not configured"}`,
     `Image: ${stringValue(sandboxConfig?.image) ?? "not configured"}`,
     `API key: ${stringValue(sandboxConfig?.apiKey) ? "configured" : "missing"}`,
+    `Current sandbox: ${activeSandbox?.id ?? "not active"}`,
+    ...(activeSandbox == null
+      ? []
+      : [
+          `Workspace: ${activeSandbox.sandboxWorkspaceRoot}`,
+          `Running image: ${activeSandbox.imageReference}`,
+        ]),
   ].join("\n"), "info");
 }
 

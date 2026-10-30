@@ -30,12 +30,14 @@ try {
   assert.equal(stored.sandboxConfig.apiKey, apiKey);
   assert.equal((await stat(configPath)).mode & 0o777, 0o600);
 
-  const status = await runPiCommand("Show status");
+  const status = await runPiCommand("Status");
   assert.match(status, /Enabled: yes/);
   assert.match(status, /Source: user configuration/);
   assert.match(status, new RegExp(`Domain: ${escapeRegExp(normalizedDomain(domain))}`));
   assert.match(status, new RegExp(`Image: ${escapeRegExp(image)}`));
   assert.match(status, /API key: configured/);
+  assert.match(status, /Current sandbox: \S+/);
+  assert.match(status, /Workspace: \S+/);
 
   await assertSandboxesCleaned();
   console.log("OpenSandbox E2E passed: slash config, persisted reload, sandbox startup, and cleanup");
@@ -114,7 +116,7 @@ async function runPiCommand(action) {
   child.stdin.write(`${JSON.stringify({
     id: "e2e-command",
     type: "prompt",
-    message: "/opensandbox-config",
+    message: "/opensandbox",
   })}\n`);
   await completed;
   return status;

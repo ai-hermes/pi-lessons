@@ -150,8 +150,8 @@ test("Pi loads the source package without build artifacts", async (t) => {
   assert.deepEqual(errors, []);
   assert.equal(extensions.length, 1);
   assert.equal(extensions[0].resolvedPath, join(packageDir, "src/index.ts"));
-  assert.ok(extensions[0].commands.has("opensandbox-config"));
   assert.ok(extensions[0].commands.has("opensandbox"));
+  assert.equal(extensions[0].commands.size, 1);
   assert.ok(extensions[0].tools.has("bash"));
   assert.ok(extensions[0].handlers.has("session_start"));
 });
@@ -168,7 +168,7 @@ test("default Pi entry reads standalone configuration", async (t) => {
 
   const pi = fakePi();
   await extension(pi.api);
-  assert.deepEqual(pi.commands, ["opensandbox-config", "opensandbox"]);
+  assert.deepEqual(pi.commands, ["opensandbox"]);
   assert.deepEqual(pi.tools.sort(), [
     "bash",
     "edit",
@@ -187,17 +187,18 @@ test("default Pi entry reads standalone configuration", async (t) => {
   ]);
 
   const notifications = [];
-  await pi.commandHandlers.get("opensandbox-config")("", {
+  await pi.commandHandlers.get("opensandbox")("", {
     hasUI: true,
     mode: "tui",
     ui: {
-      select: async () => "Show status",
+      select: async () => "Status",
       notify: (message) => notifications.push(message),
     },
   });
   assert.match(notifications[0], /Source: environment variables/);
   assert.match(notifications[0], /Domain: sandbox\.example\.test/);
   assert.match(notifications[0], /Image: test/);
+  assert.match(notifications[0], /Current sandbox: not active/);
 });
 
 test("default Pi entry stays local until user configuration is enabled", async (t) => {
@@ -220,7 +221,7 @@ test("default Pi entry stays local until user configuration is enabled", async (
 
   const pi = fakePi();
   await extension(pi.api);
-  assert.deepEqual(pi.commands, ["opensandbox-config"]);
+  assert.deepEqual(pi.commands, ["opensandbox"]);
   assert.deepEqual(pi.tools, []);
   assert.deepEqual([...pi.handlers.keys()], []);
 });
@@ -253,7 +254,7 @@ test("default Pi entry enables remote tools from user configuration", async (t) 
 
   const pi = fakePi();
   await extension(pi.api);
-  assert.deepEqual(pi.commands, ["opensandbox-config", "opensandbox"]);
+  assert.deepEqual(pi.commands, ["opensandbox"]);
   assert.ok(pi.tools.includes("bash"));
   assert.ok(pi.handlers.has("session_start"));
   assert.ok(pi.handlers.has("session_shutdown"));
@@ -282,7 +283,7 @@ test("configuration command masks the key, writes user config, and reloads", asy
   const notifications = [];
   let reloads = 0;
   const inputs = ["sandbox.example.test", "image"];
-  await pi.commandHandlers.get("opensandbox-config")("", {
+  await pi.commandHandlers.get("opensandbox")("", {
     hasUI: true,
     mode: "tui",
     reload: async () => { reloads += 1; },

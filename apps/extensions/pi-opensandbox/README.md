@@ -57,7 +57,7 @@ Install the published Pi package:
 pi install npm:@ai.hermes/pi-opensandbox
 ```
 
-Then run `/opensandbox-config` in Pi to show status, configure and enable the
+Then run `/opensandbox` in Pi to show status, configure and enable the
 remote sandbox, or disable it. Configuration is stored for the current user at
 `~/.pi/agent/extensions/opensandbox.json` with file mode `0600`. The API key is
 masked while entering it in TUI mode. In RPC mode, set
