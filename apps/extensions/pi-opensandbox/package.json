@@ -1,11 +1,25 @@
 {
-  "name": "pi-extension-opensandbox",
+  "name": "@ai-hermes/pi-opensandbox",
   "version": "0.1.0",
+  "description": "Run Pi coding-agent tools in a remote OpenSandbox sandbox",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ai-hermes/pi-lessons.git",
+    "directory": "apps/extensions/pi-opensandbox"
+  },
+  "homepage": "https://github.com/ai-hermes/pi-lessons/tree/main/apps/extensions/pi-opensandbox#readme",
+  "bugs": {
+    "url": "https://github.com/ai-hermes/pi-lessons/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "pi-extension",
+    "opensandbox",
+    "remote-sandbox"
   ],
   "pi": {
     "extensions": [
@@ -24,6 +38,10 @@
     "dist",
     "README.md"
   ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
     "typecheck": "tsc --noEmit",
