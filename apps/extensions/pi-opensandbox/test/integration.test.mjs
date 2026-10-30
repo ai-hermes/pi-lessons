@@ -292,13 +292,16 @@ test("configuration command masks the key, writes user config, and reloads", asy
       input: async () => inputs.shift(),
       notify: (message) => notifications.push(message),
       custom: async (factory) => new Promise((resolve) => {
+        let renderRequests = 0;
         const component = factory(
-          undefined,
+          { requestRender: () => { renderRequests += 1; } },
           undefined,
           { matches: (data, action) => action === "tui.select.confirm" && data === "\n" },
           resolve,
         );
+        assert.match(component.render().join("\n"), /> ▌/);
         component.handleInput("super-secret");
+        assert.ok(renderRequests > 0);
         assert.equal(component.render().join("\n").includes("super-secret"), false);
         component.handleInput("\n");
       }),

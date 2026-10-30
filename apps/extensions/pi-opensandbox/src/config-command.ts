@@ -156,7 +156,7 @@ async function promptSecret(
   ctx: ExtensionCommandContext,
   hasExistingKey: boolean,
 ): Promise<string | undefined> {
-  return ctx.ui.custom<string | undefined>((_tui, _theme, keybindings, done) => {
+  return ctx.ui.custom<string | undefined>((tui, _theme, keybindings, done) => {
     let value = "";
     return {
       focused: true,
@@ -167,11 +167,13 @@ async function promptSecret(
         }
         if (data === "\x7f" || data === "\b") {
           value = value.slice(0, -1);
+          tui.requestRender();
           return;
         }
         const printable = data.replace(/\x1b\[(?:200|201)~/g, "");
         if (![...printable].some((character) => character.charCodeAt(0) < 32)) {
           value += printable;
+          tui.requestRender();
         }
       },
       invalidate() {},
@@ -179,7 +181,8 @@ async function promptSecret(
         const hint = hasExistingKey ? "leave blank to keep current key" : "required";
         return [
           `OpenSandbox API key (${hint})`,
-          `${"•".repeat([...value].length)}\x1b_pi:c\x07`,
+          `> ${"•".repeat([...value].length) || "▌"}\x1b_pi:c\x07`,
+          "Input is hidden",
           "Enter submit · Esc cancel",
         ];
       },
