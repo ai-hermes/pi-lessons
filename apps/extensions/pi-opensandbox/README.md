@@ -42,7 +42,19 @@ sibling directories under `apps/extensions/`, each with its own `package.json`.
 
 ## Integration
 
-From the repository root, install the local package once:
+Install the published Pi package:
+
+```bash
+pi install npm:@ai.hermes/pi-opensandbox
+```
+
+Then run `/opensandbox-config` in Pi to show status, configure and enable the
+remote sandbox, or disable it. Configuration is stored for the current user at
+`~/.pi/agent/extensions/opensandbox.json` with file mode `0600`. The API key is
+masked while entering it in TUI mode. In RPC mode, set
+`OPENSANDBOX_API_KEY` instead.
+
+For local development, install the package from the repository root:
 
 ```bash
 pi install ./apps/extensions/pi-opensandbox
@@ -127,6 +139,26 @@ The Node.js package export remains `dist/index.js`, with declarations at
 ```
 
 The embedding service—not model-generated input—must choose `skills`, `sandboxConfig`, credentials, volume mounts, and network policy.
+
+## Publishing
+
+The `pi-package` keyword and `pi.extensions` manifest entry make the package
+discoverable by npm-backed Pi package search; no separate Pi reporting API is
+required.
+
+The first scoped release must be published manually:
+
+```bash
+pnpm build:pi-opensandbox
+cd apps/extensions/pi-opensandbox
+npm publish --access public
+```
+
+After `@ai.hermes/pi-opensandbox@0.1.0` exists, configure npm Trusted Publisher
+for this GitHub repository and `.github/workflows/pi-opensandbox-release.yml`.
+Subsequent merges to `main` that change this extension automatically publish
+the next patch version. Until the first release exists, that workflow exits
+successfully without publishing.
 
 ## Logs
 
