@@ -81,7 +81,10 @@ export function registerOpenSandboxCommand(
         ?? process.env.OPEN_SANDBOX_API_KEY;
       let apiKey: string | undefined;
       if (ctx.mode === "tui") {
-        apiKey = await promptSecret(ctx, existingKey !== undefined);
+        apiKey = await ctx.ui.input(
+          "OpenSandbox API key",
+          existingKey === undefined ? undefined : "leave blank to keep current key",
+        );
         if (apiKey === undefined) return;
         if (apiKey === "") apiKey = existingKey;
       } else {
@@ -150,44 +153,6 @@ async function promptRequired(
   if (normalized !== undefined) return normalized;
   ctx.ui.notify(`${title} is required.`, "error");
   return undefined;
-}
-
-async function promptSecret(
-  ctx: ExtensionCommandContext,
-  hasExistingKey: boolean,
-): Promise<string | undefined> {
-  return ctx.ui.custom<string | undefined>((tui, _theme, keybindings, done) => {
-    let value = "";
-    return {
-      focused: true,
-      handleInput(data: string) {
-        if (keybindings.matches(data, "tui.select.cancel")) return done(undefined);
-        if (keybindings.matches(data, "tui.select.confirm") || data === "\n") {
-          return done(value);
-        }
-        if (data === "\x7f" || data === "\b") {
-          value = value.slice(0, -1);
-          tui.requestRender();
-          return;
-        }
-        const printable = data.replace(/\x1b\[(?:200|201)~/g, "");
-        if (![...printable].some((character) => character.charCodeAt(0) < 32)) {
-          value += printable;
-          tui.requestRender();
-        }
-      },
-      invalidate() {},
-      render() {
-        const hint = hasExistingKey ? "leave blank to keep current key" : "required";
-        return [
-          `OpenSandbox API key (${hint})`,
-          `> ${"•".repeat([...value].length) || "▌"}\x1b_pi:c\x07`,
-          "Input is hidden",
-          "Enter submit · Esc cancel",
-        ];
-      },
-    };
-  });
 }
 
 function stringValue(value: unknown): string | undefined {
