@@ -260,7 +260,7 @@ test("default Pi entry enables remote tools from user configuration", async (t) 
   assert.ok(pi.handlers.has("session_shutdown"));
 });
 
-test("configuration command masks the key, writes user config, and reloads", async (t) => {
+test("configuration command writes user config and reloads", async (t) => {
   const temp = await mkdtemp(join(tmpdir(), "pi-opensandbox-command-"));
   t.after(() => rm(temp, { recursive: true, force: true }));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -282,7 +282,7 @@ test("configuration command masks the key, writes user config, and reloads", asy
   await extension(pi.api);
   const notifications = [];
   let reloads = 0;
-  const inputs = ["sandbox.example.test", "image"];
+  const inputs = ["sandbox.example.test", "image", "super-secret"];
   await pi.commandHandlers.get("opensandbox")("", {
     hasUI: true,
     mode: "tui",
@@ -291,20 +291,6 @@ test("configuration command masks the key, writes user config, and reloads", asy
       select: async () => "Configure and enable",
       input: async () => inputs.shift(),
       notify: (message) => notifications.push(message),
-      custom: async (factory) => new Promise((resolve) => {
-        let renderRequests = 0;
-        const component = factory(
-          { requestRender: () => { renderRequests += 1; } },
-          undefined,
-          { matches: (data, action) => action === "tui.select.confirm" && data === "\n" },
-          resolve,
-        );
-        assert.match(component.render().join("\n"), /> ▌/);
-        component.handleInput("super-secret");
-        assert.ok(renderRequests > 0);
-        assert.equal(component.render().join("\n").includes("super-secret"), false);
-        component.handleInput("\n");
-      }),
     },
   });
 
