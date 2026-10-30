@@ -45,7 +45,8 @@
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs",
+    "test:e2e": "set -a; . ./.env; set +a; node test/e2e.mjs"
   },
   "dependencies": {
     "@alibaba-group/opensandbox": "^0.1.11",

@@ -36,6 +36,15 @@ pnpm typecheck:pi-opensandbox
 pnpm test:pi-opensandbox
 ```
 
+With a configured local `.env`, run the live Pi/OpenSandbox integration check:
+
+```bash
+pnpm --filter @ai.hermes/pi-opensandbox test:e2e
+```
+
+This creates and kills real remote sandboxes. It is intentionally excluded from
+the default test command.
+
 This example lives in `apps/extensions/pi-opensandbox` and is registered as the
 `@ai.hermes/pi-opensandbox` workspace package. Add other extension examples as
 sibling directories under `apps/extensions/`, each with its own `package.json`.
