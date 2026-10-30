@@ -13,6 +13,7 @@ import {
   type PiOpenSandboxOptions,
   type PiOpenSandboxRuntimeConfig,
 } from "./config.ts";
+import { registerOpenSandboxCommand } from "./config-command.ts";
 import type { OpenSandboxSettings } from "./sandbox/config.ts";
 import { describeOpenSandboxError, logOpenSandboxEvent } from "./sandbox/logger.ts";
 import { SandboxSession } from "./sandbox/session.ts";
@@ -30,6 +31,7 @@ export function createPiOpenSandboxExtension(
 
 export function createPiOpenSandboxExtensionFromConfig(
   config: PiOpenSandboxRuntimeConfig,
+  installedConfigPath?: string,
 ): ExtensionFactory {
   const {
     sandboxSettings,
@@ -65,7 +67,12 @@ export function createPiOpenSandboxExtensionFromConfig(
       () => session.getActiveSandbox(),
       () => session.getHostWorkspaceRoot(),
     );
-    registerCommands(pi, session, skills.length > 0 ? () => report : undefined);
+    registerCommands(
+      pi,
+      session,
+      skills.length > 0 ? () => report : undefined,
+      installedConfigPath,
+    );
 
     if (skills.length > 0) {
       pi.on("resources_discover", () => ({
@@ -123,21 +130,26 @@ function registerCommands(
   pi: ExtensionAPI,
   session: SandboxSession,
   getReport?: () => SkillSyncReport | undefined,
+  installedConfigPath?: string,
 ): void {
-  pi.registerCommand("opensandbox", {
-    description: "Show the OpenSandbox sandbox held by this session",
-    handler: async (_args, ctx) => {
-      const activeSandbox = session.getActiveSandbox();
-      if (!activeSandbox) {
-        return notifyIfUiAvailable(ctx, "No OpenSandbox sandbox is active.", "info");
-      }
-      notifyIfUiAvailable(ctx, [
-        `OpenSandbox ${activeSandbox.id}`,
-        `Workspace: ${activeSandbox.sandboxWorkspaceRoot}`,
-        `Image: ${activeSandbox.imageReference}`,
-      ].join("\n"), "info");
-    },
-  });
+  if (installedConfigPath === undefined) {
+    pi.registerCommand("opensandbox", {
+      description: "Show the OpenSandbox sandbox held by this session",
+      handler: async (_args, ctx) => {
+        const activeSandbox = session.getActiveSandbox();
+        if (!activeSandbox) {
+          return notifyIfUiAvailable(ctx, "No OpenSandbox sandbox is active.", "info");
+        }
+        notifyIfUiAvailable(ctx, [
+          `OpenSandbox ${activeSandbox.id}`,
+          `Workspace: ${activeSandbox.sandboxWorkspaceRoot}`,
+          `Image: ${activeSandbox.imageReference}`,
+        ].join("\n"), "info");
+      },
+    });
+  } else {
+    registerOpenSandboxCommand(pi, installedConfigPath, () => session.getActiveSandbox());
+  }
 
   if (getReport) {
     pi.registerCommand("opensandbox-skills", {
