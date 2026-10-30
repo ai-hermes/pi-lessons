@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
+import { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
+  loadInstalledPiOpenSandboxConfig,
   loadPiOpenSandboxConfig,
+  readStoredPiOpenSandboxConfig,
   resolvePiOpenSandboxRuntimeConfig,
+  writeStoredPiOpenSandboxConfig,
 } from "../dist/config.js";
 import { resolveOpenSandboxSettings } from "../dist/sandbox/config.js";
 
@@ -47,6 +53,52 @@ test("loads and validates inline extension configuration", async () => {
   await assert.rejects(
     loadPiOpenSandboxConfig({ PI_OPENSANDBOX_CONFIG: "{" }),
     /not valid JSON/,
+  );
+});
+
+test("loads optional user configuration and lets the environment override its key", async (t) => {
+  const temp = await mkdtemp(join(tmpdir(), "pi-opensandbox-config-"));
+  t.after(() => rm(temp, { recursive: true, force: true }));
+  const configPath = join(temp, "extensions", "opensandbox.json");
+
+  assert.deepEqual(
+    await loadInstalledPiOpenSandboxConfig({}, configPath),
+    { enabled: false, source: "none" },
+  );
+  await writeStoredPiOpenSandboxConfig({
+    enabled: true,
+    options: {
+      sandboxConfig: {
+        apiKey: "stored-secret",
+        domain: "sandbox.example.test",
+        image: "image",
+      },
+    },
+  }, configPath);
+
+  const loaded = await loadInstalledPiOpenSandboxConfig({
+    OPENSANDBOX_API_KEY: "environment-secret",
+  }, configPath);
+  assert.equal(loaded.runtime.sandboxSettings.apiKey, "environment-secret");
+  assert.equal(loaded.options.sandboxConfig.apiKey, "stored-secret");
+  assert.equal((await lstat(configPath)).mode & 0o777, 0o600);
+  assert.equal(JSON.parse(await readFile(configPath, "utf8")).enabled, true);
+
+  await writeStoredPiOpenSandboxConfig({
+    enabled: false,
+    options: loaded.options,
+  }, configPath);
+  assert.deepEqual(await readStoredPiOpenSandboxConfig(configPath), {
+    enabled: false,
+    options: loaded.options,
+  });
+  assert.equal((await loadInstalledPiOpenSandboxConfig({}, configPath)).enabled, false);
+});
+
+test("validates user configuration before writing it", async () => {
+  await assert.rejects(
+    writeStoredPiOpenSandboxConfig({ enabled: true }, "/tmp/unused-opensandbox.json"),
+    /requires options/,
   );
 });
 

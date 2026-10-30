@@ -17,14 +17,19 @@ import { SandboxSession } from "../dist/sandbox/session.js";
 function fakePi() {
   const handlers = new Map();
   const commands = [];
+  const commandHandlers = new Map();
   const tools = [];
   return {
     handlers,
     commands,
+    commandHandlers,
     tools,
     api: {
       on: (name, handler) => handlers.set(name, handler),
-      registerCommand: (name) => commands.push(name),
+      registerCommand: (name, command) => {
+        commands.push(name);
+        commandHandlers.set(name, command.handler);
+      },
       registerTool: (tool) => tools.push(tool.name),
     },
   };
@@ -98,8 +103,11 @@ test("ActiveOpenSandbox enforces read limits and external cleanup ownership", as
 
 test("package manifest exposes a loadable Pi extension", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(pkg.name, "@ai.hermes/pi-opensandbox");
   assert.deepEqual(pkg.pi.extensions, ["./src/index.ts"]);
   assert.ok(pkg.keywords.includes("pi-package"));
+  assert.ok(pkg.keywords.includes("pi-extension"));
+  assert.equal(pkg.publishConfig.access, "public");
   await lstat(new URL("../src/index.ts", import.meta.url));
   await lstat(new URL(`../${pkg.main}`, import.meta.url));
 });
@@ -142,6 +150,7 @@ test("Pi loads the source package without build artifacts", async (t) => {
   assert.deepEqual(errors, []);
   assert.equal(extensions.length, 1);
   assert.equal(extensions[0].resolvedPath, join(packageDir, "src/index.ts"));
+  assert.ok(extensions[0].commands.has("opensandbox-config"));
   assert.ok(extensions[0].commands.has("opensandbox"));
   assert.ok(extensions[0].tools.has("bash"));
   assert.ok(extensions[0].handlers.has("session_start"));
@@ -159,7 +168,7 @@ test("default Pi entry reads standalone configuration", async (t) => {
 
   const pi = fakePi();
   await extension(pi.api);
-  assert.deepEqual(pi.commands, ["opensandbox"]);
+  assert.deepEqual(pi.commands, ["opensandbox-config", "opensandbox"]);
   assert.deepEqual(pi.tools.sort(), [
     "bash",
     "edit",
@@ -176,6 +185,132 @@ test("default Pi entry reads standalone configuration", async (t) => {
     "session_start",
     "user_bash",
   ]);
+
+  const notifications = [];
+  await pi.commandHandlers.get("opensandbox-config")("", {
+    hasUI: true,
+    mode: "tui",
+    ui: {
+      select: async () => "Show status",
+      notify: (message) => notifications.push(message),
+    },
+  });
+  assert.match(notifications[0], /Source: environment variables/);
+  assert.match(notifications[0], /Domain: sandbox\.example\.test/);
+  assert.match(notifications[0], /Image: test/);
+});
+
+test("default Pi entry stays local until user configuration is enabled", async (t) => {
+  const temp = await mkdtemp(join(tmpdir(), "pi-opensandbox-agent-"));
+  t.after(() => rm(temp, { recursive: true, force: true }));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousInline = process.env.PI_OPENSANDBOX_CONFIG;
+  const previousFile = process.env.PI_OPENSANDBOX_CONFIG_FILE;
+  process.env.PI_CODING_AGENT_DIR = temp;
+  delete process.env.PI_OPENSANDBOX_CONFIG;
+  delete process.env.PI_OPENSANDBOX_CONFIG_FILE;
+  t.after(() => {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    if (previousInline === undefined) delete process.env.PI_OPENSANDBOX_CONFIG;
+    else process.env.PI_OPENSANDBOX_CONFIG = previousInline;
+    if (previousFile === undefined) delete process.env.PI_OPENSANDBOX_CONFIG_FILE;
+    else process.env.PI_OPENSANDBOX_CONFIG_FILE = previousFile;
+  });
+
+  const pi = fakePi();
+  await extension(pi.api);
+  assert.deepEqual(pi.commands, ["opensandbox-config"]);
+  assert.deepEqual(pi.tools, []);
+  assert.deepEqual([...pi.handlers.keys()], []);
+});
+
+test("default Pi entry enables remote tools from user configuration", async (t) => {
+  const temp = await mkdtemp(join(tmpdir(), "pi-opensandbox-enabled-"));
+  t.after(() => rm(temp, { recursive: true, force: true }));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousInline = process.env.PI_OPENSANDBOX_CONFIG;
+  const previousFile = process.env.PI_OPENSANDBOX_CONFIG_FILE;
+  process.env.PI_CODING_AGENT_DIR = temp;
+  delete process.env.PI_OPENSANDBOX_CONFIG;
+  delete process.env.PI_OPENSANDBOX_CONFIG_FILE;
+  t.after(() => {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    if (previousInline === undefined) delete process.env.PI_OPENSANDBOX_CONFIG;
+    else process.env.PI_OPENSANDBOX_CONFIG = previousInline;
+    if (previousFile === undefined) delete process.env.PI_OPENSANDBOX_CONFIG_FILE;
+    else process.env.PI_OPENSANDBOX_CONFIG_FILE = previousFile;
+  });
+  await mkdir(join(temp, "extensions"));
+  await writeFile(join(temp, "extensions", "opensandbox.json"), JSON.stringify({
+    enabled: true,
+    sandboxConfig: {
+      domain: "sandbox.example.test",
+      image: "image",
+    },
+  }));
+
+  const pi = fakePi();
+  await extension(pi.api);
+  assert.deepEqual(pi.commands, ["opensandbox-config", "opensandbox"]);
+  assert.ok(pi.tools.includes("bash"));
+  assert.ok(pi.handlers.has("session_start"));
+  assert.ok(pi.handlers.has("session_shutdown"));
+});
+
+test("configuration command masks the key, writes user config, and reloads", async (t) => {
+  const temp = await mkdtemp(join(tmpdir(), "pi-opensandbox-command-"));
+  t.after(() => rm(temp, { recursive: true, force: true }));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousInline = process.env.PI_OPENSANDBOX_CONFIG;
+  const previousFile = process.env.PI_OPENSANDBOX_CONFIG_FILE;
+  process.env.PI_CODING_AGENT_DIR = temp;
+  delete process.env.PI_OPENSANDBOX_CONFIG;
+  delete process.env.PI_OPENSANDBOX_CONFIG_FILE;
+  t.after(() => {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    if (previousInline === undefined) delete process.env.PI_OPENSANDBOX_CONFIG;
+    else process.env.PI_OPENSANDBOX_CONFIG = previousInline;
+    if (previousFile === undefined) delete process.env.PI_OPENSANDBOX_CONFIG_FILE;
+    else process.env.PI_OPENSANDBOX_CONFIG_FILE = previousFile;
+  });
+
+  const pi = fakePi();
+  await extension(pi.api);
+  const notifications = [];
+  let reloads = 0;
+  const inputs = ["sandbox.example.test", "image"];
+  await pi.commandHandlers.get("opensandbox-config")("", {
+    hasUI: true,
+    mode: "tui",
+    reload: async () => { reloads += 1; },
+    ui: {
+      select: async () => "Configure and enable",
+      input: async () => inputs.shift(),
+      notify: (message) => notifications.push(message),
+      custom: async (factory) => new Promise((resolve) => {
+        const component = factory(
+          undefined,
+          undefined,
+          { matches: (data, action) => action === "tui.select.confirm" && data === "\n" },
+          resolve,
+        );
+        component.handleInput("super-secret");
+        assert.equal(component.render().join("\n").includes("super-secret"), false);
+        component.handleInput("\n");
+      }),
+    },
+  });
+
+  const stored = JSON.parse(await readFile(
+    join(temp, "extensions", "opensandbox.json"),
+    "utf8",
+  ));
+  assert.equal(stored.sandboxConfig.apiKey, "super-secret");
+  assert.equal(reloads, 1);
+  assert.equal(notifications.some((message) => message.includes("super-secret")), false);
 });
 
 test("validates extension options at creation", () => {

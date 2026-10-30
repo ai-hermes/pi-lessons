@@ -1,0 +1,182 @@
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
+import {
+  hasPiOpenSandboxEnvironmentConfig,
+  loadInstalledPiOpenSandboxConfig,
+  readStoredPiOpenSandboxConfig,
+  resolvePiOpenSandboxRuntimeConfig,
+  writeStoredPiOpenSandboxConfig,
+  type InstalledPiOpenSandboxConfig,
+  type PiOpenSandboxOptions,
+} from "./config.ts";
+
+export function registerOpenSandboxConfigCommand(
+  pi: ExtensionAPI,
+  configPath: string,
+): void {
+  pi.registerCommand("opensandbox-config", {
+    description: "Configure the OpenSandbox extension",
+    handler: async (_args, ctx) => {
+      if (!ctx.hasUI) return;
+      const stored = await readStoredPiOpenSandboxConfig(configPath);
+      const action = await ctx.ui.select("OpenSandbox configuration", [
+        "Show status",
+        "Configure and enable",
+        "Disable",
+      ]);
+      if (action === "Show status") {
+        showStatus(ctx, await loadInstalledPiOpenSandboxConfig(process.env, configPath));
+        return;
+      }
+      if (action === "Disable") {
+        if (hasPiOpenSandboxEnvironmentConfig()) {
+          ctx.ui.notify(
+            "Unset PI_OPENSANDBOX_CONFIG or PI_OPENSANDBOX_CONFIG_FILE to disable OpenSandbox.",
+            "error",
+          );
+          return;
+        }
+        await writeStoredPiOpenSandboxConfig({
+          enabled: false,
+          ...(stored?.options === undefined ? {} : { options: stored.options }),
+        }, configPath);
+        ctx.ui.notify("OpenSandbox disabled. Reloading extensions.", "info");
+        await ctx.reload();
+        return;
+      }
+      if (action !== "Configure and enable") return;
+      if (hasPiOpenSandboxEnvironmentConfig()) {
+        ctx.ui.notify(
+          "Unset PI_OPENSANDBOX_CONFIG or PI_OPENSANDBOX_CONFIG_FILE before saving user configuration.",
+          "error",
+        );
+        return;
+      }
+
+      const current = stored?.options;
+      const sandboxConfig = current?.sandboxConfig ?? {};
+      const domain = await promptRequired(
+        ctx,
+        "OpenSandbox domain",
+        stringValue(sandboxConfig.domain),
+      );
+      if (domain === undefined) return;
+      const image = await promptRequired(
+        ctx,
+        "OpenSandbox image",
+        stringValue(sandboxConfig.image),
+      );
+      if (image === undefined) return;
+
+      const existingKey = stringValue(sandboxConfig.apiKey);
+      const environmentKey = process.env.OPENSANDBOX_API_KEY
+        ?? process.env.OPEN_SANDBOX_API_KEY;
+      let apiKey: string | undefined;
+      if (ctx.mode === "tui") {
+        apiKey = await promptSecret(ctx, existingKey !== undefined);
+        if (apiKey === undefined) return;
+        if (apiKey === "") apiKey = existingKey;
+      } else {
+        apiKey = environmentKey;
+        if (apiKey === undefined) {
+          ctx.ui.notify(
+            "Set OPENSANDBOX_API_KEY before configuring OpenSandbox outside TUI mode.",
+            "error",
+          );
+          return;
+        }
+      }
+
+      const options: PiOpenSandboxOptions = {
+        ...current,
+        sandboxConfig: {
+          ...sandboxConfig,
+          domain,
+          image,
+          ...(apiKey === undefined ? {} : { apiKey }),
+        },
+      };
+      try {
+        resolvePiOpenSandboxRuntimeConfig(options, process.env);
+      } catch (error) {
+        ctx.ui.notify(`Invalid OpenSandbox configuration: ${getErrorMessage(error)}`, "error");
+        return;
+      }
+      await writeStoredPiOpenSandboxConfig({ enabled: true, options }, configPath);
+      ctx.ui.notify("OpenSandbox configured. Reloading extensions.", "info");
+      await ctx.reload();
+    },
+  });
+}
+
+function showStatus(
+  ctx: ExtensionCommandContext,
+  config: InstalledPiOpenSandboxConfig,
+): void {
+  const sandboxConfig = config.runtime?.sandboxSettings ?? config.options?.sandboxConfig;
+  ctx.ui.notify([
+    `Enabled: ${config.enabled ? "yes" : "no"}`,
+    `Source: ${config.source === "environment" ? "environment variables" : config.source === "user" ? "user configuration" : "none"}`,
+    `Domain: ${stringValue(sandboxConfig?.domain) ?? "not configured"}`,
+    `Image: ${stringValue(sandboxConfig?.image) ?? "not configured"}`,
+    `API key: ${stringValue(sandboxConfig?.apiKey) ? "configured" : "missing"}`,
+  ].join("\n"), "info");
+}
+
+async function promptRequired(
+  ctx: ExtensionCommandContext,
+  title: string,
+  current?: string,
+): Promise<string | undefined> {
+  const value = await ctx.ui.input(title, current);
+  if (value === undefined) return undefined;
+  const normalized = value.trim() || current;
+  if (normalized !== undefined) return normalized;
+  ctx.ui.notify(`${title} is required.`, "error");
+  return undefined;
+}
+
+async function promptSecret(
+  ctx: ExtensionCommandContext,
+  hasExistingKey: boolean,
+): Promise<string | undefined> {
+  return ctx.ui.custom<string | undefined>((_tui, _theme, keybindings, done) => {
+    let value = "";
+    return {
+      focused: true,
+      handleInput(data: string) {
+        if (keybindings.matches(data, "tui.select.cancel")) return done(undefined);
+        if (keybindings.matches(data, "tui.select.confirm") || data === "\n") {
+          return done(value);
+        }
+        if (data === "\x7f" || data === "\b") {
+          value = value.slice(0, -1);
+          return;
+        }
+        const printable = data.replace(/\x1b\[(?:200|201)~/g, "");
+        if (![...printable].some((character) => character.charCodeAt(0) < 32)) {
+          value += printable;
+        }
+      },
+      invalidate() {},
+      render() {
+        const hint = hasExistingKey ? "leave blank to keep current key" : "required";
+        return [
+          `OpenSandbox API key (${hint})`,
+          `${"•".repeat([...value].length)}\x1b_pi:c\x07`,
+          "Enter submit · Esc cancel",
+        ];
+      },
+    };
+  });
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
