@@ -36,12 +36,12 @@ jobs:
         working-directory: apps/extensions/pi-opensandbox
         shell: bash
         run: |
-          if latest=$(npm view @ai-hermes/pi-opensandbox version --registry=https://registry.npmjs.org 2>/dev/null); then
+          if latest=$(npm view @ai.hermes/pi-opensandbox version --registry=https://registry.npmjs.org 2>/dev/null); then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "latest=$latest" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Publish @ai-hermes/pi-opensandbox@0.1.0 manually, then configure npm Trusted Publisher."
+            echo "::notice::Publish @ai.hermes/pi-opensandbox@0.1.0 manually, then configure npm Trusted Publisher."
           fi
       - if: steps.package.outputs.exists == 'true'
         working-directory: apps/extensions/pi-opensandbox

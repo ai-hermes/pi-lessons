@@ -1,4 +1,4 @@
-# pi-extension-opensandbox
+# @ai.hermes/pi-opensandbox
 
 Standalone Pi extension that runs Pi's file, search, and shell tools inside OpenSandbox. It includes optional Skill mirroring and does not depend on another OpenSandbox extension.
 
@@ -37,7 +37,7 @@ pnpm test:pi-opensandbox
 ```
 
 This example lives in `apps/extensions/pi-opensandbox` and is registered as the
-`pi-extension-opensandbox` workspace package. Add other extension examples as
+`@ai.hermes/pi-opensandbox` workspace package. Add other extension examples as
 sibling directories under `apps/extensions/`, each with its own `package.json`.
 
 ## Integration
@@ -112,7 +112,7 @@ commented out so the two variables are not enabled together.
 
 Embedding services can build the package with `pnpm build:pi-opensandbox`,
 then import the named `createPiOpenSandboxExtension` export from
-`pi-extension-opensandbox` and pass the returned extension to their Pi session.
+`@ai.hermes/pi-opensandbox` and pass the returned extension to their Pi session.
 The Node.js package export remains `dist/index.js`, with declarations at
 `dist/index.d.ts`. Published packages include both `src/` (for Pi) and `dist/`
 (for Node.js).

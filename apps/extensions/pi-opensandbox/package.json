@@ -1,5 +1,5 @@
 {
-  "name": "@ai-hermes/pi-opensandbox",
+  "name": "@ai.hermes/pi-opensandbox",
   "version": "0.1.0",
   "description": "Run Pi coding-agent tools in a remote OpenSandbox sandbox",
   "license": "ISC",
