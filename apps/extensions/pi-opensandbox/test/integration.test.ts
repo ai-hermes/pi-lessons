@@ -1397,7 +1397,7 @@ test("replaces the remote Skill set only after activation succeeds", async (t) =
     "keep me",
   );
   assert.doesNotMatch(remoteSandbox.activationCommands.at(-1), /for entry in/);
-  assert.match(remoteSandbox.activationCommands.at(-1), /\.absent-first/);
+  assert.match(remoteSandbox.activationCommands.at(-1), /\.absent-[^/']+\/first'/);
   const stableSnapshot = new Map(remoteSandbox.remote);
 
   await writeFile(join(firstSource, "SKILL.md"), "# First v3\n");
@@ -1412,6 +1412,51 @@ test("replaces the remote Skill set only after activation succeeds", async (t) =
     /Remote Skill activation failed/,
   );
   assert.deepEqual(remoteSandbox.remote, stableSnapshot);
+});
+
+test("remote Skill absence markers cannot collide with Skill names", async (t) => {
+  const temp = await mkdtemp(join(tmpdir(), "pi-skill-marker-"));
+  t.after(() => rm(temp, { recursive: true, force: true }));
+  const source = join(temp, "source");
+  const remoteRoot = "/tmp/pi-marker-test/skills";
+  await mkdir(source);
+  await writeFile(join(source, "SKILL.md"), "# Marker\n");
+  const limits = {
+    maxFileBytes: 8 * 1024 * 1024,
+    maxFiles: 10_000,
+    maxTotalBytes: 128 * 1024 * 1024,
+  };
+  const remoteSandbox = remoteSkillSandbox(remoteRoot);
+  const active = activeSandbox(remoteSandbox.sandbox, {
+    readableResourceRoots: [remoteRoot],
+  });
+
+  await uploadSkills(
+    active,
+    await materializeSkills(
+      [{ name: ".absent-foo", sourceDir: source }],
+      join(temp, "cache"),
+      limits,
+    ),
+    remoteRoot,
+    limits,
+    true,
+  );
+  await uploadSkills(
+    active,
+    await materializeSkills(
+      [{ name: "foo", sourceDir: source }],
+      join(temp, "cache"),
+      limits,
+    ),
+    remoteRoot,
+    limits,
+    true,
+  );
+
+  const activation = remoteSandbox.activationCommands.at(-1);
+  assert.match(activation, /\.previous-[^/']+\/\.absent-foo'/);
+  assert.match(activation, /\.absent-[^/']+\/foo'/);
 });
 
 test("routine shutdown pauses owned sandboxes and retries failed release", async () => {
