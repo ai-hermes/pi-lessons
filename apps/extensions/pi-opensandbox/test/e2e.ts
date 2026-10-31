@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,10 +18,21 @@ assert.equal(typeof domain, "string", "PI_OPENSANDBOX_CONFIG requires sandboxCon
 assert.equal(typeof image, "string", "PI_OPENSANDBOX_CONFIG requires sandboxConfig.image");
 
 const agentDir = await mkdtemp(join(tmpdir(), "pi-opensandbox-e2e-"));
-const sandboxIds = [];
+const sessionId = randomUUID();
+const sessionDir = join(agentDir, "sessions");
+const sessionFile = join(sessionDir, `e2e_${sessionId}.jsonl`);
+let sandboxId;
 
 try {
-  await runPiCommand("Configure and enable");
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(sessionFile, `${JSON.stringify({
+    type: "session",
+    version: 3,
+    id: sessionId,
+    timestamp: new Date().toISOString(),
+    cwd: packageDir,
+  })}\n`);
+  await runPiCommand("Enable OpenSandbox");
 
   const configPath = join(agentDir, "extensions", "opensandbox.json");
   const stored = JSON.parse(await readFile(configPath, "utf8"));
@@ -35,29 +47,42 @@ try {
   assert.match(status, /Source: user configuration/);
   assert.match(status, new RegExp(`Domain: ${escapeRegExp(normalizedDomain(domain))}`));
   assert.match(status, new RegExp(`Image: ${escapeRegExp(image)}`));
-  assert.match(status, /API key: configured/);
-  assert.match(status, /Current sandbox: \S+/);
-  assert.match(status, /Workspace: \S+/);
+  assert.doesNotMatch(status, /API key:/);
+  assert.doesNotMatch(status, new RegExp(escapeRegExp(apiKey)));
+  assert.match(status, /Mode: local/);
+  assert.match(status, /Current sandbox: not active/);
 
-  await assertSandboxesCleaned();
-  console.log("OpenSandbox E2E passed: slash config, persisted reload, sandbox startup, and cleanup");
+  const activation = await runPiCommand("OpenSandbox session running", true);
+  sandboxId = activation.match(/OpenSandbox created: (\S+)/)?.[1];
+  assert.ok(sandboxId, "Pi did not create an OpenSandbox sandbox");
+  assert.deepEqual(await readRemoteSessionState(), {
+    active: true,
+    sandboxId,
+    owned: true,
+  });
+  await assertSandboxPreserved(sandboxId);
+
+  console.log("OpenSandbox E2E passed: local config, dedicated remote session, pause, and cleanup");
 } finally {
+  if (sandboxId) await requestSandboxCleanup(sandboxId);
   await rm(agentDir, { recursive: true, force: true });
 }
 
-async function runPiCommand(action) {
+async function runPiCommand(action, opensandbox = false) {
   const childEnvironment = { ...process.env, PI_CODING_AGENT_DIR: agentDir };
   delete childEnvironment.PI_OPENSANDBOX_CONFIG;
   delete childEnvironment.PI_OPENSANDBOX_CONFIG_FILE;
 
   const child = spawn("pi", [
     "--mode", "rpc",
-    "--no-session",
+    "--session-id", sessionId,
+    "--session-dir", sessionDir,
     "--no-extensions",
     "--no-skills",
     "--no-prompt-templates",
     "--extension", extensionPath,
     "--approve",
+    ...(opensandbox ? ["--opensandbox"] : []),
   ], {
     cwd: packageDir,
     env: childEnvironment,
@@ -67,8 +92,15 @@ async function runPiCommand(action) {
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => stderr.push(chunk));
 
-  let status = "";
+  const notifications = [];
   let commandFinished = false;
+  let actionFinished = false;
+  let finishScheduled = false;
+  const finishIfReady = () => {
+    if (!commandFinished || !actionFinished || finishScheduled) return;
+    finishScheduled = true;
+    setTimeout(() => child.stdin.end(), 500);
+  };
   const lines = createInterface({ input: child.stdout });
   const completed = new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error(`Pi RPC timed out during ${action}`)), 120_000);
@@ -82,24 +114,31 @@ async function runPiCommand(action) {
 
       if (message.type === "extension_ui_request") {
         if (message.method === "select") {
+          assert.ok(
+            message.options.includes(action),
+            `Action ${action} is unavailable; options: ${message.options.join(", ")}`,
+          );
           respond(child, message.id, { value: action });
         } else if (message.method === "input") {
           respond(child, message.id, {
-            value: message.title === "OpenSandbox domain" ? domain : image,
+            value: message.title === "OpenSandbox domain"
+              ? domain
+              : message.title === "OpenSandbox image" ? image : apiKey,
           });
         } else if (message.method === "notify") {
-          if (message.message?.startsWith("OpenSandbox created: ")) {
-            sandboxIds.push(message.message.slice("OpenSandbox created: ".length));
-          }
-          if (message.message?.includes("Source: user configuration")) {
-            status = message.message;
-          }
+          notifications.push(message.message);
+          actionFinished = notificationCompletes(action, message.message);
+          finishIfReady();
         }
       }
 
       if (message.type === "response" && message.id === "e2e-command") {
         commandFinished = true;
-        child.stdin.end();
+        finishIfReady();
+      }
+      if (message.type === "extension_error") {
+        child.kill();
+        reject(new Error(redact(`Pi extension failed: ${message.error}`)));
       }
     });
     child.on("error", reject);
@@ -119,11 +158,42 @@ async function runPiCommand(action) {
     message: "/opensandbox",
   })}\n`);
   await completed;
-  return status;
+  return notifications.join("\n");
 }
 
-async function assertSandboxesCleaned() {
-  assert.ok(sandboxIds.length > 0, "Pi did not create a sandbox from persisted user config");
+async function readLatestSessionState(file) {
+  const entries = (await readFile(file, "utf8"))
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.type === "custom" && entry.customType === "pi-opensandbox-state") {
+      return entry.data;
+    }
+  }
+  return undefined;
+}
+
+async function readRemoteSessionState() {
+  for (const file of await readdir(sessionDir)) {
+    if (!file.endsWith(".jsonl")) continue;
+    const state = await readLatestSessionState(join(sessionDir, file));
+    if (state?.active === true && typeof state.sandboxId === "string") return state;
+  }
+  return undefined;
+}
+
+function notificationCompletes(action, message) {
+  if (action === "Enable OpenSandbox") return message?.startsWith("OpenSandbox configured.");
+  if (action === "Status") return message?.includes("Source: user configuration");
+  if (action === "OpenSandbox session running") {
+    return message?.includes("Current sandbox:");
+  }
+  return false;
+}
+
+async function assertSandboxPreserved(sandboxId) {
   const manager = SandboxManager.create({
     connectionConfig: {
       domain,
@@ -132,13 +202,28 @@ async function assertSandboxesCleaned() {
     },
   });
   try {
-    for (const sandboxId of new Set(sandboxIds)) {
-      await assert.rejects(
-        manager.getSandboxInfo(sandboxId),
-        (error) => isNotFound(error),
-        `Sandbox ${sandboxId} was not killed on Pi shutdown`,
-      );
-    }
+    const info = await manager.getSandboxInfo(sandboxId);
+    assert.ok(
+      info.status.state === "Paused" || info.status.state === "Running",
+      `Sandbox ${sandboxId} was not preserved after Pi shutdown: ${info.status.state}`,
+    );
+  } finally {
+    await manager.close();
+  }
+}
+
+async function requestSandboxCleanup(sandboxId) {
+  const manager = SandboxManager.create({
+    connectionConfig: {
+      domain,
+      protocol: configured.sandboxConfig.protocol,
+      apiKey,
+    },
+  });
+  try {
+    await manager.killSandbox(sandboxId).catch((error) => {
+      if (!isNotFound(error)) throw error;
+    });
   } finally {
     await manager.close();
   }

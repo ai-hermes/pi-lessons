@@ -17,9 +17,19 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { join as joinPosix } from "node:path/posix";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import type { ActiveOpenSandbox } from "./sandbox/client.ts";
+import { shellQuote, type ActiveOpenSandbox } from "./sandbox/client";
 
-/** Optional host-side Skill directory mirrored into OpenSandbox. */
+/**
+ * Host-side Skill directory selected for upload into OpenSandbox.
+ *
+ * @example
+ * ```ts
+ * const skill: SelectedSkill = {
+ *   name: "code-review",
+ *   sourceDir: "/home/user/.pi/skills/code-review",
+ * };
+ * ```
+ */
 export interface SelectedSkill {
   /** Optional display name. Defaults to the source directory name. */
   name?: string;
@@ -27,6 +37,7 @@ export interface SelectedSkill {
   sourceDir: string;
 }
 
+/** Safety limits applied while scanning, caching, and uploading Skills. */
 export interface SkillSyncLimits {
   /** Maximum bytes accepted for one file. Default: 8 MiB. */
   maxFileBytes?: number;
@@ -36,10 +47,15 @@ export interface SkillSyncLimits {
   maxFiles?: number;
 }
 
+/** Summary of Skill content uploaded to the active sandbox. */
 export interface SkillSyncReport {
+  /** Total uploaded payload size. */
   bytes: number;
+  /** Number of uploaded regular files. */
   files: number;
+  /** Sandbox root containing the uploaded Skills. */
   remoteRoot: string;
+  /** Content identity and entry point for each uploaded Skill. */
   skills: Array<{
     digest: string;
     name: string;
@@ -55,6 +71,11 @@ interface ManifestFile {
   sha256: string;
 }
 
+/**
+ * Content-addressed host copy of one selected Skill.
+ *
+ * The materialized copy prevents source changes during upload.
+ */
 export interface MaterializedSkill {
   digest: string;
   files: ManifestFile[];
@@ -67,6 +88,7 @@ const DEFAULT_MAX_FILE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_TOTAL_BYTES = 128 * 1024 * 1024;
 const DEFAULT_MAX_FILES = 10_000;
 const DIGEST_MARKER = ".pi-skill-digest";
+const REMOTE_MANIFEST = ".pi-skills-manifest.json";
 const UPLOAD_BATCH_SIZE = 32;
 const limitsSchema = z.object({
   maxFileBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
@@ -77,6 +99,22 @@ const limitsSchema = z.object({
     .default(DEFAULT_MAX_FILES),
 });
 
+/**
+ * Validates selected Skills and creates content-addressed host copies.
+ *
+ * Symbolic links, non-regular files, common secret files, and content exceeding
+ * the configured limits are rejected before any remote upload occurs.
+ *
+ * @example
+ * ```ts
+ * const limits = parseSkillSyncLimits(undefined);
+ * const skills = await materializeSkills(
+ *   [{ sourceDir: "/home/user/.pi/skills/code-review" }],
+ *   "/tmp/pi/skills",
+ *   limits,
+ * );
+ * ```
+ */
 export async function materializeSkills(
   selectedSkills: SelectedSkill[],
   sharedSkillRoot: string,
@@ -261,6 +299,23 @@ async function skillCacheMatchesManifest(
   }
 }
 
+/**
+ * Uploads materialized Skills below the configured remote root.
+ *
+ * When verification is enabled, every remote file is hashed after upload and
+ * compared with its host manifest digest.
+ *
+ * @example
+ * ```ts
+ * const report = await uploadSkills(
+ *   activeSandbox,
+ *   skills,
+ *   "/tmp/pi/skills",
+ *   parseSkillSyncLimits(undefined),
+ *   true,
+ * );
+ * ```
+ */
 export async function uploadSkills(
   activeSandbox: ActiveOpenSandbox,
   skills: MaterializedSkill[],
@@ -274,8 +329,9 @@ export async function uploadSkills(
     );
   }
 
+  const stagingRoot = joinPosix(sharedSkillRoot, `.staging-${randomUUID()}`);
   const uploads = skills.flatMap((skill) => {
-    const remoteSkillDir = skill.hostDir.split(sep).join("/");
+    const remoteSkillDir = joinPosix(stagingRoot, skill.name);
     return skill.files.map((file) => ({
       file,
       remotePath: joinPosix(remoteSkillDir, file.relativePath),
@@ -283,37 +339,69 @@ export async function uploadSkills(
   });
   const bytes = uploads.reduce((sum, upload) => sum + upload.file.bytes, 0);
   enforceTotals(bytes, uploads.length, skillSyncLimits);
+  const manifest = Buffer.from(`${JSON.stringify({
+    version: 1,
+    skills: Object.fromEntries(skills.map((skill) => [
+      skill.name,
+      {
+        digest: skill.digest,
+        skillFile: `${skill.name}/SKILL.md`,
+      },
+    ])),
+  }, null, 2)}\n`);
+  const remoteManifest = joinPosix(stagingRoot, REMOTE_MANIFEST);
 
   const directories = [...new Set([
     sharedSkillRoot,
-    ...skills.map((skill) => skill.hostDir.split(sep).join("/")),
+    stagingRoot,
+    ...skills.map((skill) => joinPosix(stagingRoot, skill.name)),
     ...uploads.map((upload) => dirnamePosix(upload.remotePath)),
   ])];
-  for (const batch of batches(directories, UPLOAD_BATCH_SIZE)) {
-    await activeSandbox.ensureSandboxDirectories(batch);
-  }
 
-  for (const batch of batches(uploads, UPLOAD_BATCH_SIZE)) {
-    const entries = await Promise.all(batch.map(async ({ file, remotePath }) => ({
-      path: remotePath,
-      data: await readFile(file.absoluteSource),
-      mode: file.mode,
-    })));
-    await activeSandbox.writeSandboxFiles(entries);
-  }
-
-  if (verifyUploadedSkills) {
-    for (const batch of batches(uploads, UPLOAD_BATCH_SIZE)) {
-      await Promise.all(batch.map(async ({ file, remotePath }) => {
-        const remoteDigest = await activeSandbox.hashSandboxFile(
-          remotePath,
-          skillSyncLimits.maxFileBytes,
-        );
-        if (remoteDigest !== file.sha256) {
-          throw new Error(`Remote Skill verification failed: ${remotePath}`);
-        }
-      }));
+  try {
+    for (const batch of batches(directories, UPLOAD_BATCH_SIZE)) {
+      await activeSandbox.ensureSandboxDirectories(batch);
     }
+
+    for (const batch of batches(uploads, UPLOAD_BATCH_SIZE)) {
+      const entries = await Promise.all(batch.map(async ({ file, remotePath }) => ({
+        path: remotePath,
+        data: await readFile(file.absoluteSource),
+        mode: toSandboxMode(file.mode),
+      })));
+      await writeSandboxFilesWithRetry(activeSandbox, entries);
+    }
+
+    await writeSandboxFilesWithRetry(activeSandbox, [{
+      path: remoteManifest,
+      data: manifest,
+      mode: 600,
+    }]);
+
+    if (verifyUploadedSkills) {
+      for (const batch of batches(uploads, UPLOAD_BATCH_SIZE)) {
+        await Promise.all(batch.map(async ({ file, remotePath }) => {
+          const remoteDigest = await activeSandbox.hashSandboxFile(
+            remotePath,
+            skillSyncLimits.maxFileBytes,
+          );
+          if (remoteDigest !== file.sha256) {
+            throw new Error(`Remote Skill verification failed: ${remotePath}`);
+          }
+        }));
+      }
+      if (
+        await activeSandbox.hashSandboxFile(remoteManifest, manifest.byteLength)
+        !== sha256(manifest)
+      ) {
+        throw new Error(`Remote Skill verification failed: ${remoteManifest}`);
+      }
+    }
+
+    await commitRemoteSkills(activeSandbox, sharedSkillRoot, stagingRoot, skills);
+  } catch (error) {
+    await removeRemotePath(activeSandbox, stagingRoot);
+    throw error;
   }
 
   return {
@@ -323,14 +411,93 @@ export async function uploadSkills(
     skills: skills.map((skill) => ({
       digest: skill.digest,
       name: skill.name,
-      skillFile: skill.skillFile.split(sep).join("/"),
+      skillFile: joinPosix(sharedSkillRoot, skill.name, "SKILL.md"),
     })),
   };
 }
 
+async function commitRemoteSkills(
+  activeSandbox: ActiveOpenSandbox,
+  sharedSkillRoot: string,
+  stagingRoot: string,
+  skills: MaterializedSkill[],
+): Promise<void> {
+  const backupRoot = joinPosix(sharedSkillRoot, `.previous-${randomUUID()}`);
+  const replacements = [
+    ...skills.map((skill) => skill.name),
+    REMOTE_MANIFEST,
+  ];
+  const rollback = replacements.flatMap((name) => {
+    const current = joinPosix(sharedSkillRoot, name);
+    const backup = joinPosix(backupRoot, name);
+    return [
+      `rm -rf ${shellQuote(current)}`,
+      `if [ -e ${shellQuote(backup)} ]; then mv ${shellQuote(backup)} ${shellQuote(current)}; fi`,
+    ];
+  });
+  const replace = replacements.flatMap((name) => {
+    const current = joinPosix(sharedSkillRoot, name);
+    const staged = joinPosix(stagingRoot, name);
+    const backup = joinPosix(backupRoot, name);
+    return [
+      `if [ -e ${shellQuote(current)} ]; then mv ${shellQuote(current)} ${shellQuote(backup)}; fi`,
+      `mv ${shellQuote(staged)} ${shellQuote(current)}`,
+    ];
+  });
+  const retained = replacements.map((name) => shellQuote(joinPosix(sharedSkillRoot, name))).join("|");
+  const command = [
+    "set -eu",
+    `mkdir -p ${shellQuote(backupRoot)}`,
+    "rollback() {",
+    "status=$?",
+    "trap - EXIT HUP INT TERM",
+    "if [ \"$status\" -ne 0 ]; then",
+    ...rollback,
+    `rm -rf ${shellQuote(backupRoot)}`,
+    "fi",
+    "exit \"$status\"",
+    "}",
+    "trap rollback EXIT HUP INT TERM",
+    ...replace,
+    "trap - EXIT HUP INT TERM",
+    `for entry in ${shellQuote(sharedSkillRoot)}/* ${shellQuote(sharedSkillRoot)}/.[!.]* ${shellQuote(sharedSkillRoot)}/..?*; do`,
+    "[ -e \"$entry\" ] || continue",
+    `case "$entry" in ${retained}) ;; *) rm -rf "$entry" ;; esac`,
+    "done",
+  ].join("\n");
+  const result = await activeSandbox.runCommand(
+    command,
+    activeSandbox.sandboxWorkspaceRoot,
+    { captureOutput: true },
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `Remote Skill activation failed${result.output ? `: ${result.output.trim()}` : ""}`,
+    );
+  }
+}
+
+async function removeRemotePath(
+  activeSandbox: ActiveOpenSandbox,
+  remotePath: string,
+): Promise<void> {
+  await activeSandbox.runCommand(
+    `rm -rf ${shellQuote(remotePath)}`,
+    activeSandbox.sandboxWorkspaceRoot,
+  ).catch(() => undefined);
+}
+
+/**
+ * Validates the POSIX root used for uploaded remote Skills.
+ *
+ * @example
+ * ```ts
+ * const root = parseSharedSkillRoot("/tmp/pi/skills");
+ * ```
+ */
 export function parseSharedSkillRoot(value: string): string {
   if (process.platform === "win32") {
-    throw new Error("Same-path Skill mirroring requires a POSIX host; use an explicit host/remote path mapper on Windows");
+    throw new Error("sharedSkillRoot must use an absolute POSIX path");
   }
   const normalized = resolve(value);
   if (!isAbsolute(value) || normalized !== value || value === "/") {
@@ -342,6 +509,14 @@ export function parseSharedSkillRoot(value: string): string {
   return value;
 }
 
+/**
+ * Applies defaults and validates Skill synchronization limits.
+ *
+ * @example
+ * ```ts
+ * const limits = parseSkillSyncLimits({ maxFiles: 500 });
+ * ```
+ */
 export function parseSkillSyncLimits(
   input: SkillSyncLimits | undefined,
 ): Required<SkillSyncLimits> {
@@ -376,6 +551,10 @@ function normalizeSkillName(value: string): string {
 function normalizeMode(mode: number): number {
   // Preserve executability but remove setuid/setgid/sticky and group/world writes.
   return (mode & 0o111) !== 0 ? 0o755 : 0o644;
+}
+
+function toSandboxMode(mode: number): number {
+  return Number.parseInt((mode & 0o777).toString(8), 10);
 }
 
 function digestManifest(files: ManifestFile[]): string {
@@ -429,6 +608,8 @@ async function withMaterializationLock<T>(targetDir: string, action: () => Promi
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const currentOwner = await readFile(lockPath, "utf8").catch(() => "");
       const pid = Number.parseInt(currentOwner.split(":", 1)[0] ?? "", 10);
+      // A crashed materializer cannot remove its lock, so another process may
+      // reclaim it only after confirming that the recorded PID no longer exists.
       if (Number.isSafeInteger(pid) && !processExists(pid)) {
         await rm(lockPath, { force: true });
         continue;
@@ -460,4 +641,27 @@ function batches<T>(items: T[], size: number): T[][] {
   const result: T[][] = [];
   for (let index = 0; index < items.length; index += size) result.push(items.slice(index, index + size));
   return result;
+}
+
+async function writeSandboxFilesWithRetry(
+  activeSandbox: ActiveOpenSandbox,
+  entries: Parameters<ActiveOpenSandbox["writeSandboxFiles"]>[0],
+): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await activeSandbox.writeSandboxFiles(entries);
+      return;
+    } catch (error) {
+      const statusCode = (error as { statusCode?: unknown })?.statusCode;
+      if (
+        attempt >= 2
+        || typeof statusCode !== "number"
+        || statusCode < 500
+        || statusCode >= 600
+      ) {
+        throw error;
+      }
+      await delay(100 * (attempt + 1));
+    }
+  }
 }

@@ -10,10 +10,13 @@ import {
 import { createHash } from "node:crypto";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { join as joinPosix, normalize as normalizePosix } from "node:path/posix";
-import type { OpenSandboxSettings } from "./config.ts";
-import { describeOpenSandboxError, logOpenSandboxEvent } from "./logger.ts";
+import type { OpenSandboxSettings } from "./config";
+import { describeOpenSandboxError, logOpenSandboxEvent } from "./logger";
 
+/** How an active sandbox client was obtained. */
 export type SandboxStartupMode = "connected" | "created" | "resumed";
+
+/** Resource action performed when an active sandbox is released. */
 export type SandboxReleaseMode = "disconnect" | "kill" | "pause";
 
 interface ActiveOpenSandboxInit {
@@ -25,23 +28,73 @@ interface ActiveOpenSandboxInit {
   sandboxClient: Sandbox;
   sandboxWorkspaceRoot: string;
   startupMode: SandboxStartupMode;
+  owned: boolean;
 }
 
+/**
+ * Persisted sandbox identity and ownership used when restoring a Pi session.
+ *
+ * @example
+ * ```ts
+ * const target: SandboxRestoreTarget = {
+ *   sandboxId: "sandbox-123",
+ *   owned: true,
+ * };
+ * ```
+ */
+export interface SandboxRestoreTarget {
+  /** Persisted sandbox identifier from the Pi session state. */
+  sandboxId: string;
+  /** Whether this extension owns the sandbox lifecycle. */
+  owned: boolean;
+}
+
+/** Optional execution controls for a remote shell command. */
 export interface SandboxCommandOptions {
+  /** Collect stdout and stderr in the returned result. */
   captureOutput?: boolean;
+  /** Environment variables forwarded to the remote process. */
   env?: NodeJS.ProcessEnv;
+  /** Maximum captured bytes before output is marked as truncated. */
   maxOutputBytes?: number;
+  /** Receives stdout and stderr chunks as they arrive. */
   onData?: (data: Buffer) => void;
+  /** Interrupts the remote process when aborted. */
   signal?: AbortSignal;
+  /** Overrides the configured command timeout. */
   timeoutSeconds?: number;
 }
 
+/** Result returned after a remote command exits. */
 export interface SandboxCommandResult {
+  /** Remote process exit code, or `null` when unavailable. */
   exitCode: number | null;
+  /** Captured output when `captureOutput` was enabled. */
   output: string;
+  /** Whether captured output exceeded `maxOutputBytes`. */
   outputTruncated: boolean;
 }
 
+/**
+ * Provides path-safe file, command, endpoint, and lifecycle access to one sandbox.
+ *
+ * Host paths are accepted only when they resolve inside the host workspace.
+ * Absolute sandbox paths are accepted only inside the configured workspace or
+ * readable resource roots.
+ *
+ * @example
+ * ```ts
+ * const sandbox = await ActiveOpenSandbox.start(
+ *   settings,
+ *   process.cwd(),
+ *   "pi-session-123",
+ * );
+ * const result = await sandbox.runCommand("node --version", "/workspace", {
+ *   captureOutput: true,
+ * });
+ * await sandbox.release("pause");
+ * ```
+ */
 export class ActiveOpenSandbox {
   readonly defaultCommandTimeoutSeconds: number;
   readonly hostWorkspaceRoot: string;
@@ -50,6 +103,7 @@ export class ActiveOpenSandbox {
   readonly readableResourceRoots: readonly string[];
   readonly sandboxWorkspaceRoot: string;
   readonly startupMode: SandboxStartupMode;
+  readonly isOwnedByExtension: boolean;
   private readonly sandboxClient: Sandbox;
 
   constructor(init: ActiveOpenSandboxInit) {
@@ -61,12 +115,14 @@ export class ActiveOpenSandbox {
     this.sandboxClient = init.sandboxClient;
     this.sandboxWorkspaceRoot = init.sandboxWorkspaceRoot;
     this.startupMode = init.startupMode;
+    this.isOwnedByExtension = init.owned;
   }
 
   static async start(
     sandboxSettings: OpenSandboxSettings,
     hostWorkspaceRoot: string,
     sessionId: string,
+    restoreTarget?: SandboxRestoreTarget,
   ): Promise<ActiveOpenSandbox> {
     const connectionConfigOptions = {
       domain: sandboxSettings.domain,
@@ -75,8 +131,9 @@ export class ActiveOpenSandbox {
       useServerProxy: sandboxSettings.useServerProxy,
       ...(sandboxSettings.apiKey !== undefined ? { apiKey: sandboxSettings.apiKey } : {}),
     };
-    const connected = sandboxSettings.sandboxId
-      ? await connectOrResumeSandbox(connectionConfigOptions, sandboxSettings.sandboxId)
+    const sandboxId = restoreTarget?.sandboxId ?? sandboxSettings.sandboxId;
+    const connected = sandboxId
+      ? await connectOrResumeSandbox(connectionConfigOptions, sandboxId)
       : {
         sandboxClient: await Sandbox.create(buildSandboxCreateOptions(
           new ConnectionConfig(connectionConfigOptions),
@@ -94,6 +151,7 @@ export class ActiveOpenSandbox {
       sandboxClient: connected.sandboxClient,
       sandboxWorkspaceRoot: sandboxSettings.workspace,
       startupMode: connected.startupMode,
+      owned: restoreTarget?.owned ?? sandboxId === undefined,
     });
 
     try {
@@ -113,10 +171,7 @@ export class ActiveOpenSandbox {
     return this.sandboxClient.id;
   }
 
-  get isOwnedByExtension(): boolean {
-    return this.startupMode === "created";
-  }
-
+  /** Maps a host workspace path or approved sandbox resource path for reading. */
   resolveReadablePath(inputPath: string): string {
     this.assertSupportedInputPath(inputPath);
     const sandboxCandidate = inputPath.replace(/\\/g, "/");
@@ -129,6 +184,7 @@ export class ActiveOpenSandbox {
     return this.mapWorkspacePathToSandbox(inputPath);
   }
 
+  /** Maps a host workspace path for writes, which are restricted to the workspace. */
   resolveWritablePath(inputPath: string): string {
     this.assertSupportedInputPath(inputPath);
     const sandboxCandidate = inputPath.replace(/\\/g, "/");
@@ -141,6 +197,7 @@ export class ActiveOpenSandbox {
     return this.mapWorkspacePathToSandbox(inputPath);
   }
 
+  /** Executes a command without allowing captured output to grow unbounded. */
   async runCommand(
     command: string,
     sandboxWorkingDirectory: string,
@@ -279,6 +336,12 @@ export class ActiveOpenSandbox {
     await this.sandboxClient.renew(timeoutSeconds);
   }
 
+  /**
+   * Releases the remote resource and always closes the local transport.
+   *
+   * `disconnect` closes only the transport; `pause` and `kill` also change the
+   * server-side sandbox lifecycle.
+   */
   async release(mode: SandboxReleaseMode): Promise<void> {
     try {
       if (mode === "pause") await this.sandboxClient.pause();
@@ -293,10 +356,12 @@ export class ActiveOpenSandbox {
     }
   }
 
+  /** Performs best-effort cleanup after startup or initialization fails. */
   async cleanupAfterStartFailure(): Promise<void> {
     if (this.isOwnedByExtension) {
-      await this.sandboxClient.kill().catch((error) => {
-        logOpenSandboxEvent("error", "sandbox.cleanup.kill.error", {
+      const action = this.startupMode === "created" ? "kill" : "pause";
+      await this.sandboxClient[action]().catch((error) => {
+        logOpenSandboxEvent("error", `sandbox.cleanup.${action}.error`, {
           sandboxId: this.id,
           ...describeOpenSandboxError(error),
         });
@@ -312,27 +377,16 @@ export class ActiveOpenSandbox {
 
   private async readSandboxFile(sandboxPath: string, maximumBytes: number): Promise<Buffer> {
     this.assertManagedSandboxPath(sandboxPath);
-    const metadata = await this.sandboxClient.files.getFileInfo([sandboxPath]);
-    const size = metadata[sandboxPath]?.size;
-    if (typeof size === "number" && size > maximumBytes) {
-      throw new Error(`File exceeds the ${maximumBytes}-byte OpenSandbox read limit`);
-    }
 
     const chunks: Buffer[] = [];
     let totalBytes = 0;
-    for await (const chunk of this.sandboxClient.files.readBytesStream(
-      sandboxPath,
-      { limit: maximumBytes + 1 },
-    )) {
+    for await (const chunk of this.sandboxClient.files.readBytesStream(sandboxPath)) {
       if (chunk.byteLength > maximumBytes - totalBytes) {
         throw new Error(`File exceeds the ${maximumBytes}-byte OpenSandbox read limit`);
       }
       const buffer = Buffer.from(chunk);
       chunks.push(buffer);
       totalBytes += buffer.byteLength;
-    }
-    if (typeof size === "number" && totalBytes !== size) {
-      throw new Error(`Remote file size changed while reading: ${sandboxPath}`);
     }
     return Buffer.concat(chunks, totalBytes);
   }
@@ -395,6 +449,7 @@ export class ActiveOpenSandbox {
   }
 }
 
+/** Indicates that neither connecting nor resuming found the requested sandbox. */
 export class OpenSandboxNotFoundError extends Error {
   constructor(readonly sandboxId: string) {
     super(`OpenSandbox ${sandboxId} was not found`);
@@ -409,10 +464,11 @@ export class OpenSandboxNotFoundError extends Error {
  * string cannot contain another single quote. Each `'` is therefore replaced
  * with `'\''`: close the quoted string, emit an escaped quote, then reopen it.
  *
- * Examples:
- * - `hello world` -> `'hello world'`
- * - `$HOME/*.txt` -> `'$HOME/*.txt'`
- * - `it's ready` -> `'it'\''s ready'`
+ * @example
+ * ```ts
+ * shellQuote("it's ready");
+ * // => `'it'\''s ready'`
+ * ```
  */
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -432,10 +488,13 @@ function buildSandboxCreateOptions(
       "pi-extension": "opensandbox",
       "pi-session-id": sessionId,
     },
-    networkPolicy: sandboxSettings.networkPolicy ?? {
-      defaultAction: "deny",
-      egress: sandboxSettings.networkAllowlist.map((target) => ({ action: "allow", target })),
-    },
+    networkPolicy: sandboxSettings.networkPolicy
+      ?? (sandboxSettings.networkAllowlist.length === 0
+        ? { defaultAction: "allow" }
+        : {
+            defaultAction: "deny",
+            egress: sandboxSettings.networkAllowlist.map((target) => ({ action: "allow", target })),
+          }),
     ...(sandboxSettings.entrypoint !== undefined ? { entrypoint: sandboxSettings.entrypoint } : {}),
     ...(sandboxSettings.env !== undefined ? { env: sandboxSettings.env } : {}),
     ...(sandboxSettings.image !== undefined ? { image: sandboxSettings.image } : {}),
