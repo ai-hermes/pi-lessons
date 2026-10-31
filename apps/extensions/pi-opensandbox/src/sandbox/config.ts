@@ -2,8 +2,15 @@ import type { Volume } from "@alibaba-group/opensandbox";
 import { normalize as normalizePosix } from "node:path/posix";
 import { z } from "zod";
 
+/**
+ * Legacy shutdown action accepted in serialized OpenSandbox configuration.
+ *
+ * The Pi extension applies its own ownership-aware release behavior: owned
+ * sandboxes are paused on session shutdown and killed when switching local.
+ */
 export type OpenSandboxShutdownAction = "keep" | "pause" | "kill";
 
+/** Legacy lifecycle shape retained for configuration compatibility. */
 export interface OpenSandboxLifecyclePolicy {
   onSessionShutdown: OpenSandboxShutdownAction;
 }
@@ -200,8 +207,28 @@ const settingsSchema = (environment: NodeJS.ProcessEnv) => z.object({
   };
 });
 
+/**
+ * Validated connection, creation, filesystem, network, and timeout settings.
+ *
+ * Values include schema defaults and a normalized `domain`/`protocol` pair.
+ */
 export type OpenSandboxSettings = z.output<ReturnType<typeof settingsSchema>>;
 
+/**
+ * Validates and normalizes raw OpenSandbox settings.
+ *
+ * The API key and domain may be supplied by `OPENSANDBOX_*` or
+ * `OPEN_SANDBOX_*` environment variables when omitted from `value`.
+ *
+ * @example
+ * ```ts
+ * const settings = resolveOpenSandboxSettings({
+ *   domain: "https://sandbox.example.com/api",
+ *   image: "node:22",
+ *   workspace: "/workspace",
+ * });
+ * ```
+ */
 export function resolveOpenSandboxSettings(
   value: unknown,
   environment: NodeJS.ProcessEnv = process.env,

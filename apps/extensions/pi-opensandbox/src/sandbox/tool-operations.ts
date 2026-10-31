@@ -5,18 +5,19 @@ import type {
   ReadOperations,
   WriteOperations,
 } from "@earendil-works/pi-coding-agent";
-import type { ActiveOpenSandbox } from "./client.ts";
-import { shellQuote } from "./client.ts";
+import type { ActiveOpenSandbox } from "./client";
+import { shellQuote } from "./client";
 
 const imageMimeTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
+/** Creates Pi bash operations that execute commands in the active sandbox. */
 export function createBashOperations(
-  requireActiveSandbox: () => ActiveOpenSandbox,
+  requireActiveSandbox: () => Promise<ActiveOpenSandbox>,
   cwdOverride?: string,
 ): BashOperations {
   return {
     exec: async (command, cwd, options) => {
-      const activeSandbox = requireActiveSandbox();
+      const activeSandbox = await requireActiveSandbox();
       const sandboxWorkingDirectory = cwdOverride ?? activeSandbox.resolveReadablePath(cwd);
 
       // Execute the caller-provided shell command while forwarding Pi environment
@@ -50,22 +51,23 @@ function buildForwardedPiEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
   };
 }
 
+/** Creates Pi read operations backed by sandbox file APIs and MIME detection. */
 export function createReadOperations(
-  requireActiveSandbox: () => ActiveOpenSandbox,
+  requireActiveSandbox: () => Promise<ActiveOpenSandbox>,
 ): ReadOperations {
   return {
     readFile: async (path) => {
-      return requireActiveSandbox().readFile(path);
+      return (await requireActiveSandbox()).readFile(path);
     },
     access: async (path) => {
-      const metadata = await requireActiveSandbox().getFileInfo(path);
+      const metadata = await (await requireActiveSandbox()).getFileInfo(path);
       if (!metadata) {
         throw new Error(`Path not found: ${path}`);
       }
     },
     detectImageMimeType: async (path) => {
       try {
-        const activeSandbox = requireActiveSandbox();
+        const activeSandbox = await requireActiveSandbox();
         const sandboxPath = activeSandbox.resolveReadablePath(path);
 
         // Ask `file` for only the MIME type (`-b` omits the path prefix) so the
@@ -87,21 +89,23 @@ export function createReadOperations(
   };
 }
 
+/** Creates workspace-restricted Pi write operations for the active sandbox. */
 export function createWriteOperations(
-  requireActiveSandbox: () => ActiveOpenSandbox,
+  requireActiveSandbox: () => Promise<ActiveOpenSandbox>,
 ): WriteOperations {
   return {
     writeFile: async (path, content) => {
-      await requireActiveSandbox().writeFile(path, content);
+      await (await requireActiveSandbox()).writeFile(path, content);
     },
     mkdir: async (path) => {
-      await requireActiveSandbox().createDirectory(path);
+      await (await requireActiveSandbox()).createDirectory(path);
     },
   };
 }
 
+/** Combines remote read/write operations with an explicit writability check. */
 export function createEditOperations(
-  requireActiveSandbox: () => ActiveOpenSandbox,
+  requireActiveSandbox: () => Promise<ActiveOpenSandbox>,
 ): EditOperations {
   const read = createReadOperations(requireActiveSandbox);
   const write = createWriteOperations(requireActiveSandbox);
@@ -109,7 +113,7 @@ export function createEditOperations(
     readFile: read.readFile,
     writeFile: write.writeFile,
     access: async (path) => {
-      const activeSandbox = requireActiveSandbox();
+      const activeSandbox = await requireActiveSandbox();
       const sandboxPath = activeSandbox.resolveReadablePath(path);
 
       // POSIX `test` exits with 0 when its condition is true. The path must
@@ -125,12 +129,13 @@ export function createEditOperations(
   };
 }
 
+/** Creates directory listing and metadata operations for remote paths. */
 export function createLsOperations(
-  requireActiveSandbox: () => ActiveOpenSandbox,
+  requireActiveSandbox: () => Promise<ActiveOpenSandbox>,
 ): LsOperations {
   return {
     exists: async (path) => {
-      const activeSandbox = requireActiveSandbox();
+      const activeSandbox = await requireActiveSandbox();
 
       // POSIX `test -e` exits with 0 when the resolved path exists.
       const result = await activeSandbox.runCommand(
@@ -140,7 +145,7 @@ export function createLsOperations(
       return result.exitCode === 0;
     },
     stat: async (path) => {
-      const activeSandbox = requireActiveSandbox();
+      const activeSandbox = await requireActiveSandbox();
       const sandboxPath = activeSandbox.resolveReadablePath(path);
 
       // Fail when the path does not exist; otherwise print a small type marker
@@ -162,7 +167,7 @@ export function createLsOperations(
       };
     },
     readdir: async (path) => {
-      const activeSandbox = requireActiveSandbox();
+      const activeSandbox = await requireActiveSandbox();
       const sandboxPath = activeSandbox.resolveReadablePath(path);
 
       // List one entry per line, including hidden entries but excluding "." and "..".
