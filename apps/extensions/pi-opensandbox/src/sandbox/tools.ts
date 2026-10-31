@@ -15,25 +15,32 @@ import {
   createLsOperations,
   createReadOperations,
   createWriteOperations,
-} from "./tool-operations.ts";
-import type { ActiveOpenSandbox } from "./client.ts";
-import { createFindOperations, runRemoteGrep, type GrepParams } from "./search.ts";
+} from "./tool-operations";
+import type { ActiveOpenSandbox } from "./client";
+import { createFindOperations, runRemoteGrep, type GrepParams } from "./search";
 
+/**
+ * Replaces Pi's filesystem, search, and shell tools with remote implementations.
+ *
+ * `requireActiveSandbox` must reject when remote execution is unavailable so a
+ * remote-mode tool call can never silently fall back to the host workspace.
+ *
+ * @example
+ * ```ts
+ * registerOpenSandboxTools(
+ *   pi,
+ *   () => session.requireActiveSandbox(),
+ *   () => session.getHostWorkspaceRoot(),
+ * );
+ * ```
+ */
 export function registerOpenSandboxTools(
   pi: ExtensionAPI,
-  getActiveSandbox: () => ActiveOpenSandbox | null,
+  requireActiveSandbox: () => Promise<ActiveOpenSandbox>,
   getHostWorkspaceRoot: () => string,
 ): void {
   const hostWorkspaceRoot = getHostWorkspaceRoot();
   const localGrep = createGrepTool(hostWorkspaceRoot);
-  const requireActiveSandbox = (): ActiveOpenSandbox => {
-    const activeSandbox = getActiveSandbox();
-    if (activeSandbox) {
-      return activeSandbox;
-    }
-    throw new Error("OpenSandbox is unavailable. The tool was not run on the host.");
-  };
-
   pi.registerTool(
     createBashTool(hostWorkspaceRoot, {
       operations: createBashOperations(requireActiveSandbox),
@@ -68,7 +75,7 @@ export function registerOpenSandboxTools(
   pi.registerTool({
     ...localGrep,
     async execute(_id, params, signal) {
-      const activeSandbox = requireActiveSandbox();
+      const activeSandbox = await requireActiveSandbox();
       if (signal?.aborted) {
         throw new Error("Operation aborted");
       }
@@ -88,7 +95,7 @@ export function registerOpenSandboxTools(
       }),
     }),
     async execute(_toolCallId, { port }) {
-      const url = await requireActiveSandbox().getEndpointUrl(port);
+      const url = await (await requireActiveSandbox()).getEndpointUrl(port);
       return {
         content: [{ type: "text" as const, text: `OpenSandbox URL for port ${port}: ${url}` }],
         details: { port, url },
@@ -96,11 +103,11 @@ export function registerOpenSandboxTools(
     },
   });
 
-  pi.on("user_bash", () => {
-    const activeSandbox = requireActiveSandbox();
+  pi.on("user_bash", async () => {
+    const activeSandbox = await requireActiveSandbox();
     return {
       operations: createBashOperations(
-        () => activeSandbox,
+        async () => activeSandbox,
         activeSandbox.sandboxWorkspaceRoot,
       ),
     };
