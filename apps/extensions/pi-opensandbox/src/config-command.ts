@@ -57,7 +57,8 @@ export function registerOpenSandboxCommand(
     description: "Show or configure OpenSandbox",
     handler: async (_args, ctx) => {
       if (!ctx.hasUI) return;
-      const stored = configPath === undefined
+      const environmentConfigured = hasPiOpenSandboxEnvironmentConfig();
+      const stored = configPath === undefined || environmentConfigured
         ? undefined
         : await readStoredPiOpenSandboxConfig(configPath);
       const installed = configPath === undefined
@@ -110,7 +111,7 @@ export function registerOpenSandboxCommand(
         return;
       }
       if (action === "Disable") {
-        if (hasPiOpenSandboxEnvironmentConfig()) {
+        if (environmentConfigured) {
           ctx.ui.notify(
             "Unset PI_OPENSANDBOX_CONFIG or PI_OPENSANDBOX_CONFIG_FILE to disable OpenSandbox.",
             "error",
@@ -140,7 +141,7 @@ export function registerOpenSandboxCommand(
         ctx.ui.notify("Configure OpenSandbox from a local Pi session.", "error");
         return;
       }
-      if (hasPiOpenSandboxEnvironmentConfig()) {
+      if (environmentConfigured) {
         ctx.ui.notify(
           "Unset PI_OPENSANDBOX_CONFIG or PI_OPENSANDBOX_CONFIG_FILE before saving user configuration.",
           "error",

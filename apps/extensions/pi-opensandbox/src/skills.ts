@@ -430,7 +430,9 @@ async function commitRemoteSkills(
   skills: MaterializedSkill[],
   previousSkillNames: string[],
 ): Promise<void> {
-  const backupRoot = joinPosix(sharedSkillRoot, `.previous-${randomUUID()}`);
+  const transactionId = randomUUID();
+  const backupRoot = joinPosix(sharedSkillRoot, `.previous-${transactionId}`);
+  const absentRoot = joinPosix(sharedSkillRoot, `.absent-${transactionId}`);
   const currentSkillNames = skills.map((skill) => skill.name);
   const managedNames = [
     ...new Set([...previousSkillNames, ...currentSkillNames]),
@@ -439,7 +441,7 @@ async function commitRemoteSkills(
   const rollback = managedNames.flatMap((name) => {
     const current = joinPosix(sharedSkillRoot, name);
     const backup = joinPosix(backupRoot, name);
-    const absent = joinPosix(backupRoot, `.absent-${name}`);
+    const absent = joinPosix(absentRoot, name);
     return [
       `if [ -e ${shellQuote(backup)} ]; then`,
       `rm -rf ${shellQuote(current)}`,
@@ -452,7 +454,7 @@ async function commitRemoteSkills(
   const backup = managedNames.flatMap((name) => {
     const current = joinPosix(sharedSkillRoot, name);
     const backup = joinPosix(backupRoot, name);
-    const absent = joinPosix(backupRoot, `.absent-${name}`);
+    const absent = joinPosix(absentRoot, name);
     return [
       `if [ -e ${shellQuote(current)} ]; then`,
       `mv ${shellQuote(current)} ${shellQuote(backup)}`,
@@ -470,13 +472,13 @@ async function commitRemoteSkills(
   });
   const command = [
     "set -eu",
-    `mkdir -p ${shellQuote(backupRoot)}`,
+    `mkdir -p ${shellQuote(backupRoot)} ${shellQuote(absentRoot)}`,
     "rollback() {",
     "status=$?",
     "trap - EXIT HUP INT TERM",
     "if [ \"$status\" -ne 0 ]; then",
     ...rollback,
-    `rm -rf ${shellQuote(backupRoot)}`,
+    `rm -rf ${shellQuote(backupRoot)} ${shellQuote(absentRoot)}`,
     "fi",
     "exit \"$status\"",
     "}",
@@ -484,7 +486,7 @@ async function commitRemoteSkills(
     ...backup,
     ...activate,
     "trap - EXIT HUP INT TERM",
-    `rm -rf ${shellQuote(backupRoot)} ${shellQuote(stagingRoot)}`,
+    `rm -rf ${shellQuote(backupRoot)} ${shellQuote(absentRoot)} ${shellQuote(stagingRoot)}`,
   ].join("\n");
   const result = await activeSandbox.runCommand(
     command,
