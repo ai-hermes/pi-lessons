@@ -132,16 +132,34 @@ export class ActiveOpenSandbox {
       ...(sandboxSettings.apiKey !== undefined ? { apiKey: sandboxSettings.apiKey } : {}),
     };
     const sandboxId = restoreTarget?.sandboxId ?? sandboxSettings.sandboxId;
-    const connected = sandboxId
-      ? await connectOrResumeSandbox(connectionConfigOptions, sandboxId)
-      : {
+    let connected: {
+      sandboxClient: Sandbox;
+      startupMode: SandboxStartupMode;
+    };
+    if (sandboxId) {
+      try {
+        connected = await connectOrResumeSandbox(connectionConfigOptions, sandboxId);
+      } catch (error) {
+        if (!(restoreTarget && error instanceof OpenSandboxNotFoundError)) throw error;
+        connected = {
+          sandboxClient: await Sandbox.create(buildSandboxCreateOptions(
+            new ConnectionConfig(connectionConfigOptions),
+            sandboxSettings,
+            sessionId,
+          )),
+          startupMode: "created",
+        };
+      }
+    } else {
+      connected = {
         sandboxClient: await Sandbox.create(buildSandboxCreateOptions(
           new ConnectionConfig(connectionConfigOptions),
           sandboxSettings,
           sessionId,
         )),
-        startupMode: "created" as const,
+        startupMode: "created",
       };
+    }
     const activeSandbox = new ActiveOpenSandbox({
       defaultCommandTimeoutSeconds: sandboxSettings.commandTimeoutSeconds,
       hostWorkspaceRoot,
@@ -151,7 +169,7 @@ export class ActiveOpenSandbox {
       sandboxClient: connected.sandboxClient,
       sandboxWorkspaceRoot: sandboxSettings.workspace,
       startupMode: connected.startupMode,
-      owned: restoreTarget?.owned ?? sandboxId === undefined,
+      owned: connected.startupMode === "created" || restoreTarget?.owned === true,
     });
 
     try {
@@ -286,8 +304,13 @@ export class ActiveOpenSandbox {
 
   async getFileInfo(inputPath: string): Promise<FileInfo | undefined> {
     const sandboxPath = this.resolveReadablePath(inputPath);
-    const metadata = await this.sandboxClient.files.getFileInfo([sandboxPath]);
-    return metadata[sandboxPath];
+    try {
+      const metadata = await this.sandboxClient.files.getFileInfo([sandboxPath]);
+      return metadata[sandboxPath];
+    } catch (error) {
+      if (isNotFound(error)) return undefined;
+      throw error;
+    }
   }
 
   async searchFiles(inputPath: string, pattern: string): Promise<FileInfo[]> {
@@ -337,23 +360,19 @@ export class ActiveOpenSandbox {
   }
 
   /**
-   * Releases the remote resource and always closes the local transport.
+   * Releases the remote resource, then closes the local transport.
    *
-   * `disconnect` closes only the transport; `pause` and `kill` also change the
-   * server-side sandbox lifecycle.
+   * A failed pause or kill leaves the transport open so callers can retry.
    */
   async release(mode: SandboxReleaseMode): Promise<void> {
-    try {
-      if (mode === "pause") await this.sandboxClient.pause();
-      else if (mode === "kill") await this.sandboxClient.kill();
-    } finally {
-      await this.sandboxClient.close().catch((error) => {
-        logOpenSandboxEvent("error", "sandbox.close.transport.error", {
-          sandboxId: this.id,
-          ...describeOpenSandboxError(error),
-        });
+    if (mode === "pause") await this.sandboxClient.pause();
+    else if (mode === "kill") await this.sandboxClient.kill();
+    await this.sandboxClient.close().catch((error) => {
+      logOpenSandboxEvent("error", "sandbox.close.transport.error", {
+        sandboxId: this.id,
+        ...describeOpenSandboxError(error),
       });
-    }
+    });
   }
 
   /** Performs best-effort cleanup after startup or initialization fails. */
@@ -530,7 +549,7 @@ async function connectOrResumeSandbox(
     try {
       return { sandboxClient: await Sandbox.resume(options), startupMode: "resumed" };
     } catch (resumeError) {
-      if (isNotFound(connectError) && isNotFound(resumeError)) {
+      if (isNotFound(resumeError)) {
         throw new OpenSandboxNotFoundError(String(sandboxId));
       }
       throw new Error(

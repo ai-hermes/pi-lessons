@@ -329,6 +329,7 @@ export async function uploadSkills(
     );
   }
 
+  const previousSkillNames = await readManagedSkillNames(activeSandbox, sharedSkillRoot);
   const stagingRoot = joinPosix(sharedSkillRoot, `.staging-${randomUUID()}`);
   const uploads = skills.flatMap((skill) => {
     const remoteSkillDir = joinPosix(stagingRoot, skill.name);
@@ -398,7 +399,13 @@ export async function uploadSkills(
       }
     }
 
-    await commitRemoteSkills(activeSandbox, sharedSkillRoot, stagingRoot, skills);
+    await commitRemoteSkills(
+      activeSandbox,
+      sharedSkillRoot,
+      stagingRoot,
+      skills,
+      previousSkillNames,
+    );
   } catch (error) {
     await removeRemotePath(activeSandbox, stagingRoot);
     throw error;
@@ -421,30 +428,46 @@ async function commitRemoteSkills(
   sharedSkillRoot: string,
   stagingRoot: string,
   skills: MaterializedSkill[],
+  previousSkillNames: string[],
 ): Promise<void> {
   const backupRoot = joinPosix(sharedSkillRoot, `.previous-${randomUUID()}`);
-  const replacements = [
-    ...skills.map((skill) => skill.name),
+  const currentSkillNames = skills.map((skill) => skill.name);
+  const managedNames = [
+    ...new Set([...previousSkillNames, ...currentSkillNames]),
     REMOTE_MANIFEST,
   ];
-  const rollback = replacements.flatMap((name) => {
+  const rollback = managedNames.flatMap((name) => {
     const current = joinPosix(sharedSkillRoot, name);
     const backup = joinPosix(backupRoot, name);
+    const absent = joinPosix(backupRoot, `.absent-${name}`);
     return [
+      `if [ -e ${shellQuote(backup)} ]; then`,
       `rm -rf ${shellQuote(current)}`,
-      `if [ -e ${shellQuote(backup)} ]; then mv ${shellQuote(backup)} ${shellQuote(current)}; fi`,
+      `mv ${shellQuote(backup)} ${shellQuote(current)}`,
+      `elif [ -e ${shellQuote(absent)} ]; then`,
+      `rm -rf ${shellQuote(current)}`,
+      "fi",
     ];
   });
-  const replace = replacements.flatMap((name) => {
+  const backup = managedNames.flatMap((name) => {
+    const current = joinPosix(sharedSkillRoot, name);
+    const backup = joinPosix(backupRoot, name);
+    const absent = joinPosix(backupRoot, `.absent-${name}`);
+    return [
+      `if [ -e ${shellQuote(current)} ]; then`,
+      `mv ${shellQuote(current)} ${shellQuote(backup)}`,
+      "else",
+      `: > ${shellQuote(absent)}`,
+      "fi",
+    ];
+  });
+  const activate = [...currentSkillNames, REMOTE_MANIFEST].map((name) => {
     const current = joinPosix(sharedSkillRoot, name);
     const staged = joinPosix(stagingRoot, name);
-    const backup = joinPosix(backupRoot, name);
     return [
-      `if [ -e ${shellQuote(current)} ]; then mv ${shellQuote(current)} ${shellQuote(backup)}; fi`,
       `mv ${shellQuote(staged)} ${shellQuote(current)}`,
-    ];
+    ].join("\n");
   });
-  const retained = replacements.map((name) => shellQuote(joinPosix(sharedSkillRoot, name))).join("|");
   const command = [
     "set -eu",
     `mkdir -p ${shellQuote(backupRoot)}`,
@@ -458,12 +481,10 @@ async function commitRemoteSkills(
     "exit \"$status\"",
     "}",
     "trap rollback EXIT HUP INT TERM",
-    ...replace,
+    ...backup,
+    ...activate,
     "trap - EXIT HUP INT TERM",
-    `for entry in ${shellQuote(sharedSkillRoot)}/* ${shellQuote(sharedSkillRoot)}/.[!.]* ${shellQuote(sharedSkillRoot)}/..?*; do`,
-    "[ -e \"$entry\" ] || continue",
-    `case "$entry" in ${retained}) ;; *) rm -rf "$entry" ;; esac`,
-    "done",
+    `rm -rf ${shellQuote(backupRoot)} ${shellQuote(stagingRoot)}`,
   ].join("\n");
   const result = await activeSandbox.runCommand(
     command,
@@ -475,6 +496,37 @@ async function commitRemoteSkills(
       `Remote Skill activation failed${result.output ? `: ${result.output.trim()}` : ""}`,
     );
   }
+}
+
+async function readManagedSkillNames(
+  activeSandbox: ActiveOpenSandbox,
+  sharedSkillRoot: string,
+): Promise<string[]> {
+  const manifestPath = joinPosix(sharedSkillRoot, REMOTE_MANIFEST);
+  if (await activeSandbox.getFileInfo(manifestPath) === undefined) return [];
+
+  let input: unknown;
+  try {
+    input = JSON.parse((await activeSandbox.readFile(manifestPath)).toString("utf8"));
+  } catch (error) {
+    throw new Error(`Remote Skill manifest is invalid: ${manifestPath}`, { cause: error });
+  }
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new Error(`Remote Skill manifest is invalid: ${manifestPath}`);
+  }
+  const managedSkills = (input as Record<string, unknown>).skills;
+  if (
+    typeof managedSkills !== "object"
+    || managedSkills === null
+    || Array.isArray(managedSkills)
+  ) {
+    throw new Error(`Remote Skill manifest is invalid: ${manifestPath}`);
+  }
+  const names = Object.keys(managedSkills);
+  if (names.some((name) => normalizeSkillName(name) !== name)) {
+    throw new Error(`Remote Skill manifest contains an invalid Skill name: ${manifestPath}`);
+  }
+  return names;
 }
 
 async function removeRemotePath(
@@ -542,7 +594,12 @@ function enforceTotals(
 
 function normalizeSkillName(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-  if (!normalized || normalized === "." || normalized === "..") {
+  if (
+    !normalized
+    || normalized === "."
+    || normalized === ".."
+    || normalized === REMOTE_MANIFEST
+  ) {
     throw new Error(`Invalid Skill name: ${value}`);
   }
   return normalized.slice(0, 80);

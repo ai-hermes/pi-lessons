@@ -4,7 +4,7 @@ Standalone Pi extension that runs Pi's file, search, and shell tools inside Open
 
 ## Structure
 
-- `package.json`: Pi package manifest; `pi.extensions` points to `./src/index.ts`.
+- `package.json`: Pi package manifest; `pi.extensions` points to `./dist/index.js`.
 - `.env.example`: local environment template with inline and file-based configuration examples.
 - `src/index.ts`: minimal Pi package entry point.
 - `src/config.ts`: configuration loading, parsing, validation, and normalization.
@@ -15,8 +15,8 @@ Standalone Pi extension that runs Pi's file, search, and shell tools inside Open
 - `dist/`: generated JavaScript and declarations for Node.js consumers (not committed).
 
 This follows Pi's [package-with-dependencies layout](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md#extension-styles).
-Pi loads the TypeScript entry directly; building is only needed for Node.js
-imports and the compiled test suite.
+Installed packages load the bundled JavaScript entry. Pi's development loader
+can also load `src/index.ts` directly.
 
 ## What it does
 
