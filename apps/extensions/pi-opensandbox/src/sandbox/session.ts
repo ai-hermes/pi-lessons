@@ -95,8 +95,8 @@ export class SandboxSession {
     sandboxSettings: OpenSandboxSettings,
     restoreTarget?: SandboxRestoreTarget,
   ): Promise<ActiveOpenSandbox> {
-    if (this.activeSandbox) return Promise.resolve(this.activeSandbox);
     if (this.pending) return this.pending;
+    if (this.activeSandbox) return Promise.resolve(this.activeSandbox);
     this.failure = undefined;
     const pending = this.start(sandboxSettings, restoreTarget);
     this.pending = pending;

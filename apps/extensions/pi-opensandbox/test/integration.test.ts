@@ -25,6 +25,7 @@ import { materializeSkills, uploadSkills } from "../dist/skills.js";
 import { resolveOpenSandboxSettings } from "../dist/sandbox/config.js";
 import { createBashOperations } from "../dist/sandbox/tool-operations.js";
 import { ActiveOpenSandbox } from "../dist/sandbox/client.js";
+import { describeOpenSandboxError } from "../dist/sandbox/logger.js";
 import { createFindOperations, runRemoteGrep } from "../dist/sandbox/search.js";
 import { SandboxSession } from "../dist/sandbox/session.js";
 
@@ -83,6 +84,7 @@ function activeSandbox(sandboxClient, overrides = {}) {
 function remoteSkillSandbox(remoteRoot) {
   const remote = new Map();
   const remoteModes = new Map();
+  const activationCommands = [];
   let failActivation = false;
   let uploadFailures = 0;
   let limitedReads = 0;
@@ -96,6 +98,7 @@ function remoteSkillSandbox(remoteRoot) {
       run: async (command, _options, handlers) => {
         handlers.onInit({ id: "skill-activation" });
         if (command.startsWith("set -eu")) {
+          activationCommands.push(command);
           assert.equal(spawnSync("/bin/sh", ["-n"], { input: command }).status, 0);
           if (failActivation) return { exitCode: 1 };
           const manifestPath = [...remote.keys()].find(
@@ -104,6 +107,11 @@ function remoteSkillSandbox(remoteRoot) {
           );
           assert.ok(manifestPath);
           const stagingRoot = manifestPath.slice(0, manifestPath.lastIndexOf("/"));
+          const previousManifest = remote.get(`${remoteRoot}/.pi-skills-manifest.json`);
+          const previousNames = previousManifest === undefined
+            ? []
+            : Object.keys(JSON.parse(previousManifest.toString()).skills);
+          const nextNames = Object.keys(JSON.parse(remote.get(manifestPath).toString()).skills);
           const staged = [...remote.entries()]
             .filter(([path]) => path.startsWith(`${stagingRoot}/`))
             .map(([path, data]) => [
@@ -111,8 +119,15 @@ function remoteSkillSandbox(remoteRoot) {
               data,
               remoteModes.get(path),
             ]);
+          const managedNames = new Set([
+            ...previousNames,
+            ...nextNames,
+            ".pi-skills-manifest.json",
+          ]);
           for (const path of [...remote.keys()]) {
-            if (path.startsWith(`${remoteRoot}/`)) {
+            const relativePath = path.slice(remoteRoot.length + 1);
+            const topLevelName = relativePath.split("/", 1)[0];
+            if (managedNames.has(topLevelName)) {
               remote.delete(path);
               remoteModes.delete(path);
             }
@@ -120,6 +135,12 @@ function remoteSkillSandbox(remoteRoot) {
           for (const [path, data, mode] of staged) {
             remote.set(path, data);
             remoteModes.set(path, mode);
+          }
+          for (const path of [...remote.keys()]) {
+            if (path.startsWith(`${stagingRoot}/`)) {
+              remote.delete(path);
+              remoteModes.delete(path);
+            }
           }
         } else {
           for (const path of [...remote.keys()]) {
@@ -135,6 +156,12 @@ function remoteSkillSandbox(remoteRoot) {
     },
     files: {
       createDirectories: async () => {},
+      getFileInfo: async (paths) => {
+        if (paths.some((path) => !remote.has(path))) {
+          throw Object.assign(new Error("file not found"), { statusCode: 404 });
+        }
+        return Object.fromEntries(paths.map((path) => [path, { path }]));
+      },
       writeFiles: async (entries) => {
         writeCalls += 1;
         if (uploadFailures > 0) {
@@ -163,6 +190,7 @@ function remoteSkillSandbox(remoteRoot) {
     remote,
     remoteModes,
     sandbox,
+    activationCommands,
     failNextActivation: () => {
       failActivation = true;
     },
@@ -241,6 +269,20 @@ test("ActiveOpenSandbox enforces read limits and external cleanup ownership", as
   await sandbox.cleanupAfterStartFailure();
   assert.equal(killCalls, 0);
   assert.equal(closeCalls, 1);
+});
+
+test("ActiveOpenSandbox treats missing remote files as absent", async () => {
+  const missing = Object.assign(new Error("file not found"), { statusCode: 404 });
+  const sandbox = activeSandbox({
+    id: "missing-file",
+    files: {
+      getFileInfo: async () => {
+        throw missing;
+      },
+    },
+  });
+
+  assert.equal(await sandbox.getFileInfo("missing.txt"), undefined);
 });
 
 test("failed initialization pauses a resumed owned sandbox", async () => {
@@ -725,6 +767,42 @@ test("--opensandbox starts the current session remotely and persists owned state
   });
 });
 
+test("local startup does not read configured Skills", async () => {
+  const pi = fakePi();
+  await createPiOpenSandboxExtension({
+    sandboxConfig: { domain: "sandbox.example.test", image: "test" },
+    skills: [{ sourceDir: "/path/that/does/not/exist" }],
+    sharedSkillRoot: "/tmp/pi-local-start/skills",
+  })(pi.api);
+
+  await pi.handlers.get("session_start")(
+    { type: "session_start", reason: "startup" },
+    sessionContext(),
+  );
+
+  assert.deepEqual(pi.handlers.get("resources_discover")(), {});
+  assert.deepEqual(pi.tools, []);
+});
+
+test("failed flag startup does not persist an active session", async (t) => {
+  const originalStart = ActiveOpenSandbox.start;
+  ActiveOpenSandbox.start = async () => {
+    throw new Error("sandbox unavailable");
+  };
+  t.after(() => { ActiveOpenSandbox.start = originalStart; });
+
+  const pi = fakePi({ opensandbox: true });
+  await createPiOpenSandboxExtensionFromConfig(resolvePiOpenSandboxRuntimeConfig({
+    sandboxConfig: { domain: "sandbox.example.test", image: "test" },
+  }))(pi.api);
+  await pi.handlers.get("session_start")(
+    { type: "session_start", reason: "startup" },
+    sessionContext(),
+  );
+
+  assert.deepEqual(pi.entries, []);
+});
+
 test("resume restores the persisted sandbox while fork stays local", async (t) => {
   const originalStart = ActiveOpenSandbox.start;
   const restores = [];
@@ -797,6 +875,58 @@ test("resume restores the persisted sandbox while fork stays local", async (t) =
   assert.equal(restores.length, 1);
 });
 
+test("missing persisted sandbox is replaced and persisted", async (t) => {
+  const originalConnect = Sandbox.connect;
+  const originalResume = Sandbox.resume;
+  const originalCreate = Sandbox.create;
+  const createdDirectories = [];
+  let creates = 0;
+  const notFound = Object.assign(new Error("not found"), { statusCode: 404 });
+  Sandbox.connect = async () => {
+    throw Object.assign(new Error("sandbox endpoint unavailable"), { statusCode: 503 });
+  };
+  Sandbox.resume = async () => { throw notFound; };
+  Sandbox.create = async () => {
+    creates += 1;
+    return {
+      id: "replacement",
+      pause: async () => {},
+      close: async () => {},
+      files: {
+        createDirectories: async (entries) => {
+          createdDirectories.push(...entries.map((entry) => entry.path));
+        },
+      },
+    };
+  };
+  t.after(() => {
+    Sandbox.connect = originalConnect;
+    Sandbox.resume = originalResume;
+    Sandbox.create = originalCreate;
+  });
+
+  const pi = fakePi();
+  await createPiOpenSandboxExtensionFromConfig(resolvePiOpenSandboxRuntimeConfig({
+    sandboxConfig: { domain: "sandbox.example.test", image: "test" },
+  }))(pi.api);
+  await pi.handlers.get("session_start")(
+    { type: "session_start", reason: "resume" },
+    sessionContext([{
+      type: "custom",
+      customType: "pi-opensandbox-state",
+      data: { active: true, sandboxId: "expired", owned: true },
+    }]),
+  );
+
+  assert.equal(creates, 1);
+  assert.deepEqual(createdDirectories, ["/workspace"]);
+  assert.deepEqual(pi.entries.at(-1), {
+    customType: "pi-opensandbox-state",
+    data: { active: true, sandboxId: "replacement", owned: true },
+  });
+  await pi.handlers.get("session_shutdown")();
+});
+
 test("remote sessions expose only selected Skills with sandbox paths", async (t) => {
   const temp = await mkdtemp(join(tmpdir(), "pi-remote-skills-"));
   t.after(() => rm(temp, { recursive: true, force: true }));
@@ -828,6 +958,7 @@ Run the selected Lark workflow.
     },
     files: {
       createDirectories: async () => {},
+      getFileInfo: async () => ({}),
       writeFiles: async (entries) => {
         for (const entry of entries) remoteFiles.set(entry.path, Buffer.from(entry.data));
       },
@@ -987,7 +1118,7 @@ test("restore failure blocks agent use and remains retryable without local switc
 });
 
 test("session startup is deduplicated and remote operations await it", async () => {
-  let resolveStart;
+  let resolveReady;
   let starts = 0;
   const active = activeSandbox({
     id: "pending",
@@ -1002,16 +1133,17 @@ test("session startup is deduplicated and remote operations await it", async () 
     hostWorkspaceRoot: process.cwd(),
     startSandbox: async () => {
       starts += 1;
-      await new Promise((resolve) => { resolveStart = resolve; });
       return active;
     },
+    onReady: async () => new Promise((resolve) => { resolveReady = resolve; }),
   });
   const first = session.startSandbox({ timeoutSeconds: 3600 });
+  await new Promise((resolve) => setImmediate(resolve));
   const second = session.startSandbox({ timeoutSeconds: 3600 });
   const bash = createBashOperations(() => session.requireActiveSandbox());
   const operation = bash.exec("true", process.cwd(), {});
   assert.equal(starts, 1);
-  resolveStart();
+  resolveReady();
   assert.equal(await first, active);
   assert.equal(await second, active);
   assert.deepEqual(await operation, { exitCode: 0 });
@@ -1227,6 +1359,7 @@ test("replaces the remote Skill set only after activation succeeds", async (t) =
     maxTotalBytes: 128 * 1024 * 1024,
   };
   const remoteSandbox = remoteSkillSandbox(remoteRoot);
+  remoteSandbox.remote.set(`${remoteRoot}/user-note.txt`, Buffer.from("keep me"));
   const active = activeSandbox(remoteSandbox.sandbox, {
     readableResourceRoots: [remoteRoot],
   });
@@ -1243,6 +1376,7 @@ test("replaces the remote Skill set only after activation succeeds", async (t) =
       `${remoteRoot}/.pi-skills-manifest.json`,
       `${remoteRoot}/first/SKILL.md`,
       `${remoteRoot}/second/SKILL.md`,
+      `${remoteRoot}/user-note.txt`,
     ],
   );
 
@@ -1258,6 +1392,12 @@ test("replaces the remote Skill set only after activation succeeds", async (t) =
     "# First v2\n",
   );
   assert.equal(remoteSandbox.remote.has(`${remoteRoot}/second/SKILL.md`), false);
+  assert.equal(
+    remoteSandbox.remote.get(`${remoteRoot}/user-note.txt`).toString(),
+    "keep me",
+  );
+  assert.doesNotMatch(remoteSandbox.activationCommands.at(-1), /for entry in/);
+  assert.match(remoteSandbox.activationCommands.at(-1), /\.absent-first/);
   const stableSnapshot = new Map(remoteSandbox.remote);
 
   await writeFile(join(firstSource, "SKILL.md"), "# First v3\n");
@@ -1276,6 +1416,7 @@ test("replaces the remote Skill set only after activation succeeds", async (t) =
 
 test("routine shutdown pauses owned sandboxes and retries failed release", async () => {
   let pauseCalls = 0;
+  let closeCalls = 0;
   const sandbox = {
     id: "retry",
     renew: async () => {},
@@ -1283,7 +1424,7 @@ test("routine shutdown pauses owned sandboxes and retries failed release", async
       pauseCalls += 1;
       if (pauseCalls === 1) throw new Error("temporary failure");
     },
-    close: async () => {},
+    close: async () => { closeCalls += 1; },
   };
   const active = activeSandbox(sandbox);
   const session = new SandboxSession({
@@ -1294,9 +1435,11 @@ test("routine shutdown pauses owned sandboxes and retries failed release", async
 
   await assert.rejects(session.shutdown(), /temporary failure/);
   assert.equal(session.getActiveSandbox(), active);
+  assert.equal(closeCalls, 0);
   await session.shutdown();
   assert.equal(session.getActiveSandbox(), null);
   assert.equal(pauseCalls, 2);
+  assert.equal(closeCalls, 1);
 });
 
 test("remote bash forwards Pi environment and the complete output stream", async (t) => {
@@ -1392,6 +1535,18 @@ test("failed-start cleanup remains observable", async () => {
   assert.ok(messages.some((message) => message.includes("sandbox.cleanup.close.error")));
 });
 
+test("error logging redacts credentials in JSON and header formats", () => {
+  const details = describeOpenSandboxError(
+    new Error('request {"apiKey":"secret","password":"hidden"} Authorization: Bearer token'),
+  );
+
+  assert.equal(
+    details.errorMessage,
+    'request {"apiKey":"[REDACTED]","password":"[REDACTED]"} '
+      + "Authorization: Bearer [REDACTED]",
+  );
+});
+
 test("accepts compatibility null and empty network policy values", () => {
   const config = resolveOpenSandboxSettings({
     domain: "sandbox.example.test",
@@ -1422,11 +1577,36 @@ test("rejects symbolic links in selected Skills", async (t) => {
   await symlink(join(source, "SKILL.md"), join(source, "linked.md"));
 
   await assert.rejects(
-    createPiOpenSandboxExtension({
-      sandboxConfig: { domain: "sandbox.example.test", image: "test" },
-      skills: [{ sourceDir: source }],
-      sharedSkillRoot: join(temp, "skills"),
-    })(fakePi().api),
+    materializeSkills(
+      [{ sourceDir: source }],
+      join(temp, "skills"),
+      {
+        maxFileBytes: 8 * 1024 * 1024,
+        maxFiles: 10_000,
+        maxTotalBytes: 128 * 1024 * 1024,
+      },
+    ),
     /symbolic link/,
+  );
+});
+
+test("rejects the reserved remote Skill manifest name", async (t) => {
+  const temp = await mkdtemp(join(tmpdir(), "pi-skill-name-"));
+  t.after(() => rm(temp, { recursive: true, force: true }));
+  const source = join(temp, "source");
+  await mkdir(source);
+  await writeFile(join(source, "SKILL.md"), "# Test\n");
+
+  await assert.rejects(
+    materializeSkills(
+      [{ name: ".pi-skills-manifest.json", sourceDir: source }],
+      join(temp, "skills"),
+      {
+        maxFileBytes: 8 * 1024 * 1024,
+        maxFiles: 10_000,
+        maxTotalBytes: 128 * 1024 * 1024,
+      },
+    ),
+    /Invalid Skill name/,
   );
 });

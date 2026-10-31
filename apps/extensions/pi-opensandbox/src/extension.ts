@@ -116,13 +116,26 @@ export function createPiOpenSandboxExtensionFromConfig(
       type: "boolean",
     });
     const localSkillRoot = join(getAgentDir(), "cache", "pi-opensandbox", "skills");
-    const skills = sharedSkillRoot === undefined
-      ? []
-      : await materializeSkills(selectedSkills, localSkillRoot, skillSyncLimits);
-    const skillDefinitions = loadSelectedSkillDefinitions(skills);
+    let skills: MaterializedSkill[] = [];
+    let skillDefinitions: Skill[] = [];
+    let skillsPending: Promise<void> | undefined;
     let report: SkillSyncReport | undefined;
     let desiredState: PiOpenSandboxSessionState = { active: false };
     let remoteToolsRegistered = false;
+    const ensureSkills = async () => {
+      if (sharedSkillRoot === undefined || skills.length > 0) return;
+      skillsPending ??= materializeSkills(
+        selectedSkills,
+        localSkillRoot,
+        skillSyncLimits,
+      ).then((materialized) => {
+        skills = materialized;
+        skillDefinitions = loadSelectedSkillDefinitions(skills);
+      }).finally(() => {
+        skillsPending = undefined;
+      });
+      await skillsPending;
+    };
     const session = new SandboxSession({
       hostWorkspaceRoot: process.cwd(),
       onReady: async (activeSandbox) => {
@@ -153,6 +166,7 @@ export function createPiOpenSandboxExtensionFromConfig(
       session,
       activate: async () => {
         ensureRemoteTools();
+        if (sharedSkillRoot !== undefined) await ensureSkills();
         const restoreTarget = desiredState.active && desiredState.sandboxId
           ? {
             sandboxId: desiredState.sandboxId,
@@ -168,7 +182,7 @@ export function createPiOpenSandboxExtensionFromConfig(
         pi.appendEntry(STATE_ENTRY_TYPE, desiredState);
         return activeSandbox;
       },
-      ...(skills.length === 0 ? {} : { getSkillReport: () => report }),
+      ...(sharedSkillRoot === undefined ? {} : { getSkillReport: () => report }),
     };
 
     registerOpenSandboxCommand(pi, installedConfigPath, commandRuntime);
@@ -188,9 +202,8 @@ export function createPiOpenSandboxExtensionFromConfig(
         pi.appendEntry(STATE_ENTRY_TYPE, desiredState);
         return;
       }
-      if (!desiredState.active && pi.getFlag("opensandbox") === true) {
+      if (!desiredState.active && pi.getFlag("opensandbox")) {
         desiredState = { active: true };
-        pi.appendEntry(STATE_ENTRY_TYPE, desiredState);
       }
       if (!desiredState.active) {
         session.clearFailure();
