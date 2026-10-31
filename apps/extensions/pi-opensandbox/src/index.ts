@@ -43,7 +43,7 @@ export default async function piOpenSandbox(pi: ExtensionAPI): Promise<void> {
       type: "boolean",
     });
     pi.on("session_start", (_event, ctx) => {
-      if (pi.getFlag("opensandbox") !== true) return;
+      if (!pi.getFlag("opensandbox")) return;
       ctx.ui.setStatus("opensandbox", "opensandbox: failed");
       ctx.ui.notify(
         `OpenSandbox is not enabled or configured at ${configPath}.`,
