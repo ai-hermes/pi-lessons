@@ -23,7 +23,7 @@
   ],
   "pi": {
     "extensions": [
-      "./src/index.ts"
+      "./dist/index.js"
     ]
   },
   "exports": {
@@ -43,10 +43,10 @@
     "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
+    "build": "tsup 'src/**/*.ts' --format esm --dts --clean --splitting",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test test/*.test.mjs",
-    "test:e2e": "set -a; . ./.env; set +a; node test/e2e.mjs"
+    "test": "npm run build && node --test test/*.test.ts",
+    "test:e2e": "set -a; . ./.env; set +a; node test/e2e.ts"
   },
   "dependencies": {
     "@alibaba-group/opensandbox": "^0.1.11",
@@ -59,6 +59,7 @@
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.85.1",
     "@types/node": "^24.0.0",
+    "tsup": "^9.0.0",
     "typebox": "^1.1.38",
     "typescript": "^5.9.0"
   }

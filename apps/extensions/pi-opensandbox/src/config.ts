@@ -8,11 +8,11 @@ import {
   parseSkillSyncLimits,
   type SelectedSkill,
   type SkillSyncLimits,
-} from "./skills.ts";
+} from "./skills";
 import {
   resolveOpenSandboxSettings,
   type OpenSandboxSettings,
-} from "./sandbox/config.ts";
+} from "./sandbox/config";
 
 const CONFIG_ENV = "PI_OPENSANDBOX_CONFIG";
 const CONFIG_FILE_ENV = "PI_OPENSANDBOX_CONFIG_FILE";
@@ -51,33 +51,108 @@ const optionsSchema = z.object({
 });
 const resourceRootsSchema = z.array(z.string()).optional();
 
+/**
+ * User-facing options accepted by the Pi OpenSandbox extension.
+ *
+ * `skills` and `sharedSkillRoot` must either both be provided or both be omitted.
+ *
+ * @example
+ * const options: PiOpenSandboxOptions = {
+ *   sandboxConfig: {
+ *     domain: "https://sandbox.example.com",
+ *     image: "opensandbox/code-interpreter:v1",
+ *   },
+ *   verifyUploadedSkills: true,
+ * };
+ */
 export type PiOpenSandboxOptions = z.input<typeof optionsSchema>;
 
+/**
+ * Validated configuration used internally to start and manage a sandbox.
+ *
+ * @example
+ * const runtime = resolvePiOpenSandboxRuntimeConfig({
+ *   sandboxConfig: {
+ *     domain: "https://sandbox.example.com",
+ *     image: "opensandbox/code-interpreter:v1",
+ *   },
+ * });
+ * console.log(runtime.sandboxSettings.image);
+ */
 export interface PiOpenSandboxRuntimeConfig {
+  /** Normalized OpenSandbox connection and lifecycle settings. */
   sandboxSettings: OpenSandboxSettings;
+  /** Skills selected for upload to the remote sandbox. */
   selectedSkills: SelectedSkill[];
+  /** Sandbox-only root used to expose uploaded Skills. */
   sharedSkillRoot?: string;
+  /** Resolved upload limits with defaults applied. */
   skillSyncLimits: Required<SkillSyncLimits>;
+  /** Whether uploaded Skill content is verified after transfer. */
   verifyUploadedSkills: boolean;
 }
 
+/**
+ * Effective configuration discovered from the environment or the user config file.
+ *
+ * @example
+ * const installed = await loadInstalledPiOpenSandboxConfig();
+ * if (installed.enabled && installed.runtime) {
+ *   console.log(`Loaded OpenSandbox configuration from ${installed.source}`);
+ * }
+ */
 export interface InstalledPiOpenSandboxConfig {
+  /** Whether OpenSandbox is configured for use. */
   enabled: boolean;
+  /** Persisted user options before environment overrides are applied. */
   options?: PiOpenSandboxOptions;
+  /** Validated runtime configuration when OpenSandbox is enabled. */
   runtime?: PiOpenSandboxRuntimeConfig;
+  /** Location from which the effective configuration was loaded. */
   source: "environment" | "user" | "none";
 }
 
+/**
+ * Returns the shared OpenSandbox configuration path used across Pi sessions.
+ *
+ * @example
+ * // Default Pi agent directory:
+ * // ~/.pi/agent/extensions/opensandbox.json
+ *
+ * getPiOpenSandboxUserConfigPath("/tmp/pi-agent");
+ * // /tmp/pi-agent/extensions/opensandbox.json
+ */
 export function getPiOpenSandboxUserConfigPath(agentDir = getAgentDir()): string {
   return join(agentDir, "extensions", USER_CONFIG_NAME);
 }
 
+/**
+ * Reports whether either supported environment-based configuration is present.
+ *
+ * @example
+ * hasPiOpenSandboxEnvironmentConfig({
+ *   PI_OPENSANDBOX_CONFIG: '{"sandboxConfig":{"image":"example"}}',
+ * });
+ * // true
+ */
 export function hasPiOpenSandboxEnvironmentConfig(
   environment: NodeJS.ProcessEnv = process.env,
 ): boolean {
   return Boolean(environment[CONFIG_ENV] || environment[CONFIG_FILE_ENV]);
 }
 
+/**
+ * Loads the effective installed configuration.
+ *
+ * Environment configuration takes precedence over the persisted user file.
+ *
+ * @example
+ * const config = await loadInstalledPiOpenSandboxConfig(
+ *   { OPENSANDBOX_API_KEY: "your-api-key" },
+ *   "/tmp/pi-agent/extensions/opensandbox.json",
+ * );
+ * console.log(config.source);
+ */
 export async function loadInstalledPiOpenSandboxConfig(
   environment: NodeJS.ProcessEnv = process.env,
   configPath = getPiOpenSandboxUserConfigPath(),
@@ -117,6 +192,17 @@ export async function loadInstalledPiOpenSandboxConfig(
   };
 }
 
+/**
+ * Reads and validates the persisted user configuration.
+ *
+ * Returns `undefined` when the file does not exist.
+ *
+ * @example
+ * const stored = await readStoredPiOpenSandboxConfig(
+ *   "/tmp/pi-agent/extensions/opensandbox.json",
+ * );
+ * console.log(stored?.enabled ?? false);
+ */
 export async function readStoredPiOpenSandboxConfig(
   configPath = getPiOpenSandboxUserConfigPath(),
 ): Promise<{ enabled: boolean; options?: PiOpenSandboxOptions } | undefined> {
@@ -146,6 +232,23 @@ export async function readStoredPiOpenSandboxConfig(
   return { enabled, options: optionsSchema.parse(optionsInput) };
 }
 
+/**
+ * Validates and atomically writes the user configuration with mode `0600`.
+ *
+ * @example
+ * await writeStoredPiOpenSandboxConfig(
+ *   {
+ *     enabled: true,
+ *     options: {
+ *       sandboxConfig: {
+ *         domain: "https://sandbox.example.com",
+ *         image: "opensandbox/code-interpreter:v1",
+ *       },
+ *     },
+ *   },
+ *   "/tmp/pi-agent/extensions/opensandbox.json",
+ * );
+ */
 export async function writeStoredPiOpenSandboxConfig(
   value: { enabled: boolean; options?: PiOpenSandboxOptions },
   configPath = getPiOpenSandboxUserConfigPath(),
@@ -172,6 +275,23 @@ export async function writeStoredPiOpenSandboxConfig(
   }
 }
 
+/**
+ * Loads runtime configuration from inline JSON or a referenced JSON file.
+ *
+ * Exactly one of `PI_OPENSANDBOX_CONFIG` and `PI_OPENSANDBOX_CONFIG_FILE`
+ * must be set.
+ *
+ * @example
+ * const runtime = await loadPiOpenSandboxConfig({
+ *   OPENSANDBOX_API_KEY: "your-api-key",
+ *   PI_OPENSANDBOX_CONFIG: JSON.stringify({
+ *     sandboxConfig: {
+ *       domain: "https://sandbox.example.com",
+ *       image: "opensandbox/code-interpreter:v1",
+ *     },
+ *   }),
+ * });
+ */
 export async function loadPiOpenSandboxConfig(
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<PiOpenSandboxRuntimeConfig> {
@@ -194,6 +314,22 @@ export async function loadPiOpenSandboxConfig(
   return resolvePiOpenSandboxRuntimeConfig(input, environment);
 }
 
+/**
+ * Validates user input and resolves it into the configuration used at runtime.
+ *
+ * @example
+ * const runtime = resolvePiOpenSandboxRuntimeConfig(
+ *   {
+ *     sandboxConfig: {
+ *       domain: "https://sandbox.example.com",
+ *       image: "opensandbox/code-interpreter:v1",
+ *     },
+ *   },
+ *   { OPENSANDBOX_API_KEY: "your-api-key" },
+ * );
+ * console.log(runtime.verifyUploadedSkills);
+ * // true
+ */
 export function resolvePiOpenSandboxRuntimeConfig(
   input: unknown,
   environment: NodeJS.ProcessEnv = process.env,
