@@ -1,15 +1,23 @@
 import type { FindOperations } from "@earendil-works/pi-coding-agent";
 import { posix } from "node:path";
-import type { ActiveOpenSandbox } from "./client.ts";
-import { shellQuote } from "./client.ts";
+import type { ActiveOpenSandbox } from "./client";
+import { shellQuote } from "./client";
 
+/** Parameters supported by the remote implementation of Pi's grep tool. */
 export interface GrepParams {
+  /** Number of surrounding lines included for each match. */
   context?: number;
+  /** Optional file glob applied before matching content. */
   glob?: string;
+  /** Match without case sensitivity. */
   ignoreCase?: boolean;
+  /** Maximum number of output lines. */
   limit?: number;
+  /** Treat `pattern` as literal text instead of a regular expression. */
   literal?: boolean;
+  /** Workspace-relative file or directory to search. */
   path?: string;
+  /** Text or regular expression to search for. */
   pattern: string;
 }
 
@@ -20,15 +28,16 @@ interface RemoteSearchResult {
 
 const maxSearchOutputBytes = 30 * 1024;
 
+/** Creates Pi find operations backed by the active remote sandbox. */
 export function createFindOperations(
-  requireActiveSandbox: () => ActiveOpenSandbox,
+  requireActiveSandbox: () => Promise<ActiveOpenSandbox>,
 ): FindOperations {
   return {
     exists: async (path) => {
-      return await requireActiveSandbox().getFileInfo(path) !== undefined;
+      return await (await requireActiveSandbox()).getFileInfo(path) !== undefined;
     },
     glob: async (pattern, cwd, { ignore, limit }) => {
-      const activeSandbox = requireActiveSandbox();
+      const activeSandbox = await requireActiveSandbox();
       const sandboxCwd = activeSandbox.resolveReadablePath(cwd);
       const files = await activeSandbox.searchFiles(cwd, pattern);
       return files
@@ -39,6 +48,21 @@ export function createFindOperations(
   };
 }
 
+/**
+ * Runs a bounded grep-compatible search inside the active sandbox.
+ *
+ * The generated command prefers ripgrep, falls back to available grep
+ * variants, and excludes `.git` and `node_modules`.
+ *
+ * @example
+ * ```ts
+ * const result = await runRemoteGrep(activeSandbox, {
+ *   pattern: "TODO",
+ *   path: "src",
+ *   limit: 20,
+ * });
+ * ```
+ */
 export async function runRemoteGrep(
   activeSandbox: ActiveOpenSandbox,
   params: GrepParams,

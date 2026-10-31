@@ -1,10 +1,8 @@
 {
   "compilerOptions": {
     "target": "ES2023",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "allowImportingTsExtensions": true,
-    "rewriteRelativeImportExtensions": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "declaration": true,
     "rootDir": "src",
     "outDir": "dist",

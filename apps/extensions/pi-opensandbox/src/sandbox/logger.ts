@@ -82,6 +82,9 @@ function describeCause(error: unknown, depth: number): unknown {
 // `Authorization: Bearer secret` -> `Authorization: Bearer [REDACTED]`.
 function sanitize(value: string): string {
   return value
-    .replace(/(api[-_]?key|password|token)([=:]\s*)([^\s,&]+)/gi, "$1$2[REDACTED]")
+    .replace(
+      /(api[-_]?key|password|token)(["']?\s*[=:]\s*["']?)([^\s"',&}]+)/gi,
+      "$1$2[REDACTED]",
+    )
     .replace(/(Bearer\s+)[^\s]+/gi, "$1[REDACTED]");
 }
