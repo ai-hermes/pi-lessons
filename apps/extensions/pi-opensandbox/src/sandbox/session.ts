@@ -1,5 +1,6 @@
 import type { OpenSandboxSettings } from "./config";
 import { describeOpenSandboxError, logOpenSandboxEvent } from "./logger";
+import { getErrorMessage } from "../utils";
 import {
   ActiveOpenSandbox,
   type SandboxRestoreTarget,
@@ -19,7 +20,7 @@ interface SandboxSessionOptions {
 }
 
 /** Observable lifecycle state for one Pi session's remote sandbox. */
-export type SandboxSessionMode = "local" | "restoring" | "remote" | "failed";
+export type SandboxSessionState = "inactive" | "restoring" | "active" | "failed";
 
 /**
  * Coordinates one active OpenSandbox connection for a Pi session.
@@ -62,11 +63,11 @@ export class SandboxSession {
     return this.hostWorkspaceRoot;
   }
 
-  /** Derives the public mode from pending, active, and failed state. */
-  getMode(): SandboxSessionMode {
+  /** Derives the public state from pending, active, and failed state. */
+  getState(): SandboxSessionState {
     if (this.pending) return "restoring";
-    if (this.activeSandbox) return "remote";
-    return this.failure === undefined ? "local" : "failed";
+    if (this.activeSandbox) return "active";
+    return this.failure === undefined ? "inactive" : "failed";
   }
 
   /** Returns the most recent startup or restoration failure, if any. */
@@ -122,7 +123,7 @@ export class SandboxSession {
     throw new Error("OpenSandbox is not active. The tool was not run on the host.");
   }
 
-  /** Returns to local mode, killing owned sandboxes and disconnecting external ones. */
+  /** Deactivates remote execution, killing owned sandboxes and disconnecting external ones. */
   async deactivate(): Promise<void> {
     const activeSandbox = await this.settlePending();
     if (activeSandbox) await this.release(activeSandbox, activeSandbox.isOwnedByExtension ? "kill" : "disconnect");
@@ -208,8 +209,4 @@ function startLeaseRenewal(
     clearInterval(timer);
     await pending;
   };
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

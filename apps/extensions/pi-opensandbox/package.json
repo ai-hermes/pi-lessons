@@ -53,11 +53,11 @@
     "zod": "^4.6.5"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-coding-agent": "1.4.0",
     "@types/node": "^24.0.0",
     "tsup": "^9.0.0",
     "typebox": "^1.1.38",
