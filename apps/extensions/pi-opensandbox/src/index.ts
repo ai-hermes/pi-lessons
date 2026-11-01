@@ -3,8 +3,8 @@ import {
   createPiOpenSandboxExtensionFromConfig,
 } from "./extension";
 import {
-  getPiOpenSandboxUserConfigPath,
   loadInstalledPiOpenSandboxConfig,
+  resolveUserConfigPath,
 } from "./config";
 import { registerOpenSandboxCommand } from "./config-command";
 
@@ -33,10 +33,13 @@ export type {
  * ```
  */
 export default async function piOpenSandbox(pi: ExtensionAPI): Promise<void> {
-  const configPath = getPiOpenSandboxUserConfigPath();
-  const config = await loadInstalledPiOpenSandboxConfig(process.env, configPath);
-  if (config.runtime !== undefined) {
-    await createPiOpenSandboxExtensionFromConfig(config.runtime, configPath)(pi);
+  const userConfigPath = resolveUserConfigPath();
+  const installedConfig = await loadInstalledPiOpenSandboxConfig(process.env, userConfigPath);
+  if (installedConfig.runtime !== undefined) {
+    await createPiOpenSandboxExtensionFromConfig(
+      installedConfig.runtime,
+      { installedConfig, userConfigPath },
+    )(pi);
   } else {
     pi.registerFlag("opensandbox", {
       description: "Start this Pi process in OpenSandbox",
@@ -46,10 +49,10 @@ export default async function piOpenSandbox(pi: ExtensionAPI): Promise<void> {
       if (!pi.getFlag("opensandbox")) return;
       ctx.ui.setStatus("opensandbox", "opensandbox: failed");
       ctx.ui.notify(
-        `OpenSandbox is not enabled or configured at ${configPath}.`,
+        `OpenSandbox is not enabled or configured at ${userConfigPath}.`,
         "error",
       );
     });
-    registerOpenSandboxCommand(pi, configPath);
+    registerOpenSandboxCommand(pi, { installedConfig, userConfigPath });
   }
 }

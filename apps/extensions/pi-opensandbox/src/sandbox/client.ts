@@ -12,6 +12,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { join as joinPosix, normalize as normalizePosix } from "node:path/posix";
 import type { OpenSandboxSettings } from "./config";
 import { describeOpenSandboxError, logOpenSandboxEvent } from "./logger";
+import { dirnamePosix, getErrorMessage } from "../utils";
 
 /** How an active sandbox client was obtained. */
 export type SandboxStartupMode = "connected" | "created" | "resumed";
@@ -539,15 +540,21 @@ async function connectOrResumeSandbox(
   sandboxClient: Sandbox;
   startupMode: Extract<SandboxStartupMode, "connected" | "resumed">;
 }> {
-  const options = {
+  const connectOptions = {
     connectionConfig: new ConnectionConfig(connectionConfigOptions),
     sandboxId,
   };
   try {
-    return { sandboxClient: await Sandbox.connect(options), startupMode: "connected" };
+    return {
+      sandboxClient: await Sandbox.connect(connectOptions),
+      startupMode: "connected",
+    };
   } catch (connectError) {
     try {
-      return { sandboxClient: await Sandbox.resume(options), startupMode: "resumed" };
+      return {
+        sandboxClient: await Sandbox.resume(connectOptions),
+        startupMode: "resumed",
+      };
     } catch (resumeError) {
       if (isNotFound(resumeError)) {
         throw new OpenSandboxNotFoundError(String(sandboxId));
@@ -565,13 +572,4 @@ function isNotFound(error: unknown): boolean {
     && error !== null
     && "statusCode" in error
     && (error as { statusCode?: unknown }).statusCode === 404;
-}
-
-function dirnamePosix(path: string): string {
-  const index = path.lastIndexOf("/");
-  return index <= 0 ? "/" : path.slice(0, index);
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
