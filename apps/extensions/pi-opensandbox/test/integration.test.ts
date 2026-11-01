@@ -23,7 +23,7 @@ import {
 import { materializeSkills, uploadSkills } from "../dist/skills.js";
 import { resolveOpenSandboxSettings } from "../dist/sandbox/config.js";
 import { createBashOperations } from "../dist/sandbox/tool-operations.js";
-import { ActiveOpenSandbox } from "../dist/sandbox/client.js";
+import { OpenSandboxHandle, startOpenSandbox } from "../dist/sandbox/client.js";
 import { describeOpenSandboxError } from "../dist/sandbox/logger.js";
 import { createFindOperations, runRemoteGrep } from "../dist/sandbox/search.js";
 import { SandboxSession } from "../dist/sandbox/session.js";
@@ -65,8 +65,8 @@ function fakePi(initialFlags = {}) {
   };
 }
 
-function activeSandbox(sandboxClient, overrides = {}) {
-  return new ActiveOpenSandbox({
+function sandboxHandle(sandboxClient, overrides = {}) {
+  return new OpenSandboxHandle({
     defaultCommandTimeoutSeconds: 120,
     hostWorkspaceRoot: process.cwd(),
     imageReference: "test",
@@ -216,8 +216,8 @@ function sessionContext(branch = [], sessionId = "session", statuses = []) {
   };
 }
 
-test("ActiveOpenSandbox resolves readable and writable paths through one interface", () => {
-  const sandbox = activeSandbox(
+test("OpenSandboxHandle resolves readable and writable paths through one interface", () => {
+  const sandbox = sandboxHandle(
     { id: "paths" },
     { readableResourceRoots: ["/resources"] },
   );
@@ -246,10 +246,10 @@ test("ActiveOpenSandbox resolves readable and writable paths through one interfa
   );
 });
 
-test("ActiveOpenSandbox enforces read limits and external cleanup ownership", async () => {
+test("OpenSandboxHandle enforces read limits and external cleanup ownership", async () => {
   let closeCalls = 0;
   let killCalls = 0;
-  const sandbox = activeSandbox({
+  const sandbox = sandboxHandle({
     id: "connected",
     close: async () => { closeCalls += 1; },
     kill: async () => { killCalls += 1; },
@@ -270,9 +270,9 @@ test("ActiveOpenSandbox enforces read limits and external cleanup ownership", as
   assert.equal(closeCalls, 1);
 });
 
-test("ActiveOpenSandbox treats missing remote files as absent", async () => {
+test("OpenSandboxHandle treats missing remote files as absent", async () => {
   const missing = Object.assign(new Error("file not found"), { statusCode: 404 });
-  const sandbox = activeSandbox({
+  const sandbox = sandboxHandle({
     id: "missing-file",
     files: {
       getFileInfo: async () => {
@@ -287,7 +287,7 @@ test("ActiveOpenSandbox treats missing remote files as absent", async () => {
 test("failed initialization pauses a resumed owned sandbox", async () => {
   let closeCalls = 0;
   let pauseCalls = 0;
-  const sandbox = activeSandbox({
+  const sandbox = sandboxHandle({
     id: "resumed",
     close: async () => { closeCalls += 1; },
     pause: async () => { pauseCalls += 1; },
@@ -313,19 +313,17 @@ test("new sandboxes allow network access unless restrictions are configured", as
   };
   t.after(() => { Sandbox.create = originalCreate; });
 
-  await ActiveOpenSandbox.start(
+  await startOpenSandbox(
     resolveOpenSandboxSettings({ domain: "sandbox.example.test", image: "test" }),
     process.cwd(),
-    "default-network",
   );
-  await ActiveOpenSandbox.start(
+  await startOpenSandbox(
     resolveOpenSandboxSettings({
       domain: "sandbox.example.test",
       image: "test",
       networkAllowlist: ["registry.npmmirror.com"],
     }),
     process.cwd(),
-    "allowlist-network",
   );
 
   assert.deepEqual(createOptions[0].networkPolicy, { defaultAction: "allow" });
@@ -677,7 +675,7 @@ test("disabled OpenSandbox uses its startup snapshot when re-enabled", async (t)
     userConfigPath: configPath,
     runtime: {
       session: {
-        getState: () => "active",
+        getLifecycleState: () => "active",
       },
       activate: async () => {
         throw new Error("not used");
@@ -706,19 +704,22 @@ test("disabled OpenSandbox uses its startup snapshot when re-enabled", async (t)
 });
 
 test("--opensandbox starts the current session remotely and persists owned state", async (t) => {
-  const originalStart = ActiveOpenSandbox.start;
-  const active = activeSandbox({
+  const originalCreate = Sandbox.create;
+  let createOptions;
+  const sandboxClient = {
     id: "created-by-extension",
     renew: async () => {},
     pause: async () => {},
     close: async () => {},
-  });
-  let starts = 0;
-  ActiveOpenSandbox.start = async () => {
-    starts += 1;
-    return active;
+    files: { createDirectories: async () => {} },
   };
-  t.after(() => { ActiveOpenSandbox.start = originalStart; });
+  let starts = 0;
+  Sandbox.create = async (options) => {
+    starts += 1;
+    createOptions = options;
+    return sandboxClient;
+  };
+  t.after(() => { Sandbox.create = originalCreate; });
 
   const config = resolvePiOpenSandboxRuntimeConfig({
     sandboxConfig: { domain: "sandbox.example.test", image: "test" },
@@ -751,6 +752,10 @@ test("--opensandbox starts the current session remotely and persists owned state
       sandboxId: "created-by-extension",
       owned: true,
     },
+  });
+  assert.deepEqual(createOptions.metadata, {
+    "pi-extension": "opensandbox",
+    "pi-session-id": "remote-session",
   });
   assert.deepEqual(statuses, ["opensandbox: -"]);
   assert.deepEqual(remoteStatuses, [
@@ -805,11 +810,11 @@ test("local startup does not read configured Skills", async () => {
 });
 
 test("failed flag startup does not persist an active session", async (t) => {
-  const originalStart = ActiveOpenSandbox.start;
-  ActiveOpenSandbox.start = async () => {
+  const originalCreate = Sandbox.create;
+  Sandbox.create = async () => {
     throw new Error("sandbox unavailable");
   };
-  t.after(() => { ActiveOpenSandbox.start = originalStart; });
+  t.after(() => { Sandbox.create = originalCreate; });
 
   const pi = fakePi({ opensandbox: true });
   await createPiOpenSandboxExtensionFromConfig(resolvePiOpenSandboxRuntimeConfig({
@@ -824,22 +829,20 @@ test("failed flag startup does not persist an active session", async (t) => {
 });
 
 test("resume restores the persisted sandbox while fork stays local", async (t) => {
-  const originalStart = ActiveOpenSandbox.start;
+  const originalConnect = Sandbox.connect;
   const restores = [];
-  const active = activeSandbox({
+  const sandboxClient = {
     id: "persisted",
     renew: async () => {},
     pause: async () => {},
     close: async () => {},
-  }, {
-    startupMode: "resumed",
-    owned: true,
-  });
-  ActiveOpenSandbox.start = async (_settings, _cwd, _sessionId, target) => {
-    restores.push(target);
-    return active;
+    files: { createDirectories: async () => {} },
   };
-  t.after(() => { ActiveOpenSandbox.start = originalStart; });
+  Sandbox.connect = async ({ sandboxId }) => {
+    restores.push({ sandboxId, owned: true });
+    return sandboxClient;
+  };
+  t.after(() => { Sandbox.connect = originalConnect; });
   const config = resolvePiOpenSandboxRuntimeConfig({
     sandboxConfig: { domain: "sandbox.example.test", image: "test" },
   });
@@ -971,9 +974,9 @@ description: Use Lark safely
 Run the selected Lark workflow.
 `);
 
-  const originalStart = ActiveOpenSandbox.start;
+  const originalCreate = Sandbox.create;
   const remoteFiles = new Map();
-  const active = activeSandbox({
+  const sandboxClient = {
     id: "remote-skills",
     renew: async () => {},
     pause: async () => {},
@@ -992,11 +995,9 @@ Run the selected Lark workflow.
         for (const entry of entries) remoteFiles.set(entry.path, Buffer.from(entry.data));
       },
     },
-  }, {
-    readableResourceRoots: [remoteRoot],
-  });
-  ActiveOpenSandbox.start = async () => active;
-  t.after(() => { ActiveOpenSandbox.start = originalStart; });
+  };
+  Sandbox.create = async () => sandboxClient;
+  t.after(() => { Sandbox.create = originalCreate; });
 
   const pi = fakePi();
   await createPiOpenSandboxExtension({
@@ -1092,13 +1093,20 @@ Run the selected Lark workflow.
 });
 
 test("restore failure blocks agent use and remains retryable without local switching", async (t) => {
-  const originalStart = ActiveOpenSandbox.start;
+  const originalConnect = Sandbox.connect;
+  const originalResume = Sandbox.resume;
   let starts = 0;
-  ActiveOpenSandbox.start = async () => {
+  Sandbox.connect = async () => {
     starts += 1;
     throw new Error("sandbox unavailable");
   };
-  t.after(() => { ActiveOpenSandbox.start = originalStart; });
+  Sandbox.resume = async () => {
+    throw new Error("sandbox unavailable");
+  };
+  t.after(() => {
+    Sandbox.connect = originalConnect;
+    Sandbox.resume = originalResume;
+  });
 
   const pi = fakePi();
   await createPiOpenSandboxExtensionFromConfig(resolvePiOpenSandboxRuntimeConfig({
@@ -1158,7 +1166,7 @@ test("restore failure blocks agent use and remains retryable without local switc
 test("session startup is deduplicated and remote operations await it", async () => {
   let resolveReady;
   let starts = 0;
-  const active = activeSandbox({
+  const active = sandboxHandle({
     id: "pending",
     renew: async () => {},
     pause: async () => {},
@@ -1169,29 +1177,29 @@ test("session startup is deduplicated and remote operations await it", async () 
   });
   const session = new SandboxSession({
     hostWorkspaceRoot: process.cwd(),
-    startSandbox: async () => {
+    startOpenSandbox: async () => {
       starts += 1;
       return active;
     },
-    onReady: async () => new Promise((resolve) => { resolveReady = resolve; }),
+    initializeSandbox: async () => new Promise((resolve) => { resolveReady = resolve; }),
   });
-  const first = session.startSandbox({ timeoutSeconds: 3600 });
+  const first = session.ensureActiveSandboxHandle({ timeoutSeconds: 3600 });
   await new Promise((resolve) => setImmediate(resolve));
-  const second = session.startSandbox({ timeoutSeconds: 3600 });
-  const bash = createBashOperations(() => session.requireActiveSandbox());
+  const second = session.ensureActiveSandboxHandle({ timeoutSeconds: 3600 });
+  const bash = createBashOperations(() => session.requireActiveSandboxHandle());
   const operation = bash.exec("true", process.cwd(), {});
   assert.equal(starts, 1);
   resolveReady();
   assert.equal(await first, active);
   assert.equal(await second, active);
   assert.deepEqual(await operation, { exitCode: 0 });
-  await session.shutdown();
+  await session.releaseForShutdown();
 });
 
 test("resumed ownership survives startup mode and controls release behavior", async () => {
   let killCalls = 0;
   let closeCalls = 0;
-  const owned = activeSandbox({
+  const owned = sandboxHandle({
     id: "owned-resumed",
     renew: async () => {},
     kill: async () => { killCalls += 1; },
@@ -1202,13 +1210,13 @@ test("resumed ownership survives startup mode and controls release behavior", as
   });
   const ownedSession = new SandboxSession({
     hostWorkspaceRoot: process.cwd(),
-    startSandbox: async () => owned,
+    startOpenSandbox: async () => owned,
   });
-  await ownedSession.startSandbox({ timeoutSeconds: 3600 });
-  await ownedSession.deactivate();
+  await ownedSession.ensureActiveSandboxHandle({ timeoutSeconds: 3600 });
+  await ownedSession.releaseForDisable();
   assert.equal(killCalls, 1);
 
-  const external = activeSandbox({
+  const external = sandboxHandle({
     id: "external",
     renew: async () => {},
     kill: async () => { killCalls += 1; },
@@ -1219,10 +1227,10 @@ test("resumed ownership survives startup mode and controls release behavior", as
   });
   const externalSession = new SandboxSession({
     hostWorkspaceRoot: process.cwd(),
-    startSandbox: async () => external,
+    startOpenSandbox: async () => external,
   });
-  await externalSession.startSandbox({ timeoutSeconds: 3600 });
-  await externalSession.deactivate();
+  await externalSession.ensureActiveSandboxHandle({ timeoutSeconds: 3600 });
+  await externalSession.releaseForDisable();
   assert.equal(killCalls, 1);
   assert.equal(closeCalls, 2);
 });
@@ -1307,7 +1315,7 @@ test("uploads Skills in batches and verifies remote content", async (t) => {
     localRoot,
     skillSyncLimits,
   );
-  const active = activeSandbox(remoteSandbox.sandbox, {
+  const active = sandboxHandle(remoteSandbox.sandbox, {
     readableResourceRoots: [remoteRoot],
   });
   const report = await uploadSkills(active, skills, remoteRoot, skillSyncLimits, true);
@@ -1348,7 +1356,7 @@ test("retries transient server errors while uploading Skills", async (t) => {
   );
 
   await uploadSkills(
-    activeSandbox(remoteSandbox.sandbox, {
+    sandboxHandle(remoteSandbox.sandbox, {
       readableResourceRoots: [remoteRoot],
     }),
     skills,
@@ -1367,7 +1375,7 @@ test("retries transient server errors while uploading Skills", async (t) => {
   unavailableSandbox.failUploads(3);
   await assert.rejects(
     uploadSkills(
-      activeSandbox(unavailableSandbox.sandbox, {
+      sandboxHandle(unavailableSandbox.sandbox, {
         readableResourceRoots: [remoteRoot],
       }),
       skills,
@@ -1398,7 +1406,7 @@ test("replaces the remote Skill set only after activation succeeds", async (t) =
   };
   const remoteSandbox = remoteSkillSandbox(remoteRoot);
   remoteSandbox.remote.set(`${remoteRoot}/user-note.txt`, Buffer.from("keep me"));
-  const active = activeSandbox(remoteSandbox.sandbox, {
+  const active = sandboxHandle(remoteSandbox.sandbox, {
     readableResourceRoots: [remoteRoot],
   });
 
@@ -1465,7 +1473,7 @@ test("remote Skill absence markers cannot collide with Skill names", async (t) =
     maxTotalBytes: 128 * 1024 * 1024,
   };
   const remoteSandbox = remoteSkillSandbox(remoteRoot);
-  const active = activeSandbox(remoteSandbox.sandbox, {
+  const active = sandboxHandle(remoteSandbox.sandbox, {
     readableResourceRoots: [remoteRoot],
   });
 
@@ -1509,18 +1517,18 @@ test("routine shutdown pauses owned sandboxes and retries failed release", async
     },
     close: async () => { closeCalls += 1; },
   };
-  const active = activeSandbox(sandbox);
+  const active = sandboxHandle(sandbox);
   const session = new SandboxSession({
     hostWorkspaceRoot: process.cwd(),
-    startSandbox: async () => active,
+    startOpenSandbox: async () => active,
   });
-  await session.startSandbox({ timeoutSeconds: 3600 });
+  await session.ensureActiveSandboxHandle({ timeoutSeconds: 3600 });
 
-  await assert.rejects(session.shutdown(), /temporary failure/);
-  assert.equal(session.getActiveSandbox(), active);
+  await assert.rejects(session.releaseForShutdown(), /temporary failure/);
+  assert.equal(session.getActiveSandboxHandle(), active);
   assert.equal(closeCalls, 0);
-  await session.shutdown();
-  assert.equal(session.getActiveSandbox(), null);
+  await session.releaseForShutdown();
+  assert.equal(session.getActiveSandboxHandle(), null);
   assert.equal(pauseCalls, 2);
   assert.equal(closeCalls, 1);
 });
@@ -1545,7 +1553,7 @@ test("remote bash forwards Pi environment and the complete output stream", async
       interrupt: async () => {},
     },
   };
-  const operations = createBashOperations(async () => activeSandbox(sandbox));
+  const operations = createBashOperations(async () => sandboxHandle(sandbox));
   await operations.exec("env", process.cwd(), {
     onData: (data) => chunks.push(data),
   });
@@ -1562,7 +1570,7 @@ test("find uses the sandbox filesystem and grep builds a valid shell script", as
   const commands = [];
   const searches = [];
   const outputs = ["src/search.ts:1:needle\n"];
-  const active = activeSandbox({
+  const active = sandboxHandle({
     files: {
       getFileInfo: async (paths) => ({ [paths[0]]: { path: paths[0] } }),
       search: async (entry) => {
@@ -1606,7 +1614,7 @@ test("failed-start cleanup remains observable", async () => {
   const original = console.error;
   console.error = (message) => messages.push(String(message));
   try {
-    await activeSandbox({
+    await sandboxHandle({
       id: "cleanup",
       kill: async () => { throw new Error("kill failed"); },
       close: async () => { throw new Error("close failed"); },

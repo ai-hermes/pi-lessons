@@ -1,6 +1,6 @@
 import type { FindOperations } from "@earendil-works/pi-coding-agent";
 import { posix } from "node:path";
-import type { ActiveOpenSandbox } from "./client";
+import type { OpenSandboxHandle } from "./client";
 import { shellQuote } from "./client";
 
 /** Parameters supported by the remote implementation of Pi's grep tool. */
@@ -30,16 +30,16 @@ const maxSearchOutputBytes = 30 * 1024;
 
 /** Creates Pi find operations backed by the active remote sandbox. */
 export function createFindOperations(
-  requireActiveSandbox: () => Promise<ActiveOpenSandbox>,
+  requireActiveSandboxHandle: () => Promise<OpenSandboxHandle>,
 ): FindOperations {
   return {
     exists: async (path) => {
-      return await (await requireActiveSandbox()).getFileInfo(path) !== undefined;
+      return await (await requireActiveSandboxHandle()).getFileInfo(path) !== undefined;
     },
     glob: async (pattern, cwd, { ignore, limit }) => {
-      const activeSandbox = await requireActiveSandbox();
-      const sandboxCwd = activeSandbox.resolveReadablePath(cwd);
-      const files = await activeSandbox.searchFiles(cwd, pattern);
+      const sandboxHandle = await requireActiveSandboxHandle();
+      const sandboxCwd = sandboxHandle.resolveReadablePath(cwd);
+      const files = await sandboxHandle.searchFiles(cwd, pattern);
       return files
         .map((file) => posix.relative(sandboxCwd, file.path))
         .filter((path) => !ignore.some((ignored) => posix.matchesGlob(path, ignored)))
@@ -56,7 +56,7 @@ export function createFindOperations(
  *
  * @example
  * ```ts
- * const result = await runRemoteGrep(activeSandbox, {
+ * const result = await runRemoteGrep(sandboxHandle, {
  *   pattern: "TODO",
  *   path: "src",
  *   limit: 20,
@@ -64,20 +64,20 @@ export function createFindOperations(
  * ```
  */
 export async function runRemoteGrep(
-  activeSandbox: ActiveOpenSandbox,
+  sandboxHandle: OpenSandboxHandle,
   params: GrepParams,
   signal?: AbortSignal,
 ): Promise<RemoteSearchResult> {
   const limit = normalizePositiveInteger(params.limit, 100);
   const context = normalizeNonNegativeInteger(params.context);
-  const searchPath = activeSandbox.resolveReadablePath(params.path ?? ".");
+  const searchPath = sandboxHandle.resolveReadablePath(params.path ?? ".");
   const command = buildRemoteGrepScript(searchPath, params, context, limit);
 
   // Run the generated search script inside the Sandbox and bound the captured
   // output so a broad search cannot consume unbounded host memory.
-  const result = await activeSandbox.runCommand(
+  const result = await sandboxHandle.runCommand(
     command,
-    activeSandbox.sandboxWorkspaceRoot,
+    sandboxHandle.sandboxWorkspaceRoot,
     {
       captureOutput: true,
       maxOutputBytes: maxSearchOutputBytes,
