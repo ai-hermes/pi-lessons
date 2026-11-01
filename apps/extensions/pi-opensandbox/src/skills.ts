@@ -17,7 +17,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { join as joinPosix } from "node:path/posix";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import { shellQuote, type ActiveOpenSandbox } from "./sandbox/client";
+import { shellQuote, type OpenSandboxHandle } from "./sandbox/client";
 import { dirnamePosix } from "./utils";
 
 /**
@@ -309,7 +309,7 @@ async function skillCacheMatchesManifest(
  * @example
  * ```ts
  * const skillSyncReport = await uploadSkills(
- *   activeSandbox,
+ *   sandboxHandle,
  *   skills,
  *   "/tmp/pi/skills",
  *   parseSkillSyncLimits(undefined),
@@ -318,19 +318,19 @@ async function skillCacheMatchesManifest(
  * ```
  */
 export async function uploadSkills(
-  activeSandbox: ActiveOpenSandbox,
+  sandboxHandle: OpenSandboxHandle,
   skills: MaterializedSkill[],
   sharedSkillRoot: string,
   skillSyncLimits: Required<SkillSyncLimits>,
   verifyUploadedSkills: boolean,
 ): Promise<SkillSyncReport> {
-  if (!activeSandbox.readableResourceRoots.includes(sharedSkillRoot)) {
+  if (!sandboxHandle.readableResourceRoots.includes(sharedSkillRoot)) {
     throw new Error(
       `OpenSandbox resourceRoots does not contain the Skill root: ${sharedSkillRoot}`,
     );
   }
 
-  const previousSkillNames = await readManagedSkillNames(activeSandbox, sharedSkillRoot);
+  const previousSkillNames = await readManagedSkillNames(sandboxHandle, sharedSkillRoot);
   const stagingRoot = joinPosix(sharedSkillRoot, `.staging-${randomUUID()}`);
   const uploads = skills.flatMap((skill) => {
     const remoteSkillDir = joinPosix(stagingRoot, skill.name);
@@ -362,7 +362,7 @@ export async function uploadSkills(
 
   try {
     for (const batch of batches(directories, UPLOAD_BATCH_SIZE)) {
-      await activeSandbox.ensureSandboxDirectories(batch);
+      await sandboxHandle.ensureSandboxDirectories(batch);
     }
 
     for (const batch of batches(uploads, UPLOAD_BATCH_SIZE)) {
@@ -371,10 +371,10 @@ export async function uploadSkills(
         data: await readFile(file.absoluteSource),
         mode: toSandboxMode(file.mode),
       })));
-      await writeSandboxFilesWithRetry(activeSandbox, entries);
+      await writeSandboxFilesWithRetry(sandboxHandle, entries);
     }
 
-    await writeSandboxFilesWithRetry(activeSandbox, [{
+    await writeSandboxFilesWithRetry(sandboxHandle, [{
       path: remoteManifest,
       data: manifest,
       mode: 600,
@@ -383,7 +383,7 @@ export async function uploadSkills(
     if (verifyUploadedSkills) {
       for (const batch of batches(uploads, UPLOAD_BATCH_SIZE)) {
         await Promise.all(batch.map(async ({ file, remotePath }) => {
-          const remoteDigest = await activeSandbox.hashSandboxFile(
+          const remoteDigest = await sandboxHandle.hashSandboxFile(
             remotePath,
             skillSyncLimits.maxFileBytes,
           );
@@ -393,7 +393,7 @@ export async function uploadSkills(
         }));
       }
       if (
-        await activeSandbox.hashSandboxFile(remoteManifest, manifest.byteLength)
+        await sandboxHandle.hashSandboxFile(remoteManifest, manifest.byteLength)
         !== sha256(manifest)
       ) {
         throw new Error(`Remote Skill verification failed: ${remoteManifest}`);
@@ -401,14 +401,14 @@ export async function uploadSkills(
     }
 
     await commitRemoteSkills(
-      activeSandbox,
+      sandboxHandle,
       sharedSkillRoot,
       stagingRoot,
       skills,
       previousSkillNames,
     );
   } catch (error) {
-    await removeRemotePath(activeSandbox, stagingRoot);
+    await removeRemotePath(sandboxHandle, stagingRoot);
     throw error;
   }
 
@@ -425,7 +425,7 @@ export async function uploadSkills(
 }
 
 async function commitRemoteSkills(
-  activeSandbox: ActiveOpenSandbox,
+  sandboxHandle: OpenSandboxHandle,
   sharedSkillRoot: string,
   stagingRoot: string,
   skills: MaterializedSkill[],
@@ -489,9 +489,9 @@ async function commitRemoteSkills(
     "trap - EXIT HUP INT TERM",
     `rm -rf ${shellQuote(backupRoot)} ${shellQuote(absentRoot)} ${shellQuote(stagingRoot)}`,
   ].join("\n");
-  const activationResult = await activeSandbox.runCommand(
+  const activationResult = await sandboxHandle.runCommand(
     command,
-    activeSandbox.sandboxWorkspaceRoot,
+    sandboxHandle.sandboxWorkspaceRoot,
     { captureOutput: true },
   );
   if (activationResult.exitCode !== 0) {
@@ -502,15 +502,15 @@ async function commitRemoteSkills(
 }
 
 async function readManagedSkillNames(
-  activeSandbox: ActiveOpenSandbox,
+  sandboxHandle: OpenSandboxHandle,
   sharedSkillRoot: string,
 ): Promise<string[]> {
   const manifestPath = joinPosix(sharedSkillRoot, REMOTE_MANIFEST);
-  if (await activeSandbox.getFileInfo(manifestPath) === undefined) return [];
+  if (await sandboxHandle.getFileInfo(manifestPath) === undefined) return [];
 
   let input: unknown;
   try {
-    input = JSON.parse((await activeSandbox.readFile(manifestPath)).toString("utf8"));
+    input = JSON.parse((await sandboxHandle.readFile(manifestPath)).toString("utf8"));
   } catch (error) {
     throw new Error(`Remote Skill manifest is invalid: ${manifestPath}`, { cause: error });
   }
@@ -533,12 +533,12 @@ async function readManagedSkillNames(
 }
 
 async function removeRemotePath(
-  activeSandbox: ActiveOpenSandbox,
+  sandboxHandle: OpenSandboxHandle,
   remotePath: string,
 ): Promise<void> {
-  await activeSandbox.runCommand(
+  await sandboxHandle.runCommand(
     `rm -rf ${shellQuote(remotePath)}`,
-    activeSandbox.sandboxWorkspaceRoot,
+    sandboxHandle.sandboxWorkspaceRoot,
   ).catch(() => undefined);
 }
 
@@ -701,12 +701,12 @@ function batches<T>(items: T[], size: number): T[][] {
 }
 
 async function writeSandboxFilesWithRetry(
-  activeSandbox: ActiveOpenSandbox,
-  entries: Parameters<ActiveOpenSandbox["writeSandboxFiles"]>[0],
+  sandboxHandle: OpenSandboxHandle,
+  entries: Parameters<OpenSandboxHandle["writeSandboxFiles"]>[0],
 ): Promise<void> {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      await activeSandbox.writeSandboxFiles(entries);
+      await sandboxHandle.writeSandboxFiles(entries);
       return;
     } catch (error) {
       const statusCode = (error as { statusCode?: unknown })?.statusCode;
