@@ -20,7 +20,8 @@ import type { ActiveOpenSandbox } from "./client";
 import { createFindOperations, runRemoteGrep, type GrepParams } from "./search";
 
 /**
- * Replaces Pi's filesystem, search, and shell tools with remote implementations.
+ * Replaces Pi's `bash`, `read`, `write`, `edit`, `ls`, `find`, and `grep`
+ * tools, and handles user `!` shell commands with remote implementations.
  *
  * `requireActiveSandbox` must reject when remote execution is unavailable so a
  * remote-mode tool call can never silently fall back to the host workspace.

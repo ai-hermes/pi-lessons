@@ -1,12 +1,13 @@
 import type { Volume } from "@alibaba-group/opensandbox";
 import { normalize as normalizePosix } from "node:path/posix";
 import { z } from "zod";
+import { getErrorMessage } from "../utils";
 
 /**
  * Legacy shutdown action accepted in serialized OpenSandbox configuration.
  *
  * The Pi extension applies its own ownership-aware release behavior: owned
- * sandboxes are paused on session shutdown and killed when switching local.
+ * sandboxes are paused on session shutdown and killed when deactivated.
  */
 export type OpenSandboxShutdownAction = "keep" | "pause" | "kill";
 
@@ -265,8 +266,4 @@ function normalizeAbsolutePath(value: string): string {
   }
   const normalized = normalizePosix(path);
   return normalized === "/" ? normalized : normalized.replace(/\/+$/, "");
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

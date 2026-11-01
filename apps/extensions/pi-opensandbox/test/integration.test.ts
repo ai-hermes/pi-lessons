@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import {
   createSyntheticSourceInfo,
   DefaultResourceLoader,
-  formatSkillsForPrompt,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Sandbox } from "@alibaba-group/opensandbox";
@@ -615,7 +614,7 @@ test("configuration command writes user config and reloads", async (t) => {
   assert.equal(notifications.some((message) => message.includes("super-secret")), false);
 });
 
-test("disabled OpenSandbox can be enabled without losing its configuration", async (t) => {
+test("disabled OpenSandbox uses its startup snapshot when re-enabled", async (t) => {
   const temp = await mkdtemp(join(tmpdir(), "pi-opensandbox-disabled-"));
   t.after(() => rm(temp, { recursive: true, force: true }));
   const previousInline = process.env.PI_OPENSANDBOX_CONFIG;
@@ -637,7 +636,21 @@ test("disabled OpenSandbox can be enabled without losing its configuration", asy
     },
   }));
   const pi = fakePi();
-  registerOpenSandboxCommand(pi.api, configPath);
+  const installedConfig = {
+    enabled: false,
+    options: {
+      sandboxConfig: {
+        domain: "sandbox.example.test",
+        image: "image",
+      },
+    },
+    source: "user",
+  };
+  registerOpenSandboxCommand(pi.api, {
+    installedConfig,
+    userConfigPath: configPath,
+  });
+  await writeFile(configPath, "{invalid after startup");
   let reloads = 0;
   await pi.commandHandlers.get("opensandbox")("", {
     hasUI: true,
@@ -656,19 +669,26 @@ test("disabled OpenSandbox can be enabled without losing its configuration", asy
   assert.equal(reloads, 1);
 
   const remotePi = fakePi();
-  registerOpenSandboxCommand(remotePi.api, configPath, {
-    session: {
-      getMode: () => "remote",
+  registerOpenSandboxCommand(remotePi.api, {
+    installedConfig: {
+      ...installedConfig,
+      enabled: true,
     },
-    activate: async () => {
-      throw new Error("not used");
+    userConfigPath: configPath,
+    runtime: {
+      session: {
+        getState: () => "active",
+      },
+      activate: async () => {
+        throw new Error("not used");
+      },
+      getSkillReport: () => ({
+        bytes: 1,
+        files: 1,
+        remoteRoot: "/tmp/skills",
+        skills: [{ digest: "digest", name: "test", skillFile: "/tmp/skills/test/SKILL.md" }],
+      }),
     },
-    getSkillReport: () => ({
-      bytes: 1,
-      files: 1,
-      remoteRoot: "/tmp/skills",
-      skills: [{ digest: "digest", name: "test", skillFile: "/tmp/skills/test/SKILL.md" }],
-    }),
   });
   await remotePi.commandHandlers.get("opensandbox")("", {
     hasUI: true,
@@ -837,11 +857,20 @@ test("resume restores the persisted sandbox while fork stays local", async (t) =
     sessionContext(branch, "session", statuses),
   );
   assert.ok(resumed.tools.includes("bash"));
+  const promptOptions = {
+    cwd: "/host",
+    skills: [],
+    sections: {},
+  };
   const prompt = await resumed.handlers.get("before_agent_start")({
-    systemPrompt: "Current working directory: /host",
+    systemPrompt: "<cwd>\n/host\n</cwd>",
+    systemPromptOptions: promptOptions,
   });
   assert.deepEqual(restores, [{ sandboxId: "persisted", owned: true }]);
-  assert.match(prompt.systemPrompt, /OpenSandbox sandbox persisted/);
+  assert.equal(prompt, undefined);
+  assert.equal(promptOptions.cwd, "/workspace");
+  assert.match(promptOptions.sections.opensandbox, /Sandbox ID: persisted/);
+  assert.match(promptOptions.sections.opensandbox, /bash, read, write, edit, ls, find, and grep/);
   assert.deepEqual(statuses, [
     "opensandbox: restoring…",
     "opensandbox: remote ✓",
@@ -1017,20 +1046,25 @@ Run the selected Lark workflow.
     }),
     disableModelInvocation: false,
   }];
+  const promptOptions = {
+    cwd: "/host",
+    selectedTools: ["read", "bash"],
+    skills: localSkills,
+    sections: {},
+  };
   const prompt = await pi.handlers.get("before_agent_start")({
-    systemPrompt: `System${formatSkillsForPrompt(localSkills)}\nCurrent working directory: /host\n`,
-    systemPromptOptions: {
-      cwd: "/host",
-      selectedTools: ["read", "bash"],
-      skills: localSkills,
-    },
+    systemPrompt: "<cwd>\n/host\n</cwd>",
+    systemPromptOptions: promptOptions,
   });
-  assert.doesNotMatch(prompt.systemPrompt, /local-only|\/host\/skills/);
-  assert.match(prompt.systemPrompt, /<name>lark-shared<\/name>/);
-  assert.match(
-    prompt.systemPrompt,
-    /\/tmp\/pi-remote-session\/skills\/lark-shared\/SKILL\.md/,
+  assert.equal(prompt, undefined);
+  assert.equal(promptOptions.cwd, "/workspace");
+  assert.equal(promptOptions.skills.length, 1);
+  assert.equal(promptOptions.skills[0].name, "lark-shared");
+  assert.equal(
+    promptOptions.skills[0].filePath,
+    "/tmp/pi-remote-session/skills/lark-shared/SKILL.md",
   );
+  assert.match(promptOptions.sections.opensandbox, /Sandbox ID: remote-skills/);
 
   const selected = await pi.handlers.get("input")(
     { type: "input", text: "/skill:lark-shared create a doc", source: "interactive" },
@@ -1081,7 +1115,10 @@ test("restore failure blocks agent use and remains retryable without local switc
   );
   await new Promise((resolve) => setImmediate(resolve));
   await assert.rejects(
-    pi.handlers.get("before_agent_start")({ systemPrompt: "Current working directory: /host" }),
+    pi.handlers.get("before_agent_start")({
+      systemPrompt: "<cwd>\n/host\n</cwd>",
+      systemPromptOptions: { cwd: "/host", skills: [], sections: {} },
+    }),
     /restore failed.*sandbox unavailable/,
   );
 
@@ -1112,7 +1149,8 @@ test("restore failure blocks agent use and remains retryable without local switc
     sessionContext([], "new-session"),
   );
   const localPrompt = await pi.handlers.get("before_agent_start")({
-    systemPrompt: "Current working directory: /host",
+    systemPrompt: "<cwd>\n/host\n</cwd>",
+    systemPromptOptions: { cwd: "/host", skills: [], sections: {} },
   });
   assert.equal(localPrompt, undefined);
 });
