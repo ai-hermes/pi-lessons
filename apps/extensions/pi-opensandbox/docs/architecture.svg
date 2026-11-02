@@ -1,0 +1,163 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 760" width="1400" height="760" font-family="-apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif">
+  <defs>
+    <marker id="a-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3b6fd8"/></marker>
+    <marker id="a-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e5484d"/></marker>
+    <marker id="a-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8a8f98"/></marker>
+    <marker id="a-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d9822b"/></marker>
+    <style>
+      .t { font-size: 15px; font-weight: 600; fill: #1f2328; }
+      .s { font-size: 12px; fill: #57606a; }
+      .lbl { font-size: 12px; fill: #3b6fd8; }
+      .node { fill: #ffffff; stroke: #3b6fd8; stroke-width: 1.5; }
+      .chip { fill: #ffffff; stroke: #e5484d; stroke-width: 1.2; }
+      .chipt { font-size: 13px; font-family: Menlo, monospace; fill: #c62a2f; }
+      .mono { font-family: Menlo, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="760" fill="#ffffff"/>
+
+  <!-- Local process -->
+  <rect x="20" y="20" width="920" height="720" rx="16" fill="#f7f9fc" stroke="#c9d4e5" stroke-width="1.5"/>
+  <text x="40" y="48" font-size="18" font-weight="700" fill="#1f2328">本地 · Pi 进程</text>
+
+  <!-- Remote -->
+  <rect x="980" y="20" width="400" height="720" rx="16" fill="#fff7ef" stroke="#f0c9a0" stroke-width="1.5"/>
+  <text x="1000" y="48" font-size="18" font-weight="700" fill="#1f2328">远端 · OpenSandbox</text>
+
+  <!-- Agent loop -->
+  <rect x="40" y="64" width="880" height="262" rx="12" fill="#eef3ff" stroke="#8aa4e6" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="56" y="88" font-size="15" font-weight="700" fill="#3b6fd8">Agent loop（完全在本地运行）</text>
+
+  <!-- N1 user -->
+  <rect class="node" x="60" y="110" width="180" height="56" rx="10"/>
+  <text class="t" x="150" y="134" text-anchor="middle">用户输入</text>
+  <text class="s" x="150" y="154" text-anchor="middle">prompt / !cmd</text>
+
+  <!-- N2 context -->
+  <rect class="node" x="300" y="110" width="180" height="56" rx="10"/>
+  <text class="t" x="390" y="134" text-anchor="middle">组装上下文</text>
+  <text class="s" x="390" y="154" text-anchor="middle">system prompt + 历史</text>
+
+  <!-- N3 LLM -->
+  <rect class="node" x="540" y="110" width="180" height="56" rx="10"/>
+  <text class="t" x="630" y="134" text-anchor="middle">LLM 推理</text>
+  <text class="s" x="630" y="154" text-anchor="middle">模型 API（与沙箱无关）</text>
+
+  <!-- Decision -->
+  <polygon points="630,234 700,270 630,306 560,270" fill="#ffffff" stroke="#3b6fd8" stroke-width="1.5"/>
+  <text class="t" x="630" y="275" text-anchor="middle">tool_call?</text>
+
+  <!-- Reply -->
+  <rect class="node" x="740" y="242" width="160" height="56" rx="10"/>
+  <text class="t" x="820" y="266" text-anchor="middle">输出回复</text>
+  <text class="s" x="820" y="286" text-anchor="middle">本轮结束</text>
+
+  <!-- Dispatch -->
+  <rect class="node" x="300" y="242" width="180" height="56" rx="10" stroke-width="2.2"/>
+  <text class="t" x="390" y="266" text-anchor="middle">工具分发</text>
+  <text class="s" x="390" y="286" text-anchor="middle">按 tool name 查注册表</text>
+
+  <!-- Hook note -->
+  <rect x="56" y="186" width="216" height="70" rx="8" fill="#fff4e5" stroke="#d9822b" stroke-dasharray="4 3"/>
+  <text x="70" y="206" font-size="12" font-weight="600" fill="#b5651d" class="mono">before_agent_start 钩子</text>
+  <text x="70" y="226" font-size="12" fill="#b5651d">cwd → /workspace</text>
+  <text x="70" y="244" font-size="12" fill="#b5651d">skills → 远端上传路径</text>
+  <path d="M272,200 L318,168" stroke="#d9822b" stroke-dasharray="4 3" fill="none" marker-end="url(#a-orange)"/>
+
+  <!-- Loop arrows -->
+  <path d="M240,138 H296" stroke="#3b6fd8" stroke-width="1.8" fill="none" marker-end="url(#a-blue)"/>
+  <path d="M480,138 H536" stroke="#3b6fd8" stroke-width="1.8" fill="none" marker-end="url(#a-blue)"/>
+  <path d="M630,166 V230" stroke="#3b6fd8" stroke-width="1.8" fill="none" marker-end="url(#a-blue)"/>
+  <path d="M700,270 H736" stroke="#3b6fd8" stroke-width="1.8" fill="none" marker-end="url(#a-blue)"/>
+  <text class="lbl" x="710" y="262">否</text>
+  <path d="M560,270 H484" stroke="#3b6fd8" stroke-width="1.8" fill="none" marker-end="url(#a-blue)"/>
+  <text class="lbl" x="514" y="262">是</text>
+  <path d="M390,242 V170" stroke="#3b6fd8" stroke-width="1.8" fill="none" marker-end="url(#a-blue)"/>
+  <text class="lbl" x="398" y="210">tool result 追加</text>
+  <path d="M820,242 V96 H150 V106" stroke="#3b6fd8" stroke-width="1.4" stroke-dasharray="5 4" fill="none" marker-end="url(#a-blue)"/>
+  <text class="lbl" x="760" y="90">等待下一轮输入</text>
+
+  <!-- Branch from dispatch -->
+  <path d="M390,298 V376" stroke="#e5484d" stroke-width="2.2" fill="none" marker-end="url(#a-red)"/>
+  <text x="382" y="366" text-anchor="end" font-size="12" font-weight="600" fill="#e5484d">内置工具 / !cmd</text>
+  <path d="M390,346 H810 V376" stroke="#8a8f98" stroke-width="1.6" fill="none" marker-end="url(#a-gray)"/>
+  <text x="640" y="341" font-size="12" fill="#57606a">其他工具</text>
+
+  <!-- Other tools local -->
+  <rect x="700" y="380" width="220" height="80" rx="10" fill="#ffffff" stroke="#8a8f98" stroke-width="1.5"/>
+  <text class="t" x="810" y="410" text-anchor="middle">本地执行</text>
+  <text class="s" x="810" y="430" text-anchor="middle">未被替换的工具</text>
+  <text class="s" x="810" y="447" text-anchor="middle">仍在主机上运行</text>
+
+  <!-- Interception layer -->
+  <rect x="40" y="380" width="600" height="150" rx="12" fill="#fff1f1" stroke="#e5484d" stroke-width="2" stroke-dasharray="8 5"/>
+  <text x="56" y="404" font-size="15" font-weight="700" fill="#e5484d">拦截层 · pi-opensandbox</text>
+  <text x="56" y="424" font-size="12" fill="#8b2f32"><tspan class="mono">registerOpenSandboxTools</tspan>：保留工具 schema，只替换 operations</text>
+  <g>
+    <rect class="chip" x="56"  y="440" width="64" height="30" rx="6"/><text class="chipt" x="88"  y="460" text-anchor="middle">bash</text>
+    <rect class="chip" x="128" y="440" width="64" height="30" rx="6"/><text class="chipt" x="160" y="460" text-anchor="middle">read</text>
+    <rect class="chip" x="200" y="440" width="64" height="30" rx="6"/><text class="chipt" x="232" y="460" text-anchor="middle">write</text>
+    <rect class="chip" x="272" y="440" width="64" height="30" rx="6"/><text class="chipt" x="304" y="460" text-anchor="middle">edit</text>
+    <rect class="chip" x="344" y="440" width="64" height="30" rx="6"/><text class="chipt" x="376" y="460" text-anchor="middle">ls</text>
+    <rect class="chip" x="416" y="440" width="64" height="30" rx="6"/><text class="chipt" x="448" y="460" text-anchor="middle">find</text>
+    <rect class="chip" x="488" y="440" width="64" height="30" rx="6"/><text class="chipt" x="520" y="460" text-anchor="middle">grep</text>
+    <rect class="chip" x="560" y="440" width="64" height="30" rx="6"/><text class="chipt" x="592" y="460" text-anchor="middle">!cmd</text>
+  </g>
+  <text x="56" y="496" font-size="12" fill="#8b2f32">+ 新增工具 <tspan class="mono">opensandbox_port_url</tspan>（获取暴露端口的 URL）</text>
+  <text x="56" y="515" font-size="12" fill="#8b2f32">远端不可用时直接报错，绝不回落到主机执行</text>
+
+  <!-- SandboxSession -->
+  <path d="M340,530 V566" stroke="#e5484d" stroke-width="2.2" fill="none" marker-end="url(#a-red)"/>
+  <rect x="190" y="570" width="300" height="60" rx="10" fill="#ffffff" stroke="#e5484d" stroke-width="1.5"/>
+  <text class="t mono" x="340" y="594" text-anchor="middle">SandboxSession</text>
+  <text class="s" x="340" y="615" text-anchor="middle">withActiveSandboxHandle · 续租 · 断线重连</text>
+
+  <!-- Handle -->
+  <path d="M340,630 V656" stroke="#e5484d" stroke-width="2.2" fill="none" marker-end="url(#a-red)"/>
+  <rect x="190" y="660" width="300" height="60" rx="10" fill="#ffffff" stroke="#e5484d" stroke-width="1.5"/>
+  <text class="t mono" x="340" y="684" text-anchor="middle">OpenSandboxHandle</text>
+  <text class="s" x="340" y="705" text-anchor="middle">主机路径 → /workspace 路径映射</text>
+
+  <!-- Session JSONL -->
+  <rect x="700" y="570" width="220" height="60" rx="10" fill="#ffffff" stroke="#8a8f98" stroke-width="1.5"/>
+  <text class="t" x="810" y="594" text-anchor="middle">会话 JSONL</text>
+  <text class="s mono" x="810" y="614" text-anchor="middle">sandboxId · owned</text>
+  <path d="M490,600 H696" stroke="#8a8f98" stroke-width="1.4" stroke-dasharray="5 4" fill="none" marker-end="url(#a-gray)"/>
+  <text x="520" y="592" font-size="12" fill="#57606a">持久化，resume 时恢复</text>
+
+  <!-- Handle -> remote -->
+  <path d="M494,690 H950 V420 H1006" stroke="#d9822b" stroke-width="2.4" fill="none" marker-start="url(#a-orange)" marker-end="url(#a-orange)"/>
+  <text x="560" y="682" font-size="12" font-weight="600" fill="#b5651d">SDK / HTTPS：请求 ⇄ stdout · bytes</text>
+
+  <!-- Remote: server -->
+  <rect x="1010" y="380" width="340" height="80" rx="10" fill="#ffffff" stroke="#d9822b" stroke-width="1.5"/>
+  <text class="t" x="1180" y="408" text-anchor="middle">OpenSandbox Server</text>
+  <text class="s mono" x="1180" y="428" text-anchor="middle">commands.run · files.*</text>
+  <text class="s mono" x="1180" y="446" text-anchor="middle">create · connect · resume · pause · kill</text>
+
+  <path d="M1180,460 V496" stroke="#d9822b" stroke-width="2" fill="none" marker-end="url(#a-orange)"/>
+
+  <!-- Remote: container -->
+  <rect x="1010" y="500" width="340" height="220" rx="12" fill="#ffe9d4" stroke="#d9822b" stroke-width="1.8"/>
+  <text class="t" x="1030" y="526">Sandbox 容器</text>
+  <rect x="1030" y="540" width="300" height="36" rx="8" fill="#ffffff" stroke="#e8b27d"/>
+  <text x="1046" y="563" font-size="13" fill="#1f2328"><tspan class="mono">/workspace</tspan>：文件读写、搜索</text>
+  <rect x="1030" y="584" width="300" height="36" rx="8" fill="#ffffff" stroke="#e8b27d"/>
+  <text x="1046" y="607" font-size="13" fill="#1f2328">shell：bash 与 !cmd 实际执行处</text>
+  <rect x="1030" y="628" width="300" height="36" rx="8" fill="#ffffff" stroke="#e8b27d"/>
+  <text x="1046" y="651" font-size="13" fill="#1f2328">Skills 副本（上传并校验 SHA-256）</text>
+  <rect x="1030" y="672" width="300" height="36" rx="8" fill="#ffffff" stroke="#e8b27d"/>
+  <text x="1046" y="695" font-size="13" fill="#1f2328">暴露端口 → endpoint URL</text>
+
+  <!-- Remote notes -->
+  <text x="1000" y="90" font-size="13" fill="#57606a">只负责“手脚”：执行工具操作</text>
+  <text x="1000" y="112" font-size="13" fill="#57606a">不参与 LLM 调用和上下文管理</text>
+  <text x="1000" y="146" font-size="13" font-weight="600" fill="#b5651d">生命周期</text>
+  <text x="1000" y="168" font-size="12" fill="#57606a">· <tspan class="mono">--opensandbox</tspan> 启动：create</text>
+  <text x="1000" y="188" font-size="12" fill="#57606a">· 恢复会话：connect，失败则 resume</text>
+  <text x="1000" y="208" font-size="12" fill="#57606a">· 退出 Pi：自有 sandbox → pause</text>
+  <text x="1000" y="228" font-size="12" fill="#57606a">· 切会话 / reload / Disable：同样走 shutdown → pause</text>
+  <text x="1000" y="248" font-size="12" fill="#57606a">· 外部 sandboxId：只断开，不 pause / kill</text>
+  <text x="1000" y="268" font-size="12" fill="#57606a">· fork 出的会话：回到本地执行</text>
+</svg>
