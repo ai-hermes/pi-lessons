@@ -1,6 +1,6 @@
 # @ai.hermes/pi-opensandbox
 
-Standalone Pi extension that runs Pi's file, search, and shell tools inside OpenSandbox. It includes optional Skill upload and does not depend on another OpenSandbox extension.
+Standalone Pi extension that runs Pi's `bash`, `read`, `write`, `edit`, `ls`, `find`, and `grep` tools, plus user `!` shell commands, inside OpenSandbox. It includes optional Skill upload and does not depend on another OpenSandbox extension.
 
 ## Structure
 

@@ -3,79 +3,88 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import {
-  hasPiOpenSandboxEnvironmentConfig,
-  loadInstalledPiOpenSandboxConfig,
-  readStoredPiOpenSandboxConfig,
   resolvePiOpenSandboxRuntimeConfig,
   writeStoredPiOpenSandboxConfig,
   type InstalledPiOpenSandboxConfig,
   type PiOpenSandboxOptions,
 } from "./config";
-import type { ActiveOpenSandbox } from "./sandbox/client";
+import type { OpenSandboxHandle } from "./sandbox/client";
 import type { SandboxSession } from "./sandbox/session";
 import type { SkillSyncReport } from "./skills";
+import { getErrorMessage } from "./utils";
 
 /**
  * Session controls used by the installed package's `/opensandbox` command.
  *
  * @example
  * ```ts
- * const runtime: OpenSandboxCommandRuntime = {
+ * const runtime: OpenSandboxRuntime = {
  *   session,
- *   activate: () => session.startSandbox(settings),
+ *   activate: () => session.ensureActiveSandboxHandle(settings),
  * };
  * ```
  */
-export interface OpenSandboxCommandRuntime {
-  /** Exposes the current local, restoring, remote, or failed mode. */
+export interface OpenSandboxRuntime {
+  /** Exposes the current sandbox lifecycle state. */
   session: SandboxSession;
   /** Starts or restores the sandbox attached to the current remote session. */
-  activate: () => Promise<ActiveOpenSandbox>;
+  activate: () => Promise<OpenSandboxHandle>;
   /** Returns the latest upload report when Skills are configured and ready. */
   getSkillReport?: () => SkillSyncReport | undefined;
 }
 
 export const OPEN_SANDBOX_REMOTE_STATUS = "opensandbox: remote ✓";
 
+export interface OpenSandboxCommandOptions {
+  /** Configuration snapshot loaded when the extension starts. */
+  installedConfig?: InstalledPiOpenSandboxConfig;
+  /** User configuration file written by interactive configuration actions. */
+  userConfigPath?: string;
+  /** Active session controls when remote execution is available. */
+  runtime?: OpenSandboxRuntime;
+}
+
 /**
- * Registers the interactive `/opensandbox` configuration and mode command.
- *
- * Pass `undefined` as `configPath` for an in-memory extension that only needs
- * session inspection; omit `runtime` when only configuration is available.
+ * Registers the interactive `/opensandbox` configuration and status command.
  *
  * @example
  * ```ts
- * registerOpenSandboxCommand(pi, "/home/user/.pi/extensions/pi-opensandbox.json");
+ * registerOpenSandboxCommand(pi, {
+ *   installedConfig,
+ *   userConfigPath: "/home/user/.pi/extensions/pi-opensandbox.json",
+ * });
  * ```
  */
 export function registerOpenSandboxCommand(
   pi: ExtensionAPI,
-  configPath: string | undefined,
-  runtime?: OpenSandboxCommandRuntime,
+  options: OpenSandboxCommandOptions = {},
 ): void {
+  const { installedConfig, userConfigPath, runtime } = options;
+  const environmentConfigured = installedConfig?.source === "environment";
+  const storedConfig = installedConfig?.source === "user"
+    ? installedConfig
+    : undefined;
+
   pi.registerCommand("opensandbox", {
     description: "Show or configure OpenSandbox",
     handler: async (_args, ctx) => {
       if (!ctx.hasUI) return;
-      const environmentConfigured = hasPiOpenSandboxEnvironmentConfig();
-      const stored = configPath === undefined || environmentConfigured
-        ? undefined
-        : await readStoredPiOpenSandboxConfig(configPath);
-      const installed = configPath === undefined
-        ? undefined
-        : await loadInstalledPiOpenSandboxConfig(process.env, configPath);
-      const mode = runtime?.session.getMode() ?? "local";
-      const actions = installed?.enabled !== false
+      const sessionState = runtime?.session.getLifecycleState() ?? "inactive";
+      const actions = installedConfig?.enabled !== false
         ? [
-            ...(mode === "local" ? [
+            ...(sessionState === "inactive" ? [
               "Status",
-              ...(installed?.enabled === true ? ["Configure"] : []),
+              ...(installedConfig?.enabled === true ? ["Configure"] : []),
             ] : []),
-            ...(mode === "remote" ? ["OpenSandbox session running"] : []),
-            ...(mode === "remote" && runtime?.getSkillReport?.() !== undefined ? ["Skills"] : []),
-            ...(mode === "restoring" ? ["OpenSandbox session starting"] : []),
-            ...(mode === "failed" ? ["Retry OpenSandbox", "Status"] : []),
-            ...(installed?.enabled === true ? ["Disable"] : []),
+            ...(sessionState === "active" ? ["OpenSandbox session running"] : []),
+            ...(sessionState === "active" && runtime?.getSkillReport?.() !== undefined
+              ? ["Skills"]
+              : []),
+            ...(sessionState === "starting" ? ["OpenSandbox session starting"] : []),
+            ...(["unreachable", "failed"].includes(sessionState)
+              ? ["Retry OpenSandbox", "Status"]
+              : []),
+            ...(installedConfig?.enabled === true ? ["Disable"] : []),
           ]
         : ["Enable OpenSandbox"];
       const action = await ctx.ui.select("OpenSandbox", actions);
@@ -84,10 +93,10 @@ export function registerOpenSandboxCommand(
         || action === "OpenSandbox session running"
         || action === "OpenSandbox session starting"
       ) {
-        if (installed === undefined) {
+        if (installedConfig === undefined) {
           ctx.ui.notify(describeRuntime(runtime!), "info");
         } else {
-          showStatus(ctx, installed, runtime);
+          showStatus(ctx, installedConfig, runtime);
         }
         return;
       }
@@ -98,14 +107,19 @@ export function registerOpenSandboxCommand(
       if (action === "Retry OpenSandbox") {
         ctx.ui.setStatus("opensandbox", "opensandbox: starting…");
         try {
-          const activeSandbox = await runtime!.activate();
+          const sandboxHandle = await runtime!.activate();
           ctx.ui.setStatus("opensandbox", OPEN_SANDBOX_REMOTE_STATUS);
           ctx.ui.notify(
-            `OpenSandbox ${activeSandbox.startupMode}: ${activeSandbox.id}`,
+            `OpenSandbox ${sandboxHandle.startupMode}: ${sandboxHandle.id}`,
             "info",
           );
         } catch (error) {
-          ctx.ui.setStatus("opensandbox", "opensandbox: failed");
+          ctx.ui.setStatus(
+            "opensandbox",
+            runtime!.session.getLifecycleState() === "unreachable"
+              ? "opensandbox: unreachable"
+              : "opensandbox: failed",
+          );
           ctx.ui.notify(`OpenSandbox failed to start: ${getErrorMessage(error)}`, "error");
         }
         return;
@@ -121,24 +135,24 @@ export function registerOpenSandboxCommand(
         ctx.ui.setStatus("opensandbox", "opensandbox: -");
         await writeStoredPiOpenSandboxConfig({
           enabled: false,
-          ...(stored?.options === undefined ? {} : { options: stored.options }),
-        }, configPath!);
+          ...(storedConfig?.options === undefined ? {} : { options: storedConfig.options }),
+        }, userConfigPath!);
         ctx.ui.notify("OpenSandbox disabled. Reloading extensions.", "info");
         await ctx.reload();
         return;
       }
-      if (action === "Enable OpenSandbox" && stored?.options !== undefined) {
+      if (action === "Enable OpenSandbox" && storedConfig?.options !== undefined) {
         await writeStoredPiOpenSandboxConfig({
           enabled: true,
-          options: stored.options,
-        }, configPath!);
+          options: storedConfig.options,
+        }, userConfigPath!);
         ctx.ui.notify("OpenSandbox enabled. Reloading extensions.", "info");
         await ctx.reload();
         return;
       }
       if (action !== "Configure" && action !== "Enable OpenSandbox") return;
-      if (runtime !== undefined && runtime.session.getMode() !== "local") {
-        ctx.ui.notify("Configure OpenSandbox from a local Pi session.", "error");
+      if (runtime !== undefined && runtime.session.getLifecycleState() !== "inactive") {
+        ctx.ui.notify("Configure OpenSandbox while it is inactive.", "error");
         return;
       }
       if (environmentConfigured) {
@@ -149,8 +163,8 @@ export function registerOpenSandboxCommand(
         return;
       }
 
-      const current = stored?.options;
-      const sandboxConfig = current?.sandboxConfig ?? {};
+      const currentOptions = storedConfig?.options;
+      const sandboxConfig = currentOptions?.sandboxConfig ?? {};
       const domain = await promptRequired(
         ctx,
         "OpenSandbox domain",
@@ -186,8 +200,8 @@ export function registerOpenSandboxCommand(
         }
       }
 
-      const options: PiOpenSandboxOptions = {
-        ...current,
+      const updatedOptions: PiOpenSandboxOptions = {
+        ...currentOptions,
         sandboxConfig: {
           ...sandboxConfig,
           domain,
@@ -196,12 +210,15 @@ export function registerOpenSandboxCommand(
         },
       };
       try {
-        resolvePiOpenSandboxRuntimeConfig(options, process.env);
+        resolvePiOpenSandboxRuntimeConfig(updatedOptions, process.env);
       } catch (error) {
         ctx.ui.notify(`Invalid OpenSandbox configuration: ${getErrorMessage(error)}`, "error");
         return;
       }
-      await writeStoredPiOpenSandboxConfig({ enabled: true, options }, configPath!);
+      await writeStoredPiOpenSandboxConfig({
+        enabled: true,
+        options: updatedOptions,
+      }, userConfigPath!);
       ctx.ui.notify(
         "OpenSandbox configured. Restart Pi with --opensandbox to use it.",
         "info",
@@ -214,50 +231,57 @@ export function registerOpenSandboxCommand(
 function showStatus(
   ctx: ExtensionCommandContext,
   config: InstalledPiOpenSandboxConfig,
-  runtime?: OpenSandboxCommandRuntime,
+  runtime?: OpenSandboxRuntime,
 ): void {
   const sandboxConfig = config.runtime?.sandboxSettings ?? config.options?.sandboxConfig;
-  const activeSandbox = runtime?.session.getActiveSandbox();
-  const failure = runtime?.session.getFailure();
+  const sandboxHandle = runtime?.session.getActiveSandboxHandle();
+  const startupFailure = runtime?.session.getStartupFailure();
+  const connectionFailure = runtime?.session.getConnectionFailure();
   ctx.ui.notify([
     `Enabled: ${config.enabled ? "yes" : "no"}`,
     `Source: ${config.source === "environment" ? "environment variables" : config.source === "user" ? "user configuration" : "none"}`,
     `Domain: ${stringValue(sandboxConfig?.domain) ?? "not configured"}`,
     `Image: ${stringValue(sandboxConfig?.image) ?? "not configured"}`,
-    `Mode: ${runtime?.session.getMode() ?? "local"}`,
-    `Current sandbox: ${activeSandbox?.id ?? "not active"}`,
+    `State: ${runtime?.session.getLifecycleState() ?? "inactive"}`,
+    `Current sandbox: ${sandboxHandle?.id ?? "not active"}`,
     describeSkillSync(runtime),
-    ...(activeSandbox == null
+    ...(sandboxHandle == null
       ? []
       : [
-          `Workspace: ${activeSandbox.sandboxWorkspaceRoot}`,
-          `Running image: ${activeSandbox.imageReference}`,
+          `Workspace: ${sandboxHandle.sandboxWorkspaceRoot}`,
+          `Running image: ${sandboxHandle.imageReference}`,
         ]),
-    ...(failure === undefined ? [] : [`Error: ${getErrorMessage(failure)}`]),
+    ...(startupFailure === undefined ? [] : [`Error: ${getErrorMessage(startupFailure)}`]),
+    ...(connectionFailure === undefined
+      ? []
+      : [`Connection error: ${getErrorMessage(connectionFailure)}`]),
   ].join("\n"), "info");
 }
 
-export function describeSkillSync(runtime?: OpenSandboxCommandRuntime): string {
+export function describeSkillSync(runtime?: OpenSandboxRuntime): string {
   if (runtime?.getSkillReport === undefined) return "Skills: not configured";
-  const report = runtime.getSkillReport();
-  if (report === undefined) return "Skills: pending";
-  return `Skills: uploaded (${report.skills.length} ${report.skills.length === 1 ? "skill" : "skills"}, ${report.files} files, ${report.bytes} bytes)`;
+  const skillSyncReport = runtime.getSkillReport();
+  if (skillSyncReport === undefined) return "Skills: pending";
+  return `Skills: uploaded (${skillSyncReport.skills.length} ${skillSyncReport.skills.length === 1 ? "skill" : "skills"}, ${skillSyncReport.files} files, ${skillSyncReport.bytes} bytes)`;
 }
 
-export function describeUploadedSkills(runtime: OpenSandboxCommandRuntime): string {
-  const report = runtime.getSkillReport?.();
-  if (!report) return "OpenSandbox Skills are not ready.";
-  const skills = report.skills.map(
+export function describeUploadedSkills(runtime: OpenSandboxRuntime): string {
+  const skillSyncReport = runtime.getSkillReport?.();
+  if (!skillSyncReport) return "OpenSandbox Skills are not ready.";
+  const skillLines = skillSyncReport.skills.map(
     (skill) => `${skill.name} ${skill.digest.slice(0, 12)} ${skill.skillFile}`,
   );
-  return [`${report.files} files, ${report.bytes} bytes`, ...skills].join("\n");
+  return [
+    `${skillSyncReport.files} files, ${skillSyncReport.bytes} bytes`,
+    ...skillLines,
+  ].join("\n");
 }
 
-function describeRuntime(runtime: OpenSandboxCommandRuntime): string {
-  const activeSandbox = runtime.session.getActiveSandbox();
+function describeRuntime(runtime: OpenSandboxRuntime): string {
+  const sandboxHandle = runtime.session.getActiveSandboxHandle();
   return [
-    `Mode: ${runtime.session.getMode()}`,
-    `Current sandbox: ${activeSandbox?.id ?? "not active"}`,
+    `State: ${runtime.session.getLifecycleState()}`,
+    `Current sandbox: ${sandboxHandle?.id ?? "not active"}`,
     describeSkillSync(runtime),
   ].join("\n");
 }
@@ -277,8 +301,4 @@ async function promptRequired(
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
