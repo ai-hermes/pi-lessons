@@ -1,6 +1,5 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { dirname as dirnamePosix } from "node:path/posix";
 import type {
   ExtensionContext,
   ExtensionFactory,
@@ -8,7 +7,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {
   createSyntheticSourceInfo,
-  formatSkillsForPrompt,
   getAgentDir,
   loadSkillsFromDir,
   stripFrontmatter,
@@ -27,11 +25,13 @@ import {
 import {
   OPEN_SANDBOX_REMOTE_STATUS,
   registerOpenSandboxCommand,
-  type OpenSandboxCommandRuntime,
+  type OpenSandboxCommandOptions,
+  type OpenSandboxRuntime,
 } from "./config-command";
 import { describeOpenSandboxError, logOpenSandboxEvent } from "./sandbox/logger";
 import { SandboxSession } from "./sandbox/session";
 import { registerOpenSandboxTools } from "./sandbox/tools";
+import { dirnamePosix, escapeXml, getErrorMessage } from "./utils";
 
 export type { PiOpenSandboxOptions } from "./config";
 
@@ -45,21 +45,28 @@ const STATE_ENTRY_TYPE = "pi-opensandbox-state";
  *
  * @example
  * ```ts
- * const state: PiOpenSandboxSessionState = {
+ * const state: PersistedSandboxState = {
  *   active: true,
  *   sandboxId: "sandbox-123",
  *   owned: true,
  * };
  * ```
  */
-export interface PiOpenSandboxSessionState {
-  /** Whether the session expects subsequent tools to run remotely. */
-  active: boolean;
-  /** Sandbox to resume; absent while a newly created remote session starts. */
-  sandboxId?: string;
-  /** Whether this extension created and therefore manages the sandbox. */
-  owned?: boolean;
-}
+export type PersistedSandboxState =
+  | {
+      /** The Pi session uses local execution. */
+      active: false;
+      sandboxId?: never;
+      owned?: never;
+    }
+  | {
+      /** The Pi session expects subsequent tools to run remotely. */
+      active: true;
+      /** Sandbox to resume; absent while a new remote session starts. */
+      sandboxId?: string;
+      /** Whether this extension created and manages the sandbox. */
+      owned?: boolean;
+    };
 
 /**
  * Creates a Pi extension factory from user-facing OpenSandbox options.
@@ -101,7 +108,7 @@ export function createPiOpenSandboxExtension(
  */
 export function createPiOpenSandboxExtensionFromConfig(
   config: PiOpenSandboxRuntimeConfig,
-  installedConfigPath?: string,
+  commandOptions: Omit<OpenSandboxCommandOptions, "runtime"> = {},
 ): ExtensionFactory {
   const {
     sandboxSettings,
@@ -116,38 +123,48 @@ export function createPiOpenSandboxExtensionFromConfig(
       type: "boolean",
     });
     const localSkillRoot = join(getAgentDir(), "cache", "pi-opensandbox", "skills");
-    let skills: MaterializedSkill[] = [];
-    let skillDefinitions: Skill[] = [];
-    let skillsPending: Promise<void> | undefined;
-    let report: SkillSyncReport | undefined;
-    let desiredState: PiOpenSandboxSessionState = { active: false };
+    let materializedSkills: MaterializedSkill[] = [];
+    let selectedSkillDefinitions: Skill[] = [];
+    let skillPreparation: Promise<void> | undefined;
+    let skillSyncReport: SkillSyncReport | undefined;
+    let persistedSandboxState: PersistedSandboxState = {
+      active: false
+    };
     let remoteToolsRegistered = false;
-    const ensureSkills = async () => {
-      if (sharedSkillRoot === undefined || skills.length > 0) return;
-      skillsPending ??= materializeSkills(
+    let setOpenSandboxStatus: ((status: string) => void) | undefined;
+    const ensureSelectedSkills = async () => {
+      if (sharedSkillRoot === undefined || materializedSkills.length > 0) return;
+      skillPreparation ??= materializeSkills(
         selectedSkills,
         localSkillRoot,
         skillSyncLimits,
       ).then((materialized) => {
-        skills = materialized;
-        skillDefinitions = loadSelectedSkillDefinitions(skills);
+        materializedSkills = materialized;
+        selectedSkillDefinitions = loadSelectedSkillDefinitions(materializedSkills);
       }).finally(() => {
-        skillsPending = undefined;
+        skillPreparation = undefined;
       });
-      await skillsPending;
+      await skillPreparation;
     };
-    const session = new SandboxSession({
+    const sandboxSession = new SandboxSession({
       hostWorkspaceRoot: process.cwd(),
-      onReady: async (activeSandbox) => {
+      initializeSandbox: async (sandboxHandle) => {
         if (sharedSkillRoot !== undefined) {
-          report = await uploadSkills(
-            activeSandbox,
-            skills,
+          skillSyncReport = await uploadSkills(
+            sandboxHandle,
+            materializedSkills,
             sharedSkillRoot,
             skillSyncLimits,
             verifyUploadedSkills,
           );
         }
+      },
+      onConnectionStatusChange: (status) => {
+        setOpenSandboxStatus?.(
+          status === "connected"
+            ? OPEN_SANDBOX_REMOTE_STATUS
+            : "opensandbox: unreachable",
+        );
       },
     });
 
@@ -158,190 +175,200 @@ export function createPiOpenSandboxExtensionFromConfig(
       remoteToolsRegistered = true;
       registerOpenSandboxTools(
         pi,
-        () => session.requireActiveSandbox(),
-        () => session.getHostWorkspaceRoot(),
+        (operation) => sandboxSession.withActiveSandboxHandle(operation),
+        () => sandboxSession.getHostWorkspaceRoot(),
       );
     };
-    const commandRuntime: OpenSandboxCommandRuntime = {
-      session,
+    const sandboxRuntime: OpenSandboxRuntime = {
+      session: sandboxSession,
       activate: async () => {
         ensureRemoteTools();
-        if (sharedSkillRoot !== undefined) await ensureSkills();
-        const restoreTarget = desiredState.active && desiredState.sandboxId
+        if (sharedSkillRoot !== undefined) await ensureSelectedSkills();
+        const restoreTarget = persistedSandboxState.active && persistedSandboxState.sandboxId
           ? {
-            sandboxId: desiredState.sandboxId,
-            owned: desiredState.owned === true,
+            sandboxId: persistedSandboxState.sandboxId,
+            owned: persistedSandboxState.owned === true,
           }
           : undefined;
-        const activeSandbox = await session.startSandbox(sandboxSettings, restoreTarget);
-        desiredState = {
+        const sandboxHandle = await sandboxSession.ensureActiveSandboxHandle(
+          sandboxSettings,
+          restoreTarget,
+        );
+        persistedSandboxState = {
           active: true,
-          sandboxId: activeSandbox.id,
-          owned: activeSandbox.isOwnedByExtension,
+          sandboxId: sandboxHandle.id,
+          owned: sandboxHandle.isOwnedByExtension,
         };
-        pi.appendEntry(STATE_ENTRY_TYPE, desiredState);
-        return activeSandbox;
+        pi.appendEntry(STATE_ENTRY_TYPE, persistedSandboxState);
+        return sandboxHandle;
       },
-      ...(sharedSkillRoot === undefined ? {} : { getSkillReport: () => report }),
+      ...(sharedSkillRoot === undefined
+        ? {}
+        : { getSkillReport: () => skillSyncReport }),
     };
 
-    registerOpenSandboxCommand(pi, installedConfigPath, commandRuntime);
+    registerOpenSandboxCommand(pi, {
+      ...commandOptions,
+      runtime: sandboxRuntime,
+    });
 
     pi.on("session_start", async (event, ctx) => {
-      session.setSessionContext(
+      setOpenSandboxStatus = (status) => ctx.ui.setStatus("opensandbox", status);
+      sandboxSession.setPiSessionContext(
         ctx.sessionManager.getSessionId(),
         ctx.sessionManager.getCwd(),
       );
-      // Desired state is persisted separately from the live connection so a
-      // paused sandbox can be restored after Pi itself is resumed.
-      desiredState = readSessionState(ctx);
+      // JSONL state is separate from the live connection so a paused sandbox
+      // can be restored after Pi itself is resumed.
+      persistedSandboxState = readPersistedSandboxState(ctx);
       if (event.reason === "fork") {
-        desiredState = { active: false };
-        session.clearFailure();
+        persistedSandboxState = { active: false };
+        sandboxSession.clearStartupFailure();
         ctx.ui.setStatus("opensandbox", "opensandbox: -");
-        pi.appendEntry(STATE_ENTRY_TYPE, desiredState);
+        pi.appendEntry(STATE_ENTRY_TYPE, persistedSandboxState);
         return;
       }
-      if (!desiredState.active && pi.getFlag("opensandbox")) {
-        desiredState = { active: true };
+      if (!persistedSandboxState.active && pi.getFlag("opensandbox")) {
+        persistedSandboxState = { active: true };
       }
-      if (!desiredState.active) {
-        session.clearFailure();
+      if (!persistedSandboxState.active) {
+        sandboxSession.clearStartupFailure();
         ctx.ui.setStatus("opensandbox", "opensandbox: -");
         return;
       }
       ensureRemoteTools();
-      const restoring = desiredState.sandboxId !== undefined;
+      const restoring = persistedSandboxState.sandboxId !== undefined;
       ctx.ui.setStatus(
         "opensandbox",
         restoring ? "opensandbox: restoring…" : "opensandbox: starting…",
       );
       await initializeSessionSandbox(
-        commandRuntime,
+        sandboxRuntime,
         ctx,
         restoring,
       );
     });
 
     pi.on("session_tree", async (_event, ctx) => {
-      session.setSessionContext(
+      setOpenSandboxStatus = (status) => ctx.ui.setStatus("opensandbox", status);
+      sandboxSession.setPiSessionContext(
         ctx.sessionManager.getSessionId(),
         ctx.sessionManager.getCwd(),
       );
-      const branchState = readSessionState(ctx);
-      if (session.getMode() !== "local") {
-        if (!sameSessionState(branchState, desiredState)) {
-          pi.appendEntry(STATE_ENTRY_TYPE, desiredState);
+      const persistedBranchState = readPersistedSandboxState(ctx);
+      if (sandboxSession.getLifecycleState() !== "inactive") {
+        if (!isSamePersistedSandboxState(persistedBranchState, persistedSandboxState)) {
+          pi.appendEntry(STATE_ENTRY_TYPE, persistedSandboxState);
         }
         return;
       }
-      desiredState = branchState;
-      if (!desiredState.active) {
+      persistedSandboxState = persistedBranchState;
+      if (!persistedSandboxState.active) {
         ctx.ui.setStatus("opensandbox", "opensandbox: -");
         return;
       }
       ensureRemoteTools();
-      const restoring = desiredState.sandboxId !== undefined;
+      const restoring = persistedSandboxState.sandboxId !== undefined;
       ctx.ui.setStatus(
         "opensandbox",
         restoring ? "opensandbox: restoring…" : "opensandbox: starting…",
       );
-      await initializeSessionSandbox(commandRuntime, ctx, restoring);
+      await initializeSessionSandbox(sandboxRuntime, ctx, restoring);
     });
 
-    pi.on("resources_discover", () => desiredState.active
-      ? { skillPaths: skills.map((skill) => skill.skillFile) }
+    pi.on("resources_discover", () => persistedSandboxState.active
+      ? { skillPaths: materializedSkills.map((skill) => skill.skillFile) }
       : {});
 
     pi.on("before_agent_start", async (event) => {
-      if (session.getMode() === "local") return undefined;
-      const activeSandbox = await session.requireActiveSandbox();
-      const remoteSkills = buildRemoteSkills(skillDefinitions, report);
-      const skillReadTool = getSkillReadTool(event.systemPromptOptions?.selectedTools);
-      const localSkillCatalog = skillReadTool
-        ? formatSkillsForPrompt(event.systemPromptOptions?.skills ?? [], skillReadTool)
-        : "";
-      const remoteSkillCatalog = skillReadTool
-        ? formatSkillsForPrompt(remoteSkills, skillReadTool)
-        : "";
-      const cwd = `Current working directory: ${activeSandbox.sandboxWorkspaceRoot} `
-        + `(OpenSandbox sandbox ${activeSandbox.id})`;
-      const skillPrompt = localSkillCatalog
-        ? event.systemPrompt.replace(localSkillCatalog, remoteSkillCatalog)
-        : event.systemPrompt + remoteSkillCatalog;
-      return {
-        systemPrompt: skillPrompt
-          .replace(/Current working directory: .*/g, cwd)
-          + "\n\nYou are working in a remote OpenSandbox workspace. "
-          + "All Pi file, search, and shell tools execute there.",
-      };
+      if (sandboxSession.getLifecycleState() === "inactive") return undefined;
+      const sandboxHandle = await sandboxSession.requireActiveSandboxHandle();
+      event.systemPromptOptions.cwd = sandboxHandle.sandboxWorkspaceRoot;
+      event.systemPromptOptions.skills = buildRemoteSkills(
+        selectedSkillDefinitions,
+        skillSyncReport,
+      );
+      event.systemPromptOptions.sections.opensandbox =
+        `Sandbox ID: ${sandboxHandle.id}\n`
+        + "Pi tools bash, read, write, edit, ls, find, and grep execute in this "
+        + "OpenSandbox sandbox. User ! shell commands also execute there.";
     });
 
     pi.on("input", async (event, ctx) => {
-      if (session.getMode() === "local" || !event.text.startsWith("/skill:")) {
+      if (sandboxSession.getLifecycleState() === "inactive" || !event.text.startsWith("/skill:")) {
         return { action: "continue" };
       }
-      const match = /^\/skill:([^\s]+)(?:\s+([\s\S]*))?$/.exec(event.text);
-      if (!match) return { action: "continue" };
+      const skillCommandMatch = /^\/skill:([^\s]+)(?:\s+([\s\S]*))?$/.exec(event.text);
+      if (!skillCommandMatch) return { action: "continue" };
 
-      const skill = skills.find((candidate) => candidate.name === match[1]);
-      const remoteSkill = report?.skills.find((candidate) => candidate.name === match[1]);
-      if (!skill || !remoteSkill) {
+      const selectedSkill = materializedSkills.find(
+        (candidate) => candidate.name === skillCommandMatch[1],
+      );
+      const uploadedSkill = skillSyncReport?.skills.find(
+        (candidate) => candidate.name === skillCommandMatch[1],
+      );
+      if (!selectedSkill || !uploadedSkill) {
         if (ctx.hasUI) {
           ctx.ui.notify(
-            `Skill "${match[1]}" is not selected for this OpenSandbox session.`,
+            `Skill "${skillCommandMatch[1]}" is not selected for this OpenSandbox session.`,
             "error",
           );
         }
         return { action: "handled" };
       }
 
-      const body = stripFrontmatter(await readFile(skill.skillFile, "utf8")).trim();
-      const skillBlock = `<skill name="${escapeXml(skill.name)}" location="${escapeXml(remoteSkill.skillFile)}">\n`
-        + `References are relative to ${dirnamePosix(remoteSkill.skillFile)}.\n\n`
-        + `${body}\n</skill>`;
-      const args = match[2]?.trim();
+      const skillBody = stripFrontmatter(
+        await readFile(selectedSkill.skillFile, "utf8"),
+      ).trim();
+      const skillBlock = `<skill name="${escapeXml(selectedSkill.name)}" location="${escapeXml(uploadedSkill.skillFile)}">\n`
+        + `References are relative to ${dirnamePosix(uploadedSkill.skillFile)}.\n\n`
+        + `${skillBody}\n</skill>`;
+      const skillArguments = skillCommandMatch[2]?.trim();
       return {
         action: "transform",
-        text: args ? `${skillBlock}\n\n${args}` : skillBlock,
+        text: skillArguments ? `${skillBlock}\n\n${skillArguments}` : skillBlock,
       };
     });
 
     pi.on("session_shutdown", async () => {
-      await session.shutdown();
+      await sandboxSession.releaseForShutdown();
     });
   };
 }
 
-function loadSelectedSkillDefinitions(skills: MaterializedSkill[]): Skill[] {
-  return skills.map((materialized) => {
+function loadSelectedSkillDefinitions(materializedSkills: MaterializedSkill[]): Skill[] {
+  return materializedSkills.map((materializedSkill) => {
     const loaded = loadSkillsFromDir({
-      dir: materialized.hostDir,
+      dir: materializedSkill.hostDir,
       source: "pi-opensandbox",
-    }).skills.find((skill) => skill.filePath === materialized.skillFile);
+    }).skills.find((skill) => skill.filePath === materializedSkill.skillFile);
     if (!loaded) {
-      throw new Error(`Selected Skill has no valid description: ${materialized.skillFile}`);
+      throw new Error(`Selected Skill has no valid description: ${materializedSkill.skillFile}`);
     }
-    return { ...loaded, name: materialized.name };
+    return { ...loaded, name: materializedSkill.name };
   });
 }
 
 function buildRemoteSkills(
-  skills: Skill[],
-  report: SkillSyncReport | undefined,
+  selectedSkillDefinitions: Skill[],
+  skillSyncReport: SkillSyncReport | undefined,
 ): Skill[] {
-  if (skills.length === 0) return [];
-  if (!report) throw new Error("OpenSandbox Skills are not ready");
+  if (selectedSkillDefinitions.length === 0) return [];
+  if (!skillSyncReport) throw new Error("OpenSandbox Skills are not ready");
 
-  return skills.map((skill) => {
-    const uploaded = report.skills.find((candidate) => candidate.name === skill.name);
-    if (!uploaded) throw new Error(`OpenSandbox Skill was not uploaded: ${skill.name}`);
-    const baseDir = dirnamePosix(uploaded.skillFile);
+  return selectedSkillDefinitions.map((skillDefinition) => {
+    const uploadedSkill = skillSyncReport.skills.find(
+      (candidate) => candidate.name === skillDefinition.name,
+    );
+    if (!uploadedSkill) {
+      throw new Error(`OpenSandbox Skill was not uploaded: ${skillDefinition.name}`);
+    }
+    const baseDir = dirnamePosix(uploadedSkill.skillFile);
     return {
-      ...skill,
-      filePath: uploaded.skillFile,
+      ...skillDefinition,
+      filePath: uploadedSkill.skillFile,
       baseDir,
-      sourceInfo: createSyntheticSourceInfo(uploaded.skillFile, {
+      sourceInfo: createSyntheticSourceInfo(uploadedSkill.skillFile, {
         source: "pi-opensandbox",
         scope: "temporary",
         baseDir,
@@ -350,55 +377,43 @@ function buildRemoteSkills(
   });
 }
 
-function getSkillReadTool(
-  selectedTools: string[] | undefined,
-): "read" | "bash" | undefined {
-  const tools = selectedTools ?? ["read", "bash", "edit", "write"];
-  if (tools.includes("read")) return "read";
-  if (tools.includes("bash")) return "bash";
-  return undefined;
-}
-
-function escapeXml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-function readSessionState(ctx: ExtensionContext): PiOpenSandboxSessionState {
-  let state: PiOpenSandboxSessionState = { active: false };
+function readPersistedSandboxState(ctx: ExtensionContext): PersistedSandboxState {
+  let persistedState: PersistedSandboxState = {
+    active: false
+  };
   for (const entry of ctx.sessionManager.getBranch()) {
     if (entry.type !== "custom" || entry.customType !== STATE_ENTRY_TYPE) continue;
-    state = { active: false };
-    const data = entry.data as Record<string, unknown> | undefined;
+    persistedState = {
+      active: false
+    };
+    const entryData = entry.data as Record<string, unknown> | undefined;
     if (
-      data?.active === true
-      && data.sandboxId === undefined
-      && data.owned === undefined
+      entryData?.active === true
+      && entryData.sandboxId === undefined
+      && entryData.owned === undefined
     ) {
-      state = { active: true };
+      persistedState = {
+        active: true
+      };
     } else if (
-      data?.active === true
-      && typeof data.sandboxId === "string"
-      && data.sandboxId.length > 0
-      && (data.owned === undefined || typeof data.owned === "boolean")
+      entryData?.active === true
+      && typeof entryData.sandboxId === "string"
+      && entryData.sandboxId.length > 0
+      && (entryData.owned === undefined || typeof entryData.owned === "boolean")
     ) {
-      state = {
+      persistedState = {
         active: true,
-        sandboxId: data.sandboxId,
-        ...(data.owned === undefined ? {} : { owned: data.owned }),
+        sandboxId: entryData.sandboxId,
+        ...(entryData.owned === undefined ? {} : { owned: entryData.owned }),
       };
     }
   }
-  return state;
+  return persistedState;
 }
 
-function sameSessionState(
-  left: PiOpenSandboxSessionState,
-  right: PiOpenSandboxSessionState,
+function isSamePersistedSandboxState(
+  left: PersistedSandboxState,
+  right: PersistedSandboxState,
 ): boolean {
   return left.active === right.active
     && left.sandboxId === right.sandboxId
@@ -406,16 +421,16 @@ function sameSessionState(
 }
 
 async function initializeSessionSandbox(
-  runtime: OpenSandboxCommandRuntime,
+  runtime: OpenSandboxRuntime,
   ctx: ExtensionContext,
   restoring: boolean,
 ): Promise<void> {
   try {
-    const activeSandbox = await runtime.activate();
+    const sandboxHandle = await runtime.activate();
     ctx.ui.setStatus("opensandbox", OPEN_SANDBOX_REMOTE_STATUS);
     notifyIfUiAvailable(
       ctx,
-      `OpenSandbox ${activeSandbox.startupMode}: ${activeSandbox.id}`,
+      `OpenSandbox ${sandboxHandle.startupMode}: ${sandboxHandle.id}`,
       "info",
     );
   } catch (error) {
@@ -438,9 +453,6 @@ function notifyIfUiAvailable(
   message: string,
   level: "info" | "error",
 ): void {
-  if (ctx.hasUI) ctx.ui.notify(message, level);
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (!ctx.hasUI) return
+  ctx.ui.notify(message, level)
 }

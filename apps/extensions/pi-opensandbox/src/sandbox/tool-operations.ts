@@ -5,31 +5,40 @@ import type {
   ReadOperations,
   WriteOperations,
 } from "@earendil-works/pi-coding-agent";
-import type { ActiveOpenSandbox } from "./client";
+import type { OpenSandboxHandle } from "./client";
 import { shellQuote } from "./client";
+import { isOpenSandboxTransportError } from "./logger";
 
 const imageMimeTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
+export type WithActiveSandboxHandle = <T>(
+  operation: (sandboxHandle: OpenSandboxHandle) => Promise<T>,
+) => Promise<T>;
+
 /** Creates Pi bash operations that execute commands in the active sandbox. */
 export function createBashOperations(
-  requireActiveSandbox: () => Promise<ActiveOpenSandbox>,
-  cwdOverride?: string,
+  withActiveSandboxHandle: WithActiveSandboxHandle,
+  useSandboxWorkspaceRoot = false,
 ): BashOperations {
   return {
-    exec: async (command, cwd, options) => {
-      const activeSandbox = await requireActiveSandbox();
-      const sandboxWorkingDirectory = cwdOverride ?? activeSandbox.resolveReadablePath(cwd);
-
+    exec: (command, cwd, options) => withActiveSandboxHandle(async (sandboxHandle) => {
+      const workingDirectory = useSandboxWorkspaceRoot
+        ? sandboxHandle.sandboxWorkspaceRoot
+        : sandboxHandle.resolveReadablePath(cwd);
       // Execute the caller-provided shell command while forwarding Pi environment
       // variables, output events, cancellation, and the requested timeout.
-      const result = await activeSandbox.runCommand(command, sandboxWorkingDirectory, {
-        onData: options.onData,
-        env: buildForwardedPiEnvironment(options.env ?? {}),
-        ...(options.signal ? { signal: options.signal } : {}),
-        ...(options.timeout !== undefined ? { timeoutSeconds: options.timeout } : {}),
-      });
+      const result = await sandboxHandle.runCommand(
+        command,
+        workingDirectory,
+        {
+          onData: options.onData,
+          env: buildForwardedPiEnvironment(options.env ?? {}),
+          ...(options.signal ? { signal: options.signal } : {}),
+          ...(options.timeout !== undefined ? { timeoutSeconds: options.timeout } : {}),
+        },
+      );
       return { exitCode: result.exitCode };
-    },
+    }),
   };
 }
 
@@ -53,36 +62,38 @@ function buildForwardedPiEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
 
 /** Creates Pi read operations backed by sandbox file APIs and MIME detection. */
 export function createReadOperations(
-  requireActiveSandbox: () => Promise<ActiveOpenSandbox>,
+  withActiveSandboxHandle: WithActiveSandboxHandle,
 ): ReadOperations {
   return {
-    readFile: async (path) => {
-      return (await requireActiveSandbox()).readFile(path);
-    },
-    access: async (path) => {
-      const metadata = await (await requireActiveSandbox()).getFileInfo(path);
+    readFile: (path) => withActiveSandboxHandle(
+      (sandboxHandle) => sandboxHandle.readFile(path),
+    ),
+    access: (path) => withActiveSandboxHandle(async (sandboxHandle) => {
+      const metadata = await sandboxHandle.getFileInfo(path);
       if (!metadata) {
         throw new Error(`Path not found: ${path}`);
       }
-    },
+    }),
     detectImageMimeType: async (path) => {
       try {
-        const activeSandbox = await requireActiveSandbox();
-        const sandboxPath = activeSandbox.resolveReadablePath(path);
+        return await withActiveSandboxHandle(async (sandboxHandle) => {
+          const sandboxPath = sandboxHandle.resolveReadablePath(path);
 
-        // Ask `file` for only the MIME type (`-b` omits the path prefix) so the
-        // result can be checked against the image types supported by Pi.
-        const result = await activeSandbox.runCommand(
-          `file --mime-type -b ${shellQuote(sandboxPath)}`,
-          activeSandbox.sandboxWorkspaceRoot,
-          {
-            captureOutput: true,
-            maxOutputBytes: 1024
-          },
-        );
-        const mimeType = result.output.trim();
-        return imageMimeTypes.has(mimeType) ? mimeType : null;
-      } catch {
+          // Ask `file` for only the MIME type (`-b` omits the path prefix) so the
+          // result can be checked against the image types supported by Pi.
+          const result = await sandboxHandle.runCommand(
+            `file --mime-type -b ${shellQuote(sandboxPath)}`,
+            sandboxHandle.sandboxWorkspaceRoot,
+            {
+              captureOutput: true,
+              maxOutputBytes: 1024
+            },
+          );
+          const mimeType = result.output.trim();
+          return imageMimeTypes.has(mimeType) ? mimeType : null;
+        });
+      } catch (error) {
+        if (isOpenSandboxTransportError(error)) throw error;
         return null;
       }
     },
@@ -91,69 +102,65 @@ export function createReadOperations(
 
 /** Creates workspace-restricted Pi write operations for the active sandbox. */
 export function createWriteOperations(
-  requireActiveSandbox: () => Promise<ActiveOpenSandbox>,
+  withActiveSandboxHandle: WithActiveSandboxHandle,
 ): WriteOperations {
   return {
-    writeFile: async (path, content) => {
-      await (await requireActiveSandbox()).writeFile(path, content);
-    },
-    mkdir: async (path) => {
-      await (await requireActiveSandbox()).createDirectory(path);
-    },
+    writeFile: (path, content) => withActiveSandboxHandle(
+      (sandboxHandle) => sandboxHandle.writeFile(path, content),
+    ),
+    mkdir: (path) => withActiveSandboxHandle(
+      (sandboxHandle) => sandboxHandle.createDirectory(path),
+    ),
   };
 }
 
 /** Combines remote read/write operations with an explicit writability check. */
 export function createEditOperations(
-  requireActiveSandbox: () => Promise<ActiveOpenSandbox>,
+  withActiveSandboxHandle: WithActiveSandboxHandle,
 ): EditOperations {
-  const read = createReadOperations(requireActiveSandbox);
-  const write = createWriteOperations(requireActiveSandbox);
+  const read = createReadOperations(withActiveSandboxHandle);
+  const write = createWriteOperations(withActiveSandboxHandle);
   return {
     readFile: read.readFile,
     writeFile: write.writeFile,
-    access: async (path) => {
-      const activeSandbox = await requireActiveSandbox();
-      const sandboxPath = activeSandbox.resolveReadablePath(path);
+    access: (path) => withActiveSandboxHandle(async (sandboxHandle) => {
+      const sandboxPath = sandboxHandle.resolveReadablePath(path);
 
       // POSIX `test` exits with 0 when its condition is true. The path must
       // pass both the readable (`-r`) and writable (`-w`) checks.
-      const result = await activeSandbox.runCommand(
+      const result = await sandboxHandle.runCommand(
         `test -r ${shellQuote(sandboxPath)} && test -w ${shellQuote(sandboxPath)}`,
-        activeSandbox.sandboxWorkspaceRoot,
+        sandboxHandle.sandboxWorkspaceRoot,
       );
       if (result.exitCode !== 0) {
         throw new Error(`Path is not readable and writable: ${path}`);
       }
-    },
+    }),
   };
 }
 
 /** Creates directory listing and metadata operations for remote paths. */
 export function createLsOperations(
-  requireActiveSandbox: () => Promise<ActiveOpenSandbox>,
+  withActiveSandboxHandle: WithActiveSandboxHandle,
 ): LsOperations {
   return {
-    exists: async (path) => {
-      const activeSandbox = await requireActiveSandbox();
-
+    exists: (path) => withActiveSandboxHandle(async (sandboxHandle) => {
       // POSIX `test -e` exits with 0 when the resolved path exists.
-      const result = await activeSandbox.runCommand(
-        `test -e ${shellQuote(activeSandbox.resolveReadablePath(path))}`,
-        activeSandbox.sandboxWorkspaceRoot,
+      const result = await sandboxHandle.runCommand(
+        `test -e ${shellQuote(sandboxHandle.resolveReadablePath(path))}`,
+        sandboxHandle.sandboxWorkspaceRoot,
       );
       return result.exitCode === 0;
-    },
-    stat: async (path) => {
-      const activeSandbox = await requireActiveSandbox();
-      const sandboxPath = activeSandbox.resolveReadablePath(path);
+    }),
+    stat: (path) => withActiveSandboxHandle(async (sandboxHandle) => {
+      const sandboxPath = sandboxHandle.resolveReadablePath(path);
 
       // Fail when the path does not exist; otherwise print a small type marker
       // that distinguishes directories from other filesystem entries.
-      const result = await activeSandbox.runCommand(
+      const result = await sandboxHandle.runCommand(
         `test -e ${shellQuote(sandboxPath)} || exit 1; `
         + `test -d ${shellQuote(sandboxPath)} && echo directory || echo file`,
-        activeSandbox.sandboxWorkspaceRoot,
+        sandboxHandle.sandboxWorkspaceRoot,
         {
           captureOutput: true,
           maxOutputBytes: 128
@@ -165,15 +172,14 @@ export function createLsOperations(
       return {
         isDirectory: () => result.output.trim() === "directory"
       };
-    },
-    readdir: async (path) => {
-      const activeSandbox = await requireActiveSandbox();
-      const sandboxPath = activeSandbox.resolveReadablePath(path);
+    }),
+    readdir: (path) => withActiveSandboxHandle(async (sandboxHandle) => {
+      const sandboxPath = sandboxHandle.resolveReadablePath(path);
 
       // List one entry per line, including hidden entries but excluding "." and "..".
-      const result = await activeSandbox.runCommand(
+      const result = await sandboxHandle.runCommand(
         `ls -1A ${shellQuote(sandboxPath)}`,
-        activeSandbox.sandboxWorkspaceRoot,
+        sandboxHandle.sandboxWorkspaceRoot,
         {
           captureOutput: true
         },
@@ -185,6 +191,6 @@ export function createLsOperations(
         .split("\n")
         .map((line) => line.replace(/\r$/, ""))
         .filter(Boolean);
-    },
+    }),
   };
 }

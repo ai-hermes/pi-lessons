@@ -1,25 +1,40 @@
 import type { OpenSandboxSettings } from "./config";
-import { describeOpenSandboxError, logOpenSandboxEvent } from "./logger";
 import {
-  ActiveOpenSandbox,
+  describeOpenSandboxError,
+  isOpenSandboxTransportError,
+  logOpenSandboxEvent,
+} from "./logger";
+import { getErrorMessage } from "../utils";
+import {
+  OpenSandboxHandle,
+  startOpenSandbox,
   type SandboxRestoreTarget,
 } from "./client";
 
-type SandboxStarter = (
-  sandboxSettings: OpenSandboxSettings,
-  hostWorkspaceRoot: string,
-  sessionId: string,
-  restoreTarget?: SandboxRestoreTarget,
-) => Promise<ActiveOpenSandbox>;
-
 interface SandboxSessionOptions {
+  /** Host directory represented by the sandbox workspace. */
   hostWorkspaceRoot: string;
-  onReady?: (activeSandbox: ActiveOpenSandbox) => void | Promise<void>;
-  startSandbox?: SandboxStarter;
+  /** Performs extension-specific setup after the sandbox becomes reachable. */
+  initializeSandbox?: (sandboxHandle: OpenSandboxHandle) => void | Promise<void>;
+  /** Reports whether the current sandbox connection is usable. */
+  onConnectionStatusChange?: (status: "connected" | "unreachable") => void;
+  /** Startup seam used by tests; production callers use the default implementation. */
+  startOpenSandbox?: typeof startOpenSandbox;
 }
 
-/** Observable lifecycle state for one Pi session's remote sandbox. */
-export type SandboxSessionMode = "local" | "restoring" | "remote" | "failed";
+/**
+ * Observable lifecycle state for one Pi session's remote sandbox.
+ *
+ * `inactive` has no live connection, while `failed` preserves the latest
+ * startup error so tools and status views can explain why remote execution is
+ * unavailable.
+ */
+export type SandboxSessionState =
+  | "inactive"
+  | "starting"
+  | "active"
+  | "unreachable"
+  | "failed";
 
 /**
  * Coordinates one active OpenSandbox connection for a Pi session.
@@ -31,30 +46,36 @@ export type SandboxSessionMode = "local" | "restoring" | "remote" | "failed";
  * @example
  * ```ts
  * const session = new SandboxSession({ hostWorkspaceRoot: process.cwd() });
- * session.setSessionContext("pi-session-123", process.cwd());
- * const sandbox = await session.startSandbox(settings);
- * await session.shutdown();
+ * session.setPiSessionContext("pi-session-123", process.cwd());
+ * const sandboxHandle = await session.ensureActiveSandboxHandle(settings);
+ * await session.releaseForShutdown();
  * ```
  */
 export class SandboxSession {
-  private activeSandbox: ActiveOpenSandbox | null = null;
-  private failure: unknown;
-  private readonly onReady: SandboxSessionOptions["onReady"];
-  private pending: Promise<ActiveOpenSandbox> | undefined;
-  private readonly sandboxStarter: SandboxStarter;
+  private activeSandboxHandle: OpenSandboxHandle | null = null;
+  private connectionFailure: Error | undefined;
+  private startupFailure: Error | undefined;
+  private readonly initializeSandbox: SandboxSessionOptions["initializeSandbox"];
+  private readonly onConnectionStatusChange:
+    SandboxSessionOptions["onConnectionStatusChange"];
+  private reconnectTarget: SandboxRestoreTarget | undefined;
+  private sandboxSettings: OpenSandboxSettings | undefined;
+  private readonly startOpenSandbox: typeof startOpenSandbox;
+  private startupPromise: Promise<OpenSandboxHandle> | undefined;
   private hostWorkspaceRoot: string;
-  private sessionId = "";
-  private stopRenewal: (() => Promise<void>) | undefined;
+  private piSessionId = "";
+  private stopLeaseRenewal: (() => Promise<void>) | undefined;
 
   constructor(options: SandboxSessionOptions) {
     this.hostWorkspaceRoot = options.hostWorkspaceRoot;
-    this.onReady = options.onReady;
-    this.sandboxStarter = options.startSandbox ?? ActiveOpenSandbox.start;
+    this.initializeSandbox = options.initializeSandbox;
+    this.onConnectionStatusChange = options.onConnectionStatusChange;
+    this.startOpenSandbox = options.startOpenSandbox ?? startOpenSandbox;
   }
 
   /** Returns the live sandbox after startup and initialization complete. */
-  getActiveSandbox(): ActiveOpenSandbox | null {
-    return this.activeSandbox;
+  getActiveSandboxHandle(): OpenSandboxHandle | null {
+    return this.activeSandboxHandle;
   }
 
   /** Returns the host workspace currently associated with the Pi session. */
@@ -62,26 +83,51 @@ export class SandboxSession {
     return this.hostWorkspaceRoot;
   }
 
-  /** Derives the public mode from pending, active, and failed state. */
-  getMode(): SandboxSessionMode {
-    if (this.pending) return "restoring";
-    if (this.activeSandbox) return "remote";
-    return this.failure === undefined ? "local" : "failed";
+  /**
+   * Derives the lifecycle state from the current startup, connection, and error state.
+   *
+   * @example
+   * ```ts
+   * if (session.getLifecycleState() === "active") {
+   *   ctx.ui.setStatus("opensandbox", "opensandbox: remote ✓");
+   * }
+   * ```
+   */
+  getLifecycleState(): SandboxSessionState {
+    if (this.startupPromise) return "starting";
+    if (this.activeSandboxHandle) return "active";
+    if (this.connectionFailure) return "unreachable";
+    return this.startupFailure === undefined ? "inactive" : "failed";
   }
 
-  /** Returns the most recent startup or restoration failure, if any. */
-  getFailure(): unknown {
-    return this.failure;
+  /** Returns the most recent startup or restoration error, if any. */
+  getStartupFailure(): Error | undefined {
+    return this.startupFailure;
   }
 
-  /** Clears a failure only when no start or remote connection is active. */
-  clearFailure(): void {
-    if (!this.pending && !this.activeSandbox) this.failure = undefined;
+  /** Returns the transport error that made the active sandbox unreachable. */
+  getConnectionFailure(): Error | undefined {
+    return this.connectionFailure;
   }
 
-  /** Updates identifiers that may change when Pi opens another session. */
-  setSessionContext(sessionId: string, hostWorkspaceRoot: string): void {
-    this.sessionId = sessionId;
+  /** Clears the startup error only when no startup or connection is active. */
+  clearStartupFailure(): void {
+    if (!this.startupPromise && !this.activeSandboxHandle) this.startupFailure = undefined;
+  }
+
+  /**
+   * Updates identifiers that may change when Pi opens or navigates to another session.
+   *
+   * @example
+   * ```ts
+   * session.setPiSessionContext(
+   *   ctx.sessionManager.getSessionId(),
+   *   ctx.sessionManager.getCwd(),
+   * );
+   * ```
+   */
+  setPiSessionContext(piSessionId: string, hostWorkspaceRoot: string): void {
+    this.piSessionId = piSessionId;
     this.hostWorkspaceRoot = hostWorkspaceRoot;
   }
 
@@ -90,18 +136,30 @@ export class SandboxSession {
    *
    * Repeated calls return the active sandbox, and concurrent calls await the
    * same in-flight startup rather than creating duplicate sandboxes.
+   *
+   * @example
+   * ```ts
+   * const sandboxHandle = await session.ensureActiveSandboxHandle(settings, {
+   *   sandboxId: persistedState.sandboxId,
+   *   owned: persistedState.owned,
+   * });
+   * ```
    */
-  startSandbox(
+  ensureActiveSandboxHandle(
     sandboxSettings: OpenSandboxSettings,
     restoreTarget?: SandboxRestoreTarget,
-  ): Promise<ActiveOpenSandbox> {
-    if (this.pending) return this.pending;
-    if (this.activeSandbox) return Promise.resolve(this.activeSandbox);
-    this.failure = undefined;
-    const pending = this.start(sandboxSettings, restoreTarget);
-    this.pending = pending;
-    void pending.catch(() => undefined);
-    return pending;
+  ): Promise<OpenSandboxHandle> {
+    this.sandboxSettings = sandboxSettings;
+    if (this.startupPromise) return this.startupPromise;
+    if (this.activeSandboxHandle) return Promise.resolve(this.activeSandboxHandle);
+    this.startupFailure = undefined;
+    const startupPromise = this.startAndInitializeSandbox(
+      sandboxSettings,
+      restoreTarget ?? this.reconnectTarget,
+    );
+    this.startupPromise = startupPromise;
+    void startupPromise.catch(() => undefined);
+    return startupPromise;
   }
 
   /**
@@ -109,107 +167,219 @@ export class SandboxSession {
    *
    * Throws instead of falling back to host execution, preventing a remote-mode
    * tool call from accidentally running against local files.
+   *
+   * @example
+   * ```ts
+   * registerOpenSandboxTools(
+   *   pi,
+   *   (operation) => session.withActiveSandboxHandle(operation),
+   *   () => session.getHostWorkspaceRoot(),
+   * );
+   * ```
    */
-  async requireActiveSandbox(): Promise<ActiveOpenSandbox> {
-    if (this.pending) return this.pending;
-    if (this.activeSandbox) return this.activeSandbox;
-    if (this.failure !== undefined) {
+  async requireActiveSandboxHandle(): Promise<OpenSandboxHandle> {
+    if (this.startupPromise) return this.startupPromise;
+    if (this.activeSandboxHandle) return this.activeSandboxHandle;
+    if (this.connectionFailure && this.sandboxSettings && this.reconnectTarget) {
+      return this.ensureActiveSandboxHandle(this.sandboxSettings, this.reconnectTarget);
+    }
+    if (this.startupFailure !== undefined) {
       throw new Error(
-        `OpenSandbox restore failed: ${getErrorMessage(this.failure)}. `
+        `OpenSandbox restore failed: ${this.startupFailure.message}. `
         + "Run /opensandbox to retry or switch to local execution.",
       );
     }
     throw new Error("OpenSandbox is not active. The tool was not run on the host.");
   }
 
-  /** Returns to local mode, killing owned sandboxes and disconnecting external ones. */
-  async deactivate(): Promise<void> {
-    const activeSandbox = await this.settlePending();
-    if (activeSandbox) await this.release(activeSandbox, activeSandbox.isOwnedByExtension ? "kill" : "disconnect");
-    this.failure = undefined;
-  }
-
-  /** Releases the session, pausing owned sandboxes so Pi can restore them later. */
-  async shutdown(): Promise<void> {
-    const activeSandbox = await this.settlePending();
-    if (activeSandbox) await this.release(activeSandbox, activeSandbox.isOwnedByExtension ? "pause" : "disconnect");
-  }
-
-  private async start(
-    sandboxSettings: OpenSandboxSettings,
-    restoreTarget?: SandboxRestoreTarget,
-  ): Promise<ActiveOpenSandbox> {
-    let activeSandbox: ActiveOpenSandbox | undefined;
+  /**
+   * Runs one operation against the current handle and invalidates it on transport failure.
+   *
+   * Failed operations are never replayed because the remote side may have
+   * completed them before the connection was lost. The next operation
+   * reconnects to the same sandbox.
+   *
+   * @example
+   * ```ts
+   * const result = await session.withActiveSandboxHandle((sandboxHandle) =>
+   *   sandboxHandle.runCommand("ls", sandboxHandle.sandboxWorkspaceRoot)
+   * );
+   * ```
+   */
+  async withActiveSandboxHandle<T>(
+    operation: (sandboxHandle: OpenSandboxHandle) => Promise<T>,
+  ): Promise<T> {
+    const sandboxHandle = await this.requireActiveSandboxHandle();
     try {
-      activeSandbox = await this.sandboxStarter(
-        sandboxSettings,
-        this.hostWorkspaceRoot,
-        this.sessionId,
-        restoreTarget,
-      );
-      if (!activeSandbox.isOwnedByExtension) {
-        await activeSandbox.renew(sandboxSettings.timeoutSeconds);
-      }
-      this.stopRenewal = startLeaseRenewal(activeSandbox, sandboxSettings.timeoutSeconds);
-      this.activeSandbox = activeSandbox;
-      await this.onReady?.(activeSandbox);
-      return activeSandbox;
+      return await operation(sandboxHandle);
     } catch (error) {
-      this.failure = error;
-      this.activeSandbox = null;
-      await this.stopRenewal?.();
-      this.stopRenewal = undefined;
-      await activeSandbox?.cleanupAfterStartFailure();
-      throw error;
-    } finally {
-      this.pending = undefined;
+      if (!isOpenSandboxTransportError(error)) throw error;
+      await this.markConnectionUnreachable(sandboxHandle, error);
+      throw new Error(
+        "OpenSandbox connection lost. The remote operation may have completed; "
+        + "restore network connectivity and retry.",
+        { cause: error },
+      );
     }
   }
 
-  private async settlePending(): Promise<ActiveOpenSandbox | null> {
-    if (this.pending) await this.pending.catch(() => undefined);
-    return this.activeSandbox;
+  /**
+   * Deactivates remote execution, killing owned sandboxes and disconnecting external ones.
+   *
+   * @example
+   * ```ts
+   * await session.releaseForDisable();
+   * ```
+   */
+  async releaseForDisable(): Promise<void> {
+    const sandboxHandle = await this.waitForStartup();
+    if (sandboxHandle) {
+      await this.releaseActiveSandbox(
+        sandboxHandle,
+        sandboxHandle.isOwnedByExtension ? "kill" : "disconnect",
+      );
+    }
+    this.startupFailure = undefined;
+    this.connectionFailure = undefined;
+    this.reconnectTarget = undefined;
+    this.sandboxSettings = undefined;
   }
 
-  private async release(
-    activeSandbox: ActiveOpenSandbox,
+  /**
+   * Releases the session, pausing owned sandboxes so Pi can restore them later.
+   *
+   * @example
+   * ```ts
+   * pi.on("session_shutdown", () => session.releaseForShutdown());
+   * ```
+   */
+  async releaseForShutdown(): Promise<void> {
+    const sandboxHandle = await this.waitForStartup();
+    if (sandboxHandle) {
+      await this.releaseActiveSandbox(
+        sandboxHandle,
+        sandboxHandle.isOwnedByExtension ? "pause" : "disconnect",
+      );
+    }
+    this.connectionFailure = undefined;
+    this.reconnectTarget = undefined;
+    this.sandboxSettings = undefined;
+  }
+
+  private async startAndInitializeSandbox(
+    sandboxSettings: OpenSandboxSettings,
+    restoreTarget?: SandboxRestoreTarget,
+  ): Promise<OpenSandboxHandle> {
+    let sandboxHandle: OpenSandboxHandle | undefined;
+    const reconnecting = this.connectionFailure !== undefined;
+    try {
+      sandboxHandle = await this.startOpenSandbox(
+        {
+          ...sandboxSettings,
+          metadata: {
+            ...sandboxSettings.metadata,
+            "pi-extension": "opensandbox",
+            "pi-session-id": this.piSessionId,
+          },
+        },
+        this.hostWorkspaceRoot,
+        restoreTarget,
+      );
+      if (!sandboxHandle.isOwnedByExtension) {
+        await sandboxHandle.renew(sandboxSettings.timeoutSeconds);
+      }
+      this.startLeaseRenewal(sandboxHandle, sandboxSettings.timeoutSeconds);
+      this.activeSandboxHandle = sandboxHandle;
+      await this.initializeSandbox?.(sandboxHandle);
+      this.connectionFailure = undefined;
+      this.reconnectTarget = {
+        sandboxId: sandboxHandle.id,
+        owned: sandboxHandle.isOwnedByExtension,
+      };
+      if (reconnecting) this.onConnectionStatusChange?.("connected");
+      return sandboxHandle;
+    } catch (error) {
+      const startupFailure = error instanceof Error ? error : new Error(getErrorMessage(error));
+      if (!reconnecting || !isOpenSandboxTransportError(error)) {
+        this.connectionFailure = undefined;
+      }
+      this.startupFailure = startupFailure;
+      this.activeSandboxHandle = null;
+      await this.stopLeaseRenewal?.();
+      this.stopLeaseRenewal = undefined;
+      await sandboxHandle?.cleanupAfterStartFailure();
+      throw startupFailure;
+    } finally {
+      this.startupPromise = undefined;
+    }
+  }
+
+  private async waitForStartup(): Promise<OpenSandboxHandle | null> {
+    if (this.startupPromise) await this.startupPromise.catch(() => undefined);
+    return this.activeSandboxHandle;
+  }
+
+  private async markConnectionUnreachable(
+    sandboxHandle: OpenSandboxHandle,
+    error: unknown,
+  ): Promise<void> {
+    if (this.activeSandboxHandle !== sandboxHandle) return;
+    this.connectionFailure = error instanceof Error ? error : new Error(getErrorMessage(error));
+    this.reconnectTarget = {
+      sandboxId: sandboxHandle.id,
+      owned: sandboxHandle.isOwnedByExtension,
+    };
+    this.activeSandboxHandle = null;
+    await this.stopLeaseRenewal?.();
+    this.stopLeaseRenewal = undefined;
+    await sandboxHandle.release("disconnect").catch((releaseError: unknown) => {
+      logOpenSandboxEvent("warn", "sandbox.disconnect.error", {
+        sandboxId: sandboxHandle.id,
+        ...describeOpenSandboxError(releaseError),
+      });
+    });
+    logOpenSandboxEvent("warn", "sandbox.connection.unreachable", {
+      sandboxId: sandboxHandle.id,
+      ...describeOpenSandboxError(error),
+    });
+    this.onConnectionStatusChange?.("unreachable");
+  }
+
+  private async releaseActiveSandbox(
+    sandboxHandle: OpenSandboxHandle,
     mode: "disconnect" | "kill" | "pause",
   ): Promise<void> {
-    await activeSandbox.release(mode);
-    await this.stopRenewal?.();
-    this.stopRenewal = undefined;
-    this.activeSandbox = null;
+    await sandboxHandle.release(mode);
+    await this.stopLeaseRenewal?.();
+    this.stopLeaseRenewal = undefined;
+    this.activeSandboxHandle = null;
   }
-}
 
-function startLeaseRenewal(
-  activeSandbox: ActiveOpenSandbox,
-  timeoutSeconds: number,
-): () => Promise<void> {
-  let pending: Promise<void> | undefined;
-  // Renew halfway through the lease, capped at hourly checks for long leases.
-  const timer = setInterval(() => {
-    if (pending) return;
-    pending = Promise.resolve()
-      .then(() => activeSandbox.renew(timeoutSeconds))
-      .then(() => undefined)
-      .catch((error: unknown) => {
-        logOpenSandboxEvent("error", "sandbox.renew.error", {
-          sandboxId: activeSandbox.id,
-          ...describeOpenSandboxError(error),
+  private startLeaseRenewal(
+    sandboxHandle: OpenSandboxHandle,
+    timeoutSeconds: number,
+  ): void {
+    let pendingRenewal: Promise<void> | undefined;
+    // Renew halfway through the lease, capped at hourly checks for long leases.
+    const renewalTimer = setInterval(() => {
+      if (pendingRenewal) return;
+      pendingRenewal = Promise.resolve()
+        .then(() => sandboxHandle.renew(timeoutSeconds))
+        .then(() => undefined)
+        .catch((error: unknown) => {
+          logOpenSandboxEvent("error", "sandbox.renew.error", {
+            sandboxId: sandboxHandle.id,
+            ...describeOpenSandboxError(error),
+          });
+        })
+        .finally(() => {
+          pendingRenewal = undefined;
         });
-      })
-      .finally(() => {
-        pending = undefined;
-      });
-  }, Math.min(3_600_000, timeoutSeconds * 500));
-  timer.unref();
-  return async () => {
-    clearInterval(timer);
-    await pending;
-  };
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+    }, Math.min(3_600_000, timeoutSeconds * 500));
+    renewalTimer.unref();
+    this.stopLeaseRenewal = async () => {
+      clearInterval(renewalTimer);
+      await pendingRenewal;
+    };
+  }
 }

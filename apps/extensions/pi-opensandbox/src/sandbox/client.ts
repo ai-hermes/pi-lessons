@@ -12,6 +12,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { join as joinPosix, normalize as normalizePosix } from "node:path/posix";
 import type { OpenSandboxSettings } from "./config";
 import { describeOpenSandboxError, logOpenSandboxEvent } from "./logger";
+import { dirnamePosix, getErrorMessage } from "../utils";
 
 /** How an active sandbox client was obtained. */
 export type SandboxStartupMode = "connected" | "created" | "resumed";
@@ -19,7 +20,7 @@ export type SandboxStartupMode = "connected" | "created" | "resumed";
 /** Resource action performed when an active sandbox is released. */
 export type SandboxReleaseMode = "disconnect" | "kill" | "pause";
 
-interface ActiveOpenSandboxInit {
+interface OpenSandboxHandleInit {
   defaultCommandTimeoutSeconds: number;
   hostWorkspaceRoot: string;
   imageReference: string;
@@ -84,10 +85,9 @@ export interface SandboxCommandResult {
  *
  * @example
  * ```ts
- * const sandbox = await ActiveOpenSandbox.start(
+ * const sandbox = await startOpenSandbox(
  *   settings,
  *   process.cwd(),
- *   "pi-session-123",
  * );
  * const result = await sandbox.runCommand("node --version", "/workspace", {
  *   captureOutput: true,
@@ -95,7 +95,7 @@ export interface SandboxCommandResult {
  * await sandbox.release("pause");
  * ```
  */
-export class ActiveOpenSandbox {
+export class OpenSandboxHandle {
   readonly defaultCommandTimeoutSeconds: number;
   readonly hostWorkspaceRoot: string;
   readonly imageReference: string;
@@ -106,7 +106,7 @@ export class ActiveOpenSandbox {
   readonly isOwnedByExtension: boolean;
   private readonly sandboxClient: Sandbox;
 
-  constructor(init: ActiveOpenSandboxInit) {
+  constructor(init: OpenSandboxHandleInit) {
     this.defaultCommandTimeoutSeconds = init.defaultCommandTimeoutSeconds;
     this.hostWorkspaceRoot = resolve(init.hostWorkspaceRoot);
     this.imageReference = init.imageReference;
@@ -116,73 +116,6 @@ export class ActiveOpenSandbox {
     this.sandboxWorkspaceRoot = init.sandboxWorkspaceRoot;
     this.startupMode = init.startupMode;
     this.isOwnedByExtension = init.owned;
-  }
-
-  static async start(
-    sandboxSettings: OpenSandboxSettings,
-    hostWorkspaceRoot: string,
-    sessionId: string,
-    restoreTarget?: SandboxRestoreTarget,
-  ): Promise<ActiveOpenSandbox> {
-    const connectionConfigOptions = {
-      domain: sandboxSettings.domain,
-      protocol: sandboxSettings.protocol,
-      requestTimeoutSeconds: sandboxSettings.requestTimeoutSeconds,
-      useServerProxy: sandboxSettings.useServerProxy,
-      ...(sandboxSettings.apiKey !== undefined ? { apiKey: sandboxSettings.apiKey } : {}),
-    };
-    const sandboxId = restoreTarget?.sandboxId ?? sandboxSettings.sandboxId;
-    let connected: {
-      sandboxClient: Sandbox;
-      startupMode: SandboxStartupMode;
-    };
-    if (sandboxId) {
-      try {
-        connected = await connectOrResumeSandbox(connectionConfigOptions, sandboxId);
-      } catch (error) {
-        if (!(restoreTarget && error instanceof OpenSandboxNotFoundError)) throw error;
-        connected = {
-          sandboxClient: await Sandbox.create(buildSandboxCreateOptions(
-            new ConnectionConfig(connectionConfigOptions),
-            sandboxSettings,
-            sessionId,
-          )),
-          startupMode: "created",
-        };
-      }
-    } else {
-      connected = {
-        sandboxClient: await Sandbox.create(buildSandboxCreateOptions(
-          new ConnectionConfig(connectionConfigOptions),
-          sandboxSettings,
-          sessionId,
-        )),
-        startupMode: "created",
-      };
-    }
-    const activeSandbox = new ActiveOpenSandbox({
-      defaultCommandTimeoutSeconds: sandboxSettings.commandTimeoutSeconds,
-      hostWorkspaceRoot,
-      imageReference: sandboxSettings.image ?? sandboxSettings.snapshotId ?? "existing sandbox",
-      maxFileReadBytes: sandboxSettings.maxReadBytes,
-      readableResourceRoots: sandboxSettings.resourceRoots,
-      sandboxClient: connected.sandboxClient,
-      sandboxWorkspaceRoot: sandboxSettings.workspace,
-      startupMode: connected.startupMode,
-      owned: connected.startupMode === "created" || restoreTarget?.owned === true,
-    });
-
-    try {
-      await activeSandbox.ensureSandboxDirectories([activeSandbox.sandboxWorkspaceRoot]);
-      return activeSandbox;
-    } catch (error) {
-      logOpenSandboxEvent("error", "sandbox.workspace.initialize.error", {
-        sandboxId: activeSandbox.id,
-        ...describeOpenSandboxError(error),
-      });
-      await activeSandbox.cleanupAfterStartFailure();
-      throw error;
-    }
   }
 
   get id(): string {
@@ -468,6 +401,71 @@ export class ActiveOpenSandbox {
   }
 }
 
+/** Creates, connects to, or resumes a sandbox and returns its connected handle. */
+export async function startOpenSandbox(
+  sandboxSettings: OpenSandboxSettings,
+  hostWorkspaceRoot: string,
+  restoreTarget?: SandboxRestoreTarget,
+): Promise<OpenSandboxHandle> {
+  const connectionConfigOptions = {
+    domain: sandboxSettings.domain,
+    protocol: sandboxSettings.protocol,
+    requestTimeoutSeconds: sandboxSettings.requestTimeoutSeconds,
+    useServerProxy: sandboxSettings.useServerProxy,
+    ...(sandboxSettings.apiKey !== undefined ? { apiKey: sandboxSettings.apiKey } : {}),
+  };
+  const sandboxId = restoreTarget?.sandboxId ?? sandboxSettings.sandboxId;
+  let connected: {
+    sandboxClient: Sandbox;
+    startupMode: SandboxStartupMode;
+  };
+  if (sandboxId) {
+    try {
+      connected = await connectOrResumeSandbox(connectionConfigOptions, sandboxId);
+    } catch (error) {
+      if (!(restoreTarget && error instanceof OpenSandboxNotFoundError)) throw error;
+      connected = {
+        sandboxClient: await Sandbox.create(buildSandboxCreateOptions(
+          new ConnectionConfig(connectionConfigOptions),
+          sandboxSettings,
+        )),
+        startupMode: "created",
+      };
+    }
+  } else {
+    connected = {
+      sandboxClient: await Sandbox.create(buildSandboxCreateOptions(
+        new ConnectionConfig(connectionConfigOptions),
+        sandboxSettings,
+      )),
+      startupMode: "created",
+    };
+  }
+  const sandboxHandle = new OpenSandboxHandle({
+    defaultCommandTimeoutSeconds: sandboxSettings.commandTimeoutSeconds,
+    hostWorkspaceRoot,
+    imageReference: sandboxSettings.image ?? sandboxSettings.snapshotId ?? "existing sandbox",
+    maxFileReadBytes: sandboxSettings.maxReadBytes,
+    readableResourceRoots: sandboxSettings.resourceRoots,
+    sandboxClient: connected.sandboxClient,
+    sandboxWorkspaceRoot: sandboxSettings.workspace,
+    startupMode: connected.startupMode,
+    owned: connected.startupMode === "created" || restoreTarget?.owned === true,
+  });
+
+  try {
+    await sandboxHandle.ensureSandboxDirectories([sandboxHandle.sandboxWorkspaceRoot]);
+    return sandboxHandle;
+  } catch (error) {
+    logOpenSandboxEvent("error", "sandbox.workspace.initialize.error", {
+      sandboxId: sandboxHandle.id,
+      ...describeOpenSandboxError(error),
+    });
+    await sandboxHandle.cleanupAfterStartFailure();
+    throw error;
+  }
+}
+
 /** Indicates that neither connecting nor resuming found the requested sandbox. */
 export class OpenSandboxNotFoundError extends Error {
   constructor(readonly sandboxId: string) {
@@ -496,17 +494,11 @@ export function shellQuote(value: string): string {
 function buildSandboxCreateOptions(
   connectionConfig: ConnectionConfig,
   sandboxSettings: OpenSandboxSettings,
-  sessionId: string,
 ): SandboxCreateOptions {
   return {
     connectionConfig,
     timeoutSeconds: sandboxSettings.timeoutSeconds,
     readyTimeoutSeconds: sandboxSettings.readyTimeoutSeconds,
-    metadata: {
-      ...sandboxSettings.metadata,
-      "pi-extension": "opensandbox",
-      "pi-session-id": sessionId,
-    },
     networkPolicy: sandboxSettings.networkPolicy
       ?? (sandboxSettings.networkAllowlist.length === 0
         ? { defaultAction: "allow" }
@@ -517,6 +509,7 @@ function buildSandboxCreateOptions(
     ...(sandboxSettings.entrypoint !== undefined ? { entrypoint: sandboxSettings.entrypoint } : {}),
     ...(sandboxSettings.env !== undefined ? { env: sandboxSettings.env } : {}),
     ...(sandboxSettings.image !== undefined ? { image: sandboxSettings.image } : {}),
+    ...(sandboxSettings.metadata !== undefined ? { metadata: sandboxSettings.metadata } : {}),
     ...(sandboxSettings.snapshotId !== undefined ? { snapshotId: sandboxSettings.snapshotId } : {}),
     ...(sandboxSettings.resource !== undefined ? { resource: sandboxSettings.resource } : {}),
     ...(sandboxSettings.resourceRequests !== undefined
@@ -539,15 +532,21 @@ async function connectOrResumeSandbox(
   sandboxClient: Sandbox;
   startupMode: Extract<SandboxStartupMode, "connected" | "resumed">;
 }> {
-  const options = {
+  const connectOptions = {
     connectionConfig: new ConnectionConfig(connectionConfigOptions),
     sandboxId,
   };
   try {
-    return { sandboxClient: await Sandbox.connect(options), startupMode: "connected" };
+    return {
+      sandboxClient: await Sandbox.connect(connectOptions),
+      startupMode: "connected",
+    };
   } catch (connectError) {
     try {
-      return { sandboxClient: await Sandbox.resume(options), startupMode: "resumed" };
+      return {
+        sandboxClient: await Sandbox.resume(connectOptions),
+        startupMode: "resumed",
+      };
     } catch (resumeError) {
       if (isNotFound(resumeError)) {
         throw new OpenSandboxNotFoundError(String(sandboxId));
@@ -565,13 +564,4 @@ function isNotFound(error: unknown): boolean {
     && error !== null
     && "statusCode" in error
     && (error as { statusCode?: unknown }).statusCode === 404;
-}
-
-function dirnamePosix(path: string): string {
-  const index = path.lastIndexOf("/");
-  return index <= 0 ? "/" : path.slice(0, index);
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

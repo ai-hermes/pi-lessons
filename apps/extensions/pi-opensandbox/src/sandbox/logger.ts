@@ -63,6 +63,56 @@ export function describeOpenSandboxError(error: unknown): Record<string, unknown
   };
 }
 
+/**
+ * Identifies failures caused by losing access to the OpenSandbox API.
+ *
+ * HTTP application errors are excluded except for gateway and service
+ * availability responses, so validation and command failures remain visible
+ * without incorrectly invalidating a healthy connection.
+ */
+export function isOpenSandboxTransportError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+    const details = current as Error & {
+      code?: unknown;
+      statusCode?: unknown;
+    };
+    if (
+      typeof details.code === "string"
+      && transportErrorCodes.has(details.code.toUpperCase())
+    ) {
+      return true;
+    }
+    if (
+      typeof details.statusCode === "number"
+      && [502, 503, 504].includes(details.statusCode)
+    ) {
+      return true;
+    }
+    if (
+      /fetch failed|network error|socket hang up|connection (?:closed|lost)|connect timeout/i
+        .test(current.message)
+    ) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
+}
+
+const transportErrorCodes = new Set([
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENETDOWN",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
 // Limit nested causes so recursive or unusually deep error chains cannot make
 // a single log event grow without bounds.
 function describeCause(error: unknown, depth: number): unknown {

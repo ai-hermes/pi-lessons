@@ -57,7 +57,7 @@ const resourceRootsSchema = z.array(z.string()).optional();
  * `skills` and `sharedSkillRoot` must either both be provided or both be omitted.
  *
  * @example
- * const options: PiOpenSandboxOptions = {
+ * const sandboxOptions: PiOpenSandboxOptions = {
  *   sandboxConfig: {
  *     domain: "https://sandbox.example.com",
  *     image: "opensandbox/code-interpreter:v1",
@@ -96,9 +96,9 @@ export interface PiOpenSandboxRuntimeConfig {
  * Effective configuration discovered from the environment or the user config file.
  *
  * @example
- * const installed = await loadInstalledPiOpenSandboxConfig();
- * if (installed.enabled && installed.runtime) {
- *   console.log(`Loaded OpenSandbox configuration from ${installed.source}`);
+ * const installedConfig = await loadInstalledPiOpenSandboxConfig();
+ * if (installedConfig.enabled && installedConfig.runtime) {
+ *   console.log(`Loaded OpenSandbox configuration from ${installedConfig.source}`);
  * }
  */
 export interface InstalledPiOpenSandboxConfig {
@@ -119,10 +119,10 @@ export interface InstalledPiOpenSandboxConfig {
  * // Default Pi agent directory:
  * // ~/.pi/agent/extensions/opensandbox.json
  *
- * getPiOpenSandboxUserConfigPath("/tmp/pi-agent");
+ * resolveUserConfigPath("/tmp/pi-agent");
  * // /tmp/pi-agent/extensions/opensandbox.json
  */
-export function getPiOpenSandboxUserConfigPath(agentDir = getAgentDir()): string {
+export function resolveUserConfigPath(agentDir = getAgentDir()): string {
   return join(agentDir, "extensions", USER_CONFIG_NAME);
 }
 
@@ -147,15 +147,15 @@ export function hasPiOpenSandboxEnvironmentConfig(
  * Environment configuration takes precedence over the persisted user file.
  *
  * @example
- * const config = await loadInstalledPiOpenSandboxConfig(
+ * const installedConfig = await loadInstalledPiOpenSandboxConfig(
  *   { OPENSANDBOX_API_KEY: "your-api-key" },
  *   "/tmp/pi-agent/extensions/opensandbox.json",
  * );
- * console.log(config.source);
+ * console.log(installedConfig.source);
  */
 export async function loadInstalledPiOpenSandboxConfig(
   environment: NodeJS.ProcessEnv = process.env,
-  configPath = getPiOpenSandboxUserConfigPath(),
+  configPath = resolveUserConfigPath(),
 ): Promise<InstalledPiOpenSandboxConfig> {
   if (hasPiOpenSandboxEnvironmentConfig(environment)) {
     return {
@@ -165,28 +165,28 @@ export async function loadInstalledPiOpenSandboxConfig(
     };
   }
 
-  const stored = await readStoredPiOpenSandboxConfig(configPath);
-  if (stored === undefined) return { enabled: false, source: "none" };
-  if (stored.enabled === false) {
+  const storedConfig = await readStoredPiOpenSandboxConfig(configPath);
+  if (storedConfig === undefined) return { enabled: false, source: "none" };
+  if (storedConfig.enabled === false) {
     return {
       enabled: false,
       source: "user",
-      ...(stored.options === undefined ? {} : { options: stored.options }),
+      ...(storedConfig.options === undefined ? {} : { options: storedConfig.options }),
     };
   }
 
-  const options = stored.options!;
+  const storedOptions = storedConfig.options!;
   const environmentApiKey = environment.OPENSANDBOX_API_KEY
     ?? environment.OPEN_SANDBOX_API_KEY;
   const effectiveOptions = environmentApiKey === undefined
-    ? options
+    ? storedOptions
     : {
-      ...options,
-      sandboxConfig: { ...options.sandboxConfig, apiKey: environmentApiKey },
+      ...storedOptions,
+      sandboxConfig: { ...storedOptions.sandboxConfig, apiKey: environmentApiKey },
     };
   return {
     enabled: true,
-    options,
+    options: storedOptions,
     runtime: resolvePiOpenSandboxRuntimeConfig(effectiveOptions, environment),
     source: "user",
   };
@@ -198,17 +198,17 @@ export async function loadInstalledPiOpenSandboxConfig(
  * Returns `undefined` when the file does not exist.
  *
  * @example
- * const stored = await readStoredPiOpenSandboxConfig(
+ * const storedConfig = await readStoredPiOpenSandboxConfig(
  *   "/tmp/pi-agent/extensions/opensandbox.json",
  * );
- * console.log(stored?.enabled ?? false);
+ * console.log(storedConfig?.enabled ?? false);
  */
 export async function readStoredPiOpenSandboxConfig(
-  configPath = getPiOpenSandboxUserConfigPath(),
+  configPath = resolveUserConfigPath(),
 ): Promise<{ enabled: boolean; options?: PiOpenSandboxOptions } | undefined> {
-  let source: string;
+  let configJson: string;
   try {
-    source = await readFile(configPath, "utf8");
+    configJson = await readFile(configPath, "utf8");
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") return undefined;
     throw error;
@@ -216,7 +216,7 @@ export async function readStoredPiOpenSandboxConfig(
 
   let input: unknown;
   try {
-    input = JSON.parse(source);
+    input = JSON.parse(configJson);
   } catch (error) {
     throw new Error("OpenSandbox user configuration is not valid JSON", { cause: error });
   }
@@ -251,7 +251,7 @@ export async function readStoredPiOpenSandboxConfig(
  */
 export async function writeStoredPiOpenSandboxConfig(
   value: { enabled: boolean; options?: PiOpenSandboxOptions },
-  configPath = getPiOpenSandboxUserConfigPath(),
+  configPath = resolveUserConfigPath(),
 ): Promise<void> {
   if (value.enabled && value.options === undefined) {
     throw new Error("Enabled OpenSandbox configuration requires options");
@@ -304,10 +304,10 @@ export async function loadPiOpenSandboxConfig(
     throw new Error(`Configure the extension with ${CONFIG_ENV} or ${CONFIG_FILE_ENV}`);
   }
 
-  const source = inlineConfig ?? await readFile(resolve(configFile!), "utf8");
+  const configJson = inlineConfig ?? await readFile(resolve(configFile!), "utf8");
   let input: unknown;
   try {
-    input = JSON.parse(source);
+    input = JSON.parse(configJson);
   } catch (error) {
     throw new Error("OpenSandbox configuration is not valid JSON", { cause: error });
   }
@@ -355,10 +355,10 @@ export function resolvePiOpenSandboxRuntimeConfig(
 }
 
 function addSharedRoot(config: Record<string, unknown>, root: string): Record<string, unknown> {
-  const current = resourceRootsSchema.parse(config.resourceRoots) ?? [];
+  const resourceRoots = resourceRootsSchema.parse(config.resourceRoots) ?? [];
   return {
     ...config,
-    resourceRoots: [...new Set([...current, root])],
+    resourceRoots: [...new Set([...resourceRoots, root])],
   };
 }
 
