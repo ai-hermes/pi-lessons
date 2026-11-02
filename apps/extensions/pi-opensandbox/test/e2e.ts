@@ -49,7 +49,7 @@ try {
   assert.match(status, new RegExp(`Image: ${escapeRegExp(image)}`));
   assert.doesNotMatch(status, /API key:/);
   assert.doesNotMatch(status, new RegExp(escapeRegExp(apiKey)));
-  assert.match(status, /Mode: local/);
+  assert.match(status, /State: inactive/);
   assert.match(status, /Current sandbox: not active/);
 
   const activation = await runPiCommand("OpenSandbox session running", true);
