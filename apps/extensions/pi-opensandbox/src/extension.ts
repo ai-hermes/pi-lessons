@@ -131,6 +131,7 @@ export function createPiOpenSandboxExtensionFromConfig(
       active: false
     };
     let remoteToolsRegistered = false;
+    let setOpenSandboxStatus: ((status: string) => void) | undefined;
     const ensureSelectedSkills = async () => {
       if (sharedSkillRoot === undefined || materializedSkills.length > 0) return;
       skillPreparation ??= materializeSkills(
@@ -158,6 +159,13 @@ export function createPiOpenSandboxExtensionFromConfig(
           );
         }
       },
+      onConnectionStatusChange: (status) => {
+        setOpenSandboxStatus?.(
+          status === "connected"
+            ? OPEN_SANDBOX_REMOTE_STATUS
+            : "opensandbox: unreachable",
+        );
+      },
     });
 
     const ensureRemoteTools = () => {
@@ -167,7 +175,7 @@ export function createPiOpenSandboxExtensionFromConfig(
       remoteToolsRegistered = true;
       registerOpenSandboxTools(
         pi,
-        () => sandboxSession.requireActiveSandboxHandle(),
+        (operation) => sandboxSession.withActiveSandboxHandle(operation),
         () => sandboxSession.getHostWorkspaceRoot(),
       );
     };
@@ -205,6 +213,7 @@ export function createPiOpenSandboxExtensionFromConfig(
     });
 
     pi.on("session_start", async (event, ctx) => {
+      setOpenSandboxStatus = (status) => ctx.ui.setStatus("opensandbox", status);
       sandboxSession.setPiSessionContext(
         ctx.sessionManager.getSessionId(),
         ctx.sessionManager.getCwd(),
@@ -241,6 +250,7 @@ export function createPiOpenSandboxExtensionFromConfig(
     });
 
     pi.on("session_tree", async (_event, ctx) => {
+      setOpenSandboxStatus = (status) => ctx.ui.setStatus("opensandbox", status);
       sandboxSession.setPiSessionContext(
         ctx.sessionManager.getSessionId(),
         ctx.sessionManager.getCwd(),
