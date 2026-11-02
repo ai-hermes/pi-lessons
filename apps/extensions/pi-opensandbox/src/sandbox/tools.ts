@@ -15,72 +15,73 @@ import {
   createLsOperations,
   createReadOperations,
   createWriteOperations,
+  type WithActiveSandboxHandle,
 } from "./tool-operations";
-import type { OpenSandboxHandle } from "./client";
 import { createFindOperations, runRemoteGrep, type GrepParams } from "./search";
 
 /**
  * Replaces Pi's `bash`, `read`, `write`, `edit`, `ls`, `find`, and `grep`
  * tools, and handles user `!` shell commands with remote implementations.
  *
- * `requireActiveSandboxHandle` must reject when remote execution is unavailable so a
- * remote-mode tool call can never silently fall back to the host workspace.
+ * `withActiveSandboxHandle` must reject when remote execution is unavailable
+ * so a remote-mode tool call can never silently fall back to the host workspace.
  *
  * @example
  * ```ts
  * registerOpenSandboxTools(
  *   pi,
- *   () => session.requireActiveSandboxHandle(),
+ *   (operation) => session.withActiveSandboxHandle(operation),
  *   () => session.getHostWorkspaceRoot(),
  * );
  * ```
  */
 export function registerOpenSandboxTools(
   pi: ExtensionAPI,
-  requireActiveSandboxHandle: () => Promise<OpenSandboxHandle>,
+  withActiveSandboxHandle: WithActiveSandboxHandle,
   getHostWorkspaceRoot: () => string,
 ): void {
   const hostWorkspaceRoot = getHostWorkspaceRoot();
   const localGrep = createGrepTool(hostWorkspaceRoot);
   pi.registerTool(
     createBashTool(hostWorkspaceRoot, {
-      operations: createBashOperations(requireActiveSandboxHandle),
+      operations: createBashOperations(withActiveSandboxHandle),
     }),
   );
   pi.registerTool(
     createReadTool(hostWorkspaceRoot, {
-      operations: createReadOperations(requireActiveSandboxHandle),
+      operations: createReadOperations(withActiveSandboxHandle),
     })
   );
   pi.registerTool(
     createWriteTool(hostWorkspaceRoot, {
-      operations: createWriteOperations(requireActiveSandboxHandle),
+      operations: createWriteOperations(withActiveSandboxHandle),
     })
   );
   pi.registerTool(
     createEditTool(hostWorkspaceRoot, {
-      operations: createEditOperations(requireActiveSandboxHandle),
+      operations: createEditOperations(withActiveSandboxHandle),
     })
   );
   pi.registerTool(
     createLsTool(hostWorkspaceRoot, {
-      operations: createLsOperations(requireActiveSandboxHandle),
+      operations: createLsOperations(withActiveSandboxHandle),
     })
   );
   pi.registerTool(
     createFindTool(hostWorkspaceRoot, {
-      operations: createFindOperations(requireActiveSandboxHandle),
+      operations: createFindOperations(withActiveSandboxHandle),
     })
   );
 
   pi.registerTool({
     ...localGrep,
     async execute(_id, params, signal) {
-      const sandboxHandle = await requireActiveSandboxHandle();
       if (signal?.aborted) {
         throw new Error("Operation aborted");
       }
-      return runRemoteGrep(sandboxHandle, params as GrepParams, signal);
+      return withActiveSandboxHandle(
+        (sandboxHandle) => runRemoteGrep(sandboxHandle, params as GrepParams, signal),
+      );
     },
   });
 
@@ -96,7 +97,9 @@ export function registerOpenSandboxTools(
       }),
     }),
     async execute(_toolCallId, { port }) {
-      const url = await (await requireActiveSandboxHandle()).getEndpointUrl(port);
+      const url = await withActiveSandboxHandle(
+        (sandboxHandle) => sandboxHandle.getEndpointUrl(port),
+      );
       return {
         content: [{ type: "text" as const, text: `OpenSandbox URL for port ${port}: ${url}` }],
         details: { port, url },
@@ -104,13 +107,7 @@ export function registerOpenSandboxTools(
     },
   });
 
-  pi.on("user_bash", async () => {
-    const sandboxHandle = await requireActiveSandboxHandle();
-    return {
-      operations: createBashOperations(
-        async () => sandboxHandle,
-        sandboxHandle.sandboxWorkspaceRoot,
-      ),
-    };
-  });
+  pi.on("user_bash", () => ({
+    operations: createBashOperations(withActiveSandboxHandle, true),
+  }));
 }

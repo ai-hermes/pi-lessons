@@ -2,6 +2,7 @@ import type { FindOperations } from "@earendil-works/pi-coding-agent";
 import { posix } from "node:path";
 import type { OpenSandboxHandle } from "./client";
 import { shellQuote } from "./client";
+import type { WithActiveSandboxHandle } from "./tool-operations";
 
 /** Parameters supported by the remote implementation of Pi's grep tool. */
 export interface GrepParams {
@@ -30,21 +31,22 @@ const maxSearchOutputBytes = 30 * 1024;
 
 /** Creates Pi find operations backed by the active remote sandbox. */
 export function createFindOperations(
-  requireActiveSandboxHandle: () => Promise<OpenSandboxHandle>,
+  withActiveSandboxHandle: WithActiveSandboxHandle,
 ): FindOperations {
   return {
-    exists: async (path) => {
-      return await (await requireActiveSandboxHandle()).getFileInfo(path) !== undefined;
-    },
-    glob: async (pattern, cwd, { ignore, limit }) => {
-      const sandboxHandle = await requireActiveSandboxHandle();
-      const sandboxCwd = sandboxHandle.resolveReadablePath(cwd);
-      const files = await sandboxHandle.searchFiles(cwd, pattern);
-      return files
-        .map((file) => posix.relative(sandboxCwd, file.path))
-        .filter((path) => !ignore.some((ignored) => posix.matchesGlob(path, ignored)))
-        .slice(0, limit);
-    },
+    exists: (path) => withActiveSandboxHandle(async (sandboxHandle) =>
+      await sandboxHandle.getFileInfo(path) !== undefined
+    ),
+    glob: (pattern, cwd, { ignore, limit }) => withActiveSandboxHandle(
+      async (sandboxHandle) => {
+        const sandboxCwd = sandboxHandle.resolveReadablePath(cwd);
+        const files = await sandboxHandle.searchFiles(cwd, pattern);
+        return files
+          .map((file) => posix.relative(sandboxCwd, file.path))
+          .filter((path) => !ignore.some((ignored) => posix.matchesGlob(path, ignored)))
+          .slice(0, limit);
+      },
+    ),
   };
 }
 

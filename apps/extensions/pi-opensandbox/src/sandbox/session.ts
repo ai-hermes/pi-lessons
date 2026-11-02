@@ -1,5 +1,9 @@
 import type { OpenSandboxSettings } from "./config";
-import { describeOpenSandboxError, logOpenSandboxEvent } from "./logger";
+import {
+  describeOpenSandboxError,
+  isOpenSandboxTransportError,
+  logOpenSandboxEvent,
+} from "./logger";
 import { getErrorMessage } from "../utils";
 import {
   OpenSandboxHandle,
@@ -12,6 +16,8 @@ interface SandboxSessionOptions {
   hostWorkspaceRoot: string;
   /** Performs extension-specific setup after the sandbox becomes reachable. */
   initializeSandbox?: (sandboxHandle: OpenSandboxHandle) => void | Promise<void>;
+  /** Reports whether the current sandbox connection is usable. */
+  onConnectionStatusChange?: (status: "connected" | "unreachable") => void;
   /** Startup seam used by tests; production callers use the default implementation. */
   startOpenSandbox?: typeof startOpenSandbox;
 }
@@ -23,7 +29,12 @@ interface SandboxSessionOptions {
  * startup error so tools and status views can explain why remote execution is
  * unavailable.
  */
-export type SandboxSessionState = "inactive" | "starting" | "active" | "failed";
+export type SandboxSessionState =
+  | "inactive"
+  | "starting"
+  | "active"
+  | "unreachable"
+  | "failed";
 
 /**
  * Coordinates one active OpenSandbox connection for a Pi session.
@@ -42,8 +53,13 @@ export type SandboxSessionState = "inactive" | "starting" | "active" | "failed";
  */
 export class SandboxSession {
   private activeSandboxHandle: OpenSandboxHandle | null = null;
+  private connectionFailure: Error | undefined;
   private startupFailure: Error | undefined;
   private readonly initializeSandbox: SandboxSessionOptions["initializeSandbox"];
+  private readonly onConnectionStatusChange:
+    SandboxSessionOptions["onConnectionStatusChange"];
+  private reconnectTarget: SandboxRestoreTarget | undefined;
+  private sandboxSettings: OpenSandboxSettings | undefined;
   private readonly startOpenSandbox: typeof startOpenSandbox;
   private startupPromise: Promise<OpenSandboxHandle> | undefined;
   private hostWorkspaceRoot: string;
@@ -53,6 +69,7 @@ export class SandboxSession {
   constructor(options: SandboxSessionOptions) {
     this.hostWorkspaceRoot = options.hostWorkspaceRoot;
     this.initializeSandbox = options.initializeSandbox;
+    this.onConnectionStatusChange = options.onConnectionStatusChange;
     this.startOpenSandbox = options.startOpenSandbox ?? startOpenSandbox;
   }
 
@@ -79,12 +96,18 @@ export class SandboxSession {
   getLifecycleState(): SandboxSessionState {
     if (this.startupPromise) return "starting";
     if (this.activeSandboxHandle) return "active";
+    if (this.connectionFailure) return "unreachable";
     return this.startupFailure === undefined ? "inactive" : "failed";
   }
 
   /** Returns the most recent startup or restoration error, if any. */
   getStartupFailure(): Error | undefined {
     return this.startupFailure;
+  }
+
+  /** Returns the transport error that made the active sandbox unreachable. */
+  getConnectionFailure(): Error | undefined {
+    return this.connectionFailure;
   }
 
   /** Clears the startup error only when no startup or connection is active. */
@@ -126,10 +149,14 @@ export class SandboxSession {
     sandboxSettings: OpenSandboxSettings,
     restoreTarget?: SandboxRestoreTarget,
   ): Promise<OpenSandboxHandle> {
+    this.sandboxSettings = sandboxSettings;
     if (this.startupPromise) return this.startupPromise;
     if (this.activeSandboxHandle) return Promise.resolve(this.activeSandboxHandle);
     this.startupFailure = undefined;
-    const startupPromise = this.startAndInitializeSandbox(sandboxSettings, restoreTarget);
+    const startupPromise = this.startAndInitializeSandbox(
+      sandboxSettings,
+      restoreTarget ?? this.reconnectTarget,
+    );
     this.startupPromise = startupPromise;
     void startupPromise.catch(() => undefined);
     return startupPromise;
@@ -145,7 +172,7 @@ export class SandboxSession {
    * ```ts
    * registerOpenSandboxTools(
    *   pi,
-   *   () => session.requireActiveSandboxHandle(),
+   *   (operation) => session.withActiveSandboxHandle(operation),
    *   () => session.getHostWorkspaceRoot(),
    * );
    * ```
@@ -153,6 +180,9 @@ export class SandboxSession {
   async requireActiveSandboxHandle(): Promise<OpenSandboxHandle> {
     if (this.startupPromise) return this.startupPromise;
     if (this.activeSandboxHandle) return this.activeSandboxHandle;
+    if (this.connectionFailure && this.sandboxSettings && this.reconnectTarget) {
+      return this.ensureActiveSandboxHandle(this.sandboxSettings, this.reconnectTarget);
+    }
     if (this.startupFailure !== undefined) {
       throw new Error(
         `OpenSandbox restore failed: ${this.startupFailure.message}. `
@@ -160,6 +190,37 @@ export class SandboxSession {
       );
     }
     throw new Error("OpenSandbox is not active. The tool was not run on the host.");
+  }
+
+  /**
+   * Runs one operation against the current handle and invalidates it on transport failure.
+   *
+   * Failed operations are never replayed because the remote side may have
+   * completed them before the connection was lost. The next operation
+   * reconnects to the same sandbox.
+   *
+   * @example
+   * ```ts
+   * const result = await session.withActiveSandboxHandle((sandboxHandle) =>
+   *   sandboxHandle.runCommand("ls", sandboxHandle.sandboxWorkspaceRoot)
+   * );
+   * ```
+   */
+  async withActiveSandboxHandle<T>(
+    operation: (sandboxHandle: OpenSandboxHandle) => Promise<T>,
+  ): Promise<T> {
+    const sandboxHandle = await this.requireActiveSandboxHandle();
+    try {
+      return await operation(sandboxHandle);
+    } catch (error) {
+      if (!isOpenSandboxTransportError(error)) throw error;
+      await this.markConnectionUnreachable(sandboxHandle, error);
+      throw new Error(
+        "OpenSandbox connection lost. The remote operation may have completed; "
+        + "restore network connectivity and retry.",
+        { cause: error },
+      );
+    }
   }
 
   /**
@@ -179,6 +240,9 @@ export class SandboxSession {
       );
     }
     this.startupFailure = undefined;
+    this.connectionFailure = undefined;
+    this.reconnectTarget = undefined;
+    this.sandboxSettings = undefined;
   }
 
   /**
@@ -197,6 +261,9 @@ export class SandboxSession {
         sandboxHandle.isOwnedByExtension ? "pause" : "disconnect",
       );
     }
+    this.connectionFailure = undefined;
+    this.reconnectTarget = undefined;
+    this.sandboxSettings = undefined;
   }
 
   private async startAndInitializeSandbox(
@@ -204,6 +271,7 @@ export class SandboxSession {
     restoreTarget?: SandboxRestoreTarget,
   ): Promise<OpenSandboxHandle> {
     let sandboxHandle: OpenSandboxHandle | undefined;
+    const reconnecting = this.connectionFailure !== undefined;
     try {
       sandboxHandle = await this.startOpenSandbox(
         {
@@ -223,9 +291,18 @@ export class SandboxSession {
       this.startLeaseRenewal(sandboxHandle, sandboxSettings.timeoutSeconds);
       this.activeSandboxHandle = sandboxHandle;
       await this.initializeSandbox?.(sandboxHandle);
+      this.connectionFailure = undefined;
+      this.reconnectTarget = {
+        sandboxId: sandboxHandle.id,
+        owned: sandboxHandle.isOwnedByExtension,
+      };
+      if (reconnecting) this.onConnectionStatusChange?.("connected");
       return sandboxHandle;
     } catch (error) {
       const startupFailure = error instanceof Error ? error : new Error(getErrorMessage(error));
+      if (!reconnecting || !isOpenSandboxTransportError(error)) {
+        this.connectionFailure = undefined;
+      }
       this.startupFailure = startupFailure;
       this.activeSandboxHandle = null;
       await this.stopLeaseRenewal?.();
@@ -240,6 +317,32 @@ export class SandboxSession {
   private async waitForStartup(): Promise<OpenSandboxHandle | null> {
     if (this.startupPromise) await this.startupPromise.catch(() => undefined);
     return this.activeSandboxHandle;
+  }
+
+  private async markConnectionUnreachable(
+    sandboxHandle: OpenSandboxHandle,
+    error: unknown,
+  ): Promise<void> {
+    if (this.activeSandboxHandle !== sandboxHandle) return;
+    this.connectionFailure = error instanceof Error ? error : new Error(getErrorMessage(error));
+    this.reconnectTarget = {
+      sandboxId: sandboxHandle.id,
+      owned: sandboxHandle.isOwnedByExtension,
+    };
+    this.activeSandboxHandle = null;
+    await this.stopLeaseRenewal?.();
+    this.stopLeaseRenewal = undefined;
+    await sandboxHandle.release("disconnect").catch((releaseError: unknown) => {
+      logOpenSandboxEvent("warn", "sandbox.disconnect.error", {
+        sandboxId: sandboxHandle.id,
+        ...describeOpenSandboxError(releaseError),
+      });
+    });
+    logOpenSandboxEvent("warn", "sandbox.connection.unreachable", {
+      sandboxId: sandboxHandle.id,
+      ...describeOpenSandboxError(error),
+    });
+    this.onConnectionStatusChange?.("unreachable");
   }
 
   private async releaseActiveSandbox(

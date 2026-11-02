@@ -1186,7 +1186,9 @@ test("session startup is deduplicated and remote operations await it", async () 
   const first = session.ensureActiveSandboxHandle({ timeoutSeconds: 3600 });
   await new Promise((resolve) => setImmediate(resolve));
   const second = session.ensureActiveSandboxHandle({ timeoutSeconds: 3600 });
-  const bash = createBashOperations(() => session.requireActiveSandboxHandle());
+  const bash = createBashOperations(
+    (operation) => session.withActiveSandboxHandle(operation),
+  );
   const operation = bash.exec("true", process.cwd(), {});
   assert.equal(starts, 1);
   resolveReady();
@@ -1194,6 +1196,77 @@ test("session startup is deduplicated and remote operations await it", async () 
   assert.equal(await second, active);
   assert.deepEqual(await operation, { exitCode: 0 });
   await session.releaseForShutdown();
+});
+
+test("transport failures mark the sandbox unreachable and reconnect on the next operation", async () => {
+  let closeCalls = 0;
+  const disconnectedHandle = sandboxHandle({
+    id: "reconnect-me",
+    renew: async () => {},
+    close: async () => { closeCalls += 1; },
+    commands: {
+      run: async () => {
+        throw Object.assign(new TypeError("fetch failed"), {
+          cause: Object.assign(new Error("socket closed"), { code: "ECONNRESET" }),
+        });
+      },
+    },
+  });
+  const reconnectedHandle = sandboxHandle({
+    id: "reconnect-me",
+    renew: async () => {},
+    close: async () => {},
+    commands: {
+      run: async () => ({ exitCode: 0 }),
+    },
+  }, {
+    startupMode: "connected",
+    owned: true,
+  });
+  const restoreTargets = [];
+  const connectionStatuses = [];
+  const session = new SandboxSession({
+    hostWorkspaceRoot: process.cwd(),
+    startOpenSandbox: async (_settings, _hostWorkspaceRoot, restoreTarget) => {
+      restoreTargets.push(restoreTarget);
+      if (restoreTargets.length === 1) return disconnectedHandle;
+      if (restoreTargets.length === 2) {
+        throw Object.assign(new TypeError("fetch failed"), { code: "ENETUNREACH" });
+      }
+      return reconnectedHandle;
+    },
+    onConnectionStatusChange: (status) => connectionStatuses.push(status),
+  });
+
+  await session.ensureActiveSandboxHandle({ timeoutSeconds: 3600 });
+  await assert.rejects(
+    session.withActiveSandboxHandle((sandbox) =>
+      sandbox.runCommand("ls", sandbox.sandboxWorkspaceRoot)
+    ),
+    /connection lost.*may have completed.*retry/i,
+  );
+  assert.equal(session.getLifecycleState(), "unreachable");
+  assert.equal(closeCalls, 1);
+
+  await assert.rejects(
+    session.withActiveSandboxHandle((sandbox) =>
+      sandbox.runCommand("ls", sandbox.sandboxWorkspaceRoot)
+    ),
+    /fetch failed/,
+  );
+  assert.equal(session.getLifecycleState(), "unreachable");
+
+  const result = await session.withActiveSandboxHandle((sandbox) =>
+    sandbox.runCommand("ls", sandbox.sandboxWorkspaceRoot)
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(session.getLifecycleState(), "active");
+  assert.deepEqual(restoreTargets, [
+    undefined,
+    { sandboxId: "reconnect-me", owned: true },
+    { sandboxId: "reconnect-me", owned: true },
+  ]);
+  assert.deepEqual(connectionStatuses, ["unreachable", "connected"]);
 });
 
 test("resumed ownership survives startup mode and controls release behavior", async () => {
@@ -1553,7 +1626,9 @@ test("remote bash forwards Pi environment and the complete output stream", async
       interrupt: async () => {},
     },
   };
-  const operations = createBashOperations(async () => sandboxHandle(sandbox));
+  const operations = createBashOperations(
+    (operation) => operation(sandboxHandle(sandbox)),
+  );
   await operations.exec("env", process.cwd(), {
     onData: (data) => chunks.push(data),
   });
@@ -1592,7 +1667,7 @@ test("find uses the sandbox filesystem and grep builds a valid shell script", as
     },
   });
 
-  const find = createFindOperations(async () => active);
+  const find = createFindOperations((operation) => operation(active));
   assert.equal(await find.exists(process.cwd()), true);
   assert.deepEqual(
     await find.glob("**/*.ts", process.cwd(), {

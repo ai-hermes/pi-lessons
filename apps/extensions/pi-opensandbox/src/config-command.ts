@@ -25,7 +25,7 @@ import { getErrorMessage } from "./utils";
  * ```
  */
 export interface OpenSandboxRuntime {
-  /** Exposes the current inactive, starting, active, or failed state. */
+  /** Exposes the current sandbox lifecycle state. */
   session: SandboxSession;
   /** Starts or restores the sandbox attached to the current remote session. */
   activate: () => Promise<OpenSandboxHandle>;
@@ -81,7 +81,9 @@ export function registerOpenSandboxCommand(
               ? ["Skills"]
               : []),
             ...(sessionState === "starting" ? ["OpenSandbox session starting"] : []),
-            ...(sessionState === "failed" ? ["Retry OpenSandbox", "Status"] : []),
+            ...(["unreachable", "failed"].includes(sessionState)
+              ? ["Retry OpenSandbox", "Status"]
+              : []),
             ...(installedConfig?.enabled === true ? ["Disable"] : []),
           ]
         : ["Enable OpenSandbox"];
@@ -112,7 +114,12 @@ export function registerOpenSandboxCommand(
             "info",
           );
         } catch (error) {
-          ctx.ui.setStatus("opensandbox", "opensandbox: failed");
+          ctx.ui.setStatus(
+            "opensandbox",
+            runtime!.session.getLifecycleState() === "unreachable"
+              ? "opensandbox: unreachable"
+              : "opensandbox: failed",
+          );
           ctx.ui.notify(`OpenSandbox failed to start: ${getErrorMessage(error)}`, "error");
         }
         return;
@@ -229,6 +236,7 @@ function showStatus(
   const sandboxConfig = config.runtime?.sandboxSettings ?? config.options?.sandboxConfig;
   const sandboxHandle = runtime?.session.getActiveSandboxHandle();
   const startupFailure = runtime?.session.getStartupFailure();
+  const connectionFailure = runtime?.session.getConnectionFailure();
   ctx.ui.notify([
     `Enabled: ${config.enabled ? "yes" : "no"}`,
     `Source: ${config.source === "environment" ? "environment variables" : config.source === "user" ? "user configuration" : "none"}`,
@@ -244,6 +252,9 @@ function showStatus(
           `Running image: ${sandboxHandle.imageReference}`,
         ]),
     ...(startupFailure === undefined ? [] : [`Error: ${getErrorMessage(startupFailure)}`]),
+    ...(connectionFailure === undefined
+      ? []
+      : [`Connection error: ${getErrorMessage(connectionFailure)}`]),
   ].join("\n"), "info");
 }
 
