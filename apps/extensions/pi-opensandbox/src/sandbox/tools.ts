@@ -85,6 +85,7 @@ export function registerOpenSandboxTools(
     },
   });
 
+  // user -> domain -> ${domain}/v1/sandboxes/${sandboxId}/proxy/8080/mcp
   pi.registerTool({
     name: "opensandbox_port_url",
     label: "OpenSandbox Port URL",
@@ -108,6 +109,6 @@ export function registerOpenSandboxTools(
   });
 
   pi.on("user_bash", () => ({
-    operations: createBashOperations(withActiveSandboxHandle, true),
+    operations: createBashOperations(withActiveSandboxHandle),
   }));
 }
