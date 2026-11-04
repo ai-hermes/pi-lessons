@@ -106,26 +106,34 @@ const limitsSchema = z.object({
  * Symbolic links, non-regular files, common secret files, and content exceeding
  * the configured limits are rejected before any remote upload occurs.
  *
+ * @param selectedSkills Host Skill directories to copy. Each directory must
+ * contain a regular `SKILL.md`; `name` defaults to the directory name.
+ * @param localSkillRoot Local cache root for content-addressed snapshots, such
+ * as `~/.pi/agent/cache/pi-opensandbox/skills`. This is not the remote
+ * `sharedSkillRoot`.
+ * @param skillSyncLimits Required per-file, total-size, and file-count limits
+ * applied while scanning all selected Skills.
+ *
  * @example
  * ```ts
  * const limits = parseSkillSyncLimits(undefined);
  * const materializedSkills = await materializeSkills(
  *   [{ sourceDir: "/home/user/.pi/skills/code-review" }],
- *   "/tmp/pi/skills",
+ *   "/home/user/.pi/agent/cache/pi-opensandbox/skills",
  *   limits,
  * );
  * ```
  */
 export async function materializeSkills(
   selectedSkills: SelectedSkill[],
-  sharedSkillRoot: string,
+  localSkillRoot: string,
   skillSyncLimits: Required<SkillSyncLimits>,
 ): Promise<MaterializedSkill[]> {
   if (selectedSkills.length === 0) {
     throw new Error("At least one selected Skill is required");
   }
 
-  await mkdir(sharedSkillRoot, { recursive: true, mode: 0o700 });
+  await mkdir(localSkillRoot, { recursive: true, mode: 0o700 });
   const names = new Set<string>();
   const materializedSkills: MaterializedSkill[] = [];
   let totalBytes = 0;
@@ -150,7 +158,9 @@ export async function materializeSkills(
     enforceTotals(totalBytes, totalFiles, skillSyncLimits);
 
     const digest = digestManifest(files);
-    const targetDir = join(sharedSkillRoot, `${name}-${digest.slice(0, 16)}`);
+    // Cache each Skill as <name>-<first 16 digest characters> so unchanged
+    // content reuses the same directory while changed content gets a new one.
+    const targetDir = join(localSkillRoot, `${name}-${digest.slice(0, 16)}`);
     await materializeOneSkill(targetDir, digest, files);
 
     materializedSkills.push({
@@ -230,9 +240,30 @@ async function materializeOneSkill(
   digest: string,
   files: ManifestFile[],
 ): Promise<void> {
+  // The lock, temporary directory, and final snapshot are siblings:
+  //   <targetDir>.lock                 guards concurrent materialization
+  //   <targetDir>.tmp-<pid>-<uuid>/    receives and verifies copied files
+  //   <targetDir>/                     stores the completed Skill snapshot
+  //
+  // Actual local example while lark-doc is being materialized:
+  //   /Users/aholic/.pi/agent/cache/pi-opensandbox/skills/
+  //     lark-doc-b0f475d64bb43da7.lock
+  //     lark-doc-b0f475d64bb43da7.tmp-123-<uuid>/
+  //       SKILL.md
+  //       references/
+  //       .pi-skill-digest
+  //
+  // After completion, the lock and temporary directory are removed:
+  //   /Users/aholic/.pi/agent/cache/pi-opensandbox/skills/
+  //     lark-doc-b0f475d64bb43da7/
+  //       SKILL.md
+  //       references/
+  //       .pi-skill-digest
   await withMaterializationLock(targetDir, async () => {
+    // Reuse a complete, verified snapshot instead of copying unchanged content.
     if (await skillCacheMatchesManifest(targetDir, digest, files)) return;
 
+    // Build the snapshot separately so a failed copy cannot leave a partial cache.
     const temporaryDir = `${targetDir}.tmp-${process.pid}-${randomUUID()}`;
     await mkdir(temporaryDir, { recursive: false, mode: 0o700 });
 
@@ -243,11 +274,14 @@ async function materializeOneSkill(
         await copyFile(file.absoluteSource, target);
         await chmod(target, file.mode);
         const copied = await readFile(target);
+        // Detect source changes that occurred after the manifest was built.
         if (copied.byteLength !== file.bytes || sha256(copied) !== file.sha256) {
           throw new Error(`Skill source changed while being materialized: ${file.absoluteSource}`);
         }
       }
+      // Record the full manifest digest used to validate future cache reuse.
       await writeFile(join(temporaryDir, DIGEST_MARKER), `${digest}\n`, { mode: 0o600 });
+      // Publish the completed snapshot only after every file has been verified.
       await rm(targetDir, { recursive: true, force: true });
       await rename(temporaryDir, targetDir);
     } catch (error) {
@@ -283,6 +317,7 @@ async function skillCacheMatchesManifest(
       return true;
     }
 
+    // The +1 accounts for the generated .pi-skill-digest file, which is not in the source manifest.
     if (!(await visit(targetDir)) || actualFiles.size !== files.length + 1) return false;
     const markerInfo = actualFiles.get(DIGEST_MARKER);
     if (!markerInfo) return false;
@@ -332,6 +367,13 @@ export async function uploadSkills(
 
   const previousSkillNames = await readManagedSkillNames(sandboxHandle, sharedSkillRoot);
   const stagingRoot = joinPosix(sharedSkillRoot, `.staging-${randomUUID()}`);
+  /*
+  [
+    1, 2,
+    [3]
+  ]
+  => [1, 2, 3]
+  */
   const uploads = skills.flatMap((skill) => {
     const remoteSkillDir = joinPosix(stagingRoot, skill.name);
     return skill.files.map((file) => ({

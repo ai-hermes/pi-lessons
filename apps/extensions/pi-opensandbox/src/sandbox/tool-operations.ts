@@ -15,21 +15,22 @@ export type WithActiveSandboxHandle = <T>(
   operation: (sandboxHandle: OpenSandboxHandle) => Promise<T>,
 ) => Promise<T>;
 
-/** Creates Pi bash operations that execute commands in the active sandbox. */
+/**
+ * Creates Pi bash operations that execute commands in the active sandbox.
+ *
+ * Both the bash tool and user `!` commands receive the host session cwd, which
+ * always maps to the sandbox workspace root, so commands run there directly.
+ */
 export function createBashOperations(
   withActiveSandboxHandle: WithActiveSandboxHandle,
-  useSandboxWorkspaceRoot = false,
 ): BashOperations {
   return {
-    exec: (command, cwd, options) => withActiveSandboxHandle(async (sandboxHandle) => {
-      const workingDirectory = useSandboxWorkspaceRoot
-        ? sandboxHandle.sandboxWorkspaceRoot
-        : sandboxHandle.resolveReadablePath(cwd);
+    exec: (command, _cwd, options) => withActiveSandboxHandle(async (sandboxHandle) => {
       // Execute the caller-provided shell command while forwarding Pi environment
       // variables, output events, cancellation, and the requested timeout.
       const result = await sandboxHandle.runCommand(
         command,
-        workingDirectory,
+        sandboxHandle.sandboxWorkspaceRoot,
         {
           onData: options.onData,
           env: buildForwardedPiEnvironment(options.env ?? {}),

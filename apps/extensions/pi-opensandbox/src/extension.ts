@@ -54,19 +54,19 @@ const STATE_ENTRY_TYPE = "pi-opensandbox-state";
  */
 export type PersistedSandboxState =
   | {
-      /** The Pi session uses local execution. */
-      active: false;
-      sandboxId?: never;
-      owned?: never;
-    }
+    /** The Pi session uses local execution. */
+    active: false;
+    sandboxId?: never;
+    owned?: never;
+  }
   | {
-      /** The Pi session expects subsequent tools to run remotely. */
-      active: true;
-      /** Sandbox to resume; absent while a new remote session starts. */
-      sandboxId?: string;
-      /** Whether this extension created and manages the sandbox. */
-      owned?: boolean;
-    };
+    /** The Pi session expects subsequent tools to run remotely. */
+    active: true;
+    /** Sandbox to resume; absent while a new remote session starts. */
+    sandboxId?: string;
+    /** Whether this extension created and manages the sandbox. */
+    owned?: boolean;
+  };
 
 /**
  * Creates a Pi extension factory from user-facing OpenSandbox options.
@@ -122,10 +122,15 @@ export function createPiOpenSandboxExtensionFromConfig(
       description: "Start this Pi process in OpenSandbox",
       type: "boolean",
     });
+    // Materialized Skills are cached below:
+    //   <agentDir>/cache/pi-opensandbox/skills
+    // getAgentDir() uses PI_CODING_AGENT_DIR when set, otherwise ~/.pi/agent.
+    // For example, this machine resolves the cache root to:
+    //   /Users/aholic/.pi/agent/cache/pi-opensandbox/skills
     const localSkillRoot = join(getAgentDir(), "cache", "pi-opensandbox", "skills");
     let materializedSkills: MaterializedSkill[] = [];
     let selectedSkillDefinitions: Skill[] = [];
-    let skillPreparation: Promise<void> | undefined;
+    let skillPreparationInFlight: Promise<void> | undefined;
     let skillSyncReport: SkillSyncReport | undefined;
     let persistedSandboxState: PersistedSandboxState = {
       active: false
@@ -134,17 +139,19 @@ export function createPiOpenSandboxExtensionFromConfig(
     let setOpenSandboxStatus: ((status: string) => void) | undefined;
     const ensureSelectedSkills = async () => {
       if (sharedSkillRoot === undefined || materializedSkills.length > 0) return;
-      skillPreparation ??= materializeSkills(
-        selectedSkills,
-        localSkillRoot,
-        skillSyncLimits,
-      ).then((materialized) => {
-        materializedSkills = materialized;
-        selectedSkillDefinitions = loadSelectedSkillDefinitions(materializedSkills);
-      }).finally(() => {
-        skillPreparation = undefined;
-      });
-      await skillPreparation;
+      if (skillPreparationInFlight === undefined) {
+        skillPreparationInFlight = materializeSkills(
+          selectedSkills,
+          localSkillRoot,
+          skillSyncLimits,
+        ).then((materialized) => {
+          materializedSkills = materialized;
+          selectedSkillDefinitions = loadSelectedSkillDefinitions(materializedSkills);
+        }).finally(() => {
+          skillPreparationInFlight = undefined;
+        });
+      }
+      await skillPreparationInFlight;
     };
     const sandboxSession = new SandboxSession({
       hostWorkspaceRoot: process.cwd(),
@@ -294,8 +301,13 @@ export function createPiOpenSandboxExtensionFromConfig(
         + "OpenSandbox sandbox. User ! shell commands also execute there.";
     });
 
+    // Input handlers run in registration order and may return:
+    //   continue  - leave the input unchanged and pass it to later handlers.
+    //   transform - replace the input, then pass the replacement to later handlers.
+    //   handled   - consume the input immediately; later handlers and the agent do not receive it.
     pi.on("input", async (event, ctx) => {
       if (sandboxSession.getLifecycleState() === "inactive" || !event.text.startsWith("/skill:")) {
+        // Example: "explain this code" is unrelated to /skill:, so preserve it.
         return { action: "continue" };
       }
       const skillCommandMatch = /^\/skill:([^\s]+)(?:\s+([\s\S]*))?$/.exec(event.text);
@@ -314,6 +326,7 @@ export function createPiOpenSandboxExtensionFromConfig(
             "error",
           );
         }
+        // The invalid command is consumed here instead of being sent to the agent.
         return { action: "handled" };
       }
 
@@ -325,6 +338,8 @@ export function createPiOpenSandboxExtensionFromConfig(
         + `${skillBody}\n</skill>`;
       const skillArguments = skillCommandMatch[2]?.trim();
       return {
+        // Example: "/skill:lark-doc create a document" becomes the remote
+        // Skill instructions followed by "create a document".
         action: "transform",
         text: skillArguments ? `${skillBlock}\n\n${skillArguments}` : skillBlock,
       };
@@ -338,17 +353,39 @@ export function createPiOpenSandboxExtensionFromConfig(
 
 function loadSelectedSkillDefinitions(materializedSkills: MaterializedSkill[]): Skill[] {
   return materializedSkills.map((materializedSkill) => {
-    const loaded = loadSkillsFromDir({
+    const loadedSkills = loadSkillsFromDir({
       dir: materializedSkill.hostDir,
       source: "pi-opensandbox",
-    }).skills.find((skill) => skill.filePath === materializedSkill.skillFile);
-    if (!loaded) {
+    }).skills;
+    const loadedSkill = loadedSkills.find(
+      (skill) => skill.filePath === materializedSkill.skillFile,
+    );
+    if (!loadedSkill) {
       throw new Error(`Selected Skill has no valid description: ${materializedSkill.skillFile}`);
     }
-    return { ...loaded, name: materializedSkill.name };
+    return { ...loadedSkill, name: materializedSkill.name };
   });
 }
 
+/**
+ * Returns Skill definitions whose local paths are replaced with the paths
+ * reported after a successful remote upload. The original definitions remain
+ * unchanged.
+ *
+ * For example, a locally loaded Skill may contain:
+ *
+ *   filePath:
+ *     /Users/aholic/.pi/agent/cache/pi-opensandbox/skills/
+ *       lark-shared-b400959fb495763e/SKILL.md
+ *
+ * After upload, its returned definition contains:
+ *
+ *   filePath: /tmp/pi-opensandbox/skills/lark-shared/SKILL.md
+ *   baseDir:  /tmp/pi-opensandbox/skills/lark-shared
+ *
+ * Updating sourceInfo as well ensures relative references are resolved inside
+ * the remote Skill directory rather than against the local cache.
+ */
 function buildRemoteSkills(
   selectedSkillDefinitions: Skill[],
   skillSyncReport: SkillSyncReport | undefined,
