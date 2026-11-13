@@ -49,14 +49,15 @@ jobs:
         run: |
           version="v1.0.0-${GITHUB_SHA:0:12}"
           image="agentgateway-image-mcp:$version"
-          docker build --platform linux/amd64 --tag "$image" apps/agentgateway-image-mcp
+          docker build --platform linux/amd64 --provenance=false --tag "$image" apps/agentgateway-image-mcp
           docker run --rm --entrypoint python "$image" -m unittest -v
           docker run -d --name image-mcp-check --read-only --cap-drop ALL \
             --security-opt no-new-privileges --tmpfs /tmp \
             -e MCP_UPSTREAM_AUTHORIZATION='Bearer ci-only' \
             -p 8000:8000 "$image"
           trap 'docker logs image-mcp-check; docker rm -f image-mcp-check' EXIT
-          curl --retry 10 --retry-delay 1 --retry-connrefused --fail http://localhost:8000/healthz
+          curl --retry 10 --retry-delay 1 --retry-all-errors \
+            --connect-timeout 2 --max-time 5 --fail http://localhost:8000/healthz
           test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/mcp)" = 401
           mkdir -p deploy/images
           docker save "$image" -o "deploy/images/agentgateway-image-mcp-$version-amd64.tar"
