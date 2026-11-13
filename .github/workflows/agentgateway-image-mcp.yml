@@ -36,7 +36,11 @@ jobs:
         run: |
           python -m pip install pip-audit==2.10.1
           pip-audit --disable-pip -r apps/agentgateway-image-mcp/requirements.txt --progress-spinner off
-      - name: Test local bridge and deployment scripts
+      - name: Install image transport tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y skopeo
+      - name: Check HTTP client and deployment scripts
         working-directory: apps/agentgateway-image-mcp
         run: |
           npm ci --ignore-scripts
@@ -44,35 +48,44 @@ jobs:
           npm test
           bash -n deploy/release.sh
           bash -n deploy/publish.sh
-          node --check check.mjs
-      - name: Build and test dedicated amd64 image
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and test amd64 and arm64 images
         run: |
           version="v1.0.0-${GITHUB_SHA:0:12}"
-          image="agentgateway-image-mcp:$version"
-          docker build --platform linux/amd64 --provenance=false --tag "$image" apps/agentgateway-image-mcp
-          docker run --rm --entrypoint python "$image" -m unittest -v
-          docker run -d --name image-mcp-check --read-only --cap-drop ALL \
-            --security-opt no-new-privileges --tmpfs /tmp \
-            -e MCP_UPSTREAM_AUTHORIZATION='Bearer ci-only' \
-            -p 8000:8000 "$image"
-          trap 'docker logs image-mcp-check; docker rm -f image-mcp-check' EXIT
-          curl --retry 10 --retry-delay 1 --retry-all-errors \
-            --connect-timeout 2 --max-time 5 --fail http://localhost:8000/healthz
-          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/mcp)" = 401
           mkdir -p deploy/images
-          sudo apt-get update -qq
-          sudo apt-get install -y skopeo
-          # Keep the exported compressed manifests, not reconstructed Docker archive digests.
-          docker save "$image" -o "deploy/images/agentgateway-image-mcp-$version-amd64.tar"
-          test "$(skopeo inspect --override-os linux --override-arch amd64 \
-            "oci-archive:deploy/images/agentgateway-image-mcp-$version-amd64.tar" \
-            --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
+          archive="deploy/images/agentgateway-image-mcp-$version-multiarch.tar"
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --provenance=false --sbom=false --tag "agentgateway-image-mcp:$version" \
+            --output "type=oci,dest=$archive" apps/agentgateway-image-mcp
+          skopeo inspect --raw "oci-archive:$archive" |
+            python3 apps/agentgateway-image-mcp/deploy/inspect_index.py
+          for arch in amd64 arm64; do
+            image="agentgateway-image-mcp:$version-$arch"
+            container="image-mcp-check-$arch"
+            skopeo copy --override-os linux --override-arch "$arch" \
+              "oci-archive:$archive" "docker-daemon:$image"
+            test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = "linux/$arch"
+            docker run --rm --pull=never --platform "linux/$arch" \
+              --entrypoint python "$image" -m unittest -v
+            docker run -d --pull=never --platform "linux/$arch" --name "$container" \
+              --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp \
+              -e MCP_UPSTREAM_AUTHORIZATION='Bearer ci-only' -p 8000:8000 "$image"
+            trap 'docker logs "$container"; docker rm -f "$container"' EXIT
+            curl --retry 10 --retry-delay 1 --retry-all-errors \
+              --connect-timeout 2 --max-time 5 --fail http://localhost:8000/healthz
+            test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/mcp)" = 401
+            docker rm -f "$container"
+            trap - EXIT
+          done
           cd deploy/images
-          sha256sum *.tar > SHA256SUMS
+          sha256sum -- *.tar > SHA256SUMS
       - uses: actions/upload-artifact@v4
         if: github.event_name != 'pull_request'
         with:
-          name: agentgateway-image-mcp-amd64
+          name: agentgateway-image-mcp-multiarch
           path: deploy/images/
           compression-level: 0
           retention-days: 30
