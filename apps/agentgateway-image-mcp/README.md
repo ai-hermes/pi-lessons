@@ -5,6 +5,8 @@ the existing gateway's Ark image API, model aliases, authentication, and
 billing controls. The public route is `/mcp/images`; no second domain is needed.
 It returns image URLs, never retries a possibly billed request, and requires
 independent backend authentication even when NetworkPolicy is not enforced.
+Seedream 5.0 pro/flash omit the unsupported `sequential_image_generation`
+parameter; 5.0 lite, 4.5, and 4.0 explicitly set it to `disabled`.
 
 ## Development
 
