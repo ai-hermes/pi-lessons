@@ -1,0 +1,71 @@
+name: agentgateway-image-mcp CI
+
+on:
+  pull_request:
+    paths:
+      - "apps/agentgateway-image-mcp/**"
+      - ".github/workflows/agentgateway-image-mcp.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/agentgateway-image-mcp/**"
+      - ".github/workflows/agentgateway-image-mcp.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-mcp-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/agentgateway-image-mcp/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Audit Python dependencies
+        run: |
+          python -m pip install pip-audit==2.10.1
+          pip-audit --disable-pip -r apps/agentgateway-image-mcp/requirements.txt --progress-spinner off
+      - name: Test local bridge and deployment scripts
+        working-directory: apps/agentgateway-image-mcp
+        run: |
+          npm ci --ignore-scripts
+          npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
+          npm test
+          bash -n deploy/release.sh
+          bash -n deploy/publish.sh
+          node --check check.mjs
+      - name: Build and test dedicated amd64 image
+        run: |
+          version="v1.0.0-${GITHUB_SHA:0:12}"
+          image="agentgateway-image-mcp:$version"
+          docker build --platform linux/amd64 --tag "$image" apps/agentgateway-image-mcp
+          docker run --rm --entrypoint python "$image" -m unittest -v
+          docker run -d --name image-mcp-check --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --tmpfs /tmp \
+            -e MCP_UPSTREAM_AUTHORIZATION='Bearer ci-only' \
+            -p 8000:8000 "$image"
+          trap 'docker logs image-mcp-check; docker rm -f image-mcp-check' EXIT
+          curl --retry 10 --retry-delay 1 --retry-connrefused --fail http://localhost:8000/healthz
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/mcp)" = 401
+          mkdir -p deploy/images
+          docker save "$image" -o "deploy/images/agentgateway-image-mcp-$version-amd64.tar"
+          cd deploy/images
+          sha256sum *.tar > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: agentgateway-image-mcp-amd64
+          path: deploy/images/
+          compression-level: 0
+          retention-days: 30

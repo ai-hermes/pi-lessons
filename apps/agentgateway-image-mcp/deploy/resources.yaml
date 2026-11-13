@@ -1,0 +1,199 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ark-image-mcp
+  namespace: ark-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ark-image-mcp
+  template:
+    metadata:
+      labels:
+        app: ark-image-mcp
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+      - name: cr-ai-insight-cr-cn-beijing
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: ["${MCP_NODE_1}", "${MCP_NODE_2}", "${MCP_NODE_3}"]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+      - name: mcp
+        image: ${MCP_IMAGE}
+        env:
+        - name: MCP_UPSTREAM_AUTHORIZATION
+          valueFrom:
+            secretKeyRef:
+              name: ark-image-mcp-upstream-auth
+              key: Authorization
+        - name: AGENTGATEWAY_CLIENT_CREDENTIAL
+          valueFrom:
+            secretKeyRef:
+              name: agentgateway-client-keys
+              key: client1
+        ports:
+        - name: http
+          containerPort: 8000
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 15
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ark-image-mcp
+  namespace: ark-gateway
+spec:
+  selector:
+    app: ark-image-mcp
+  ports:
+  - port: 8000
+    targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ark-image-mcp
+  namespace: ark-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: ark-image-mcp
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: agentgateway
+      podSelector:
+        matchLabels:
+          gateway.networking.k8s.io/gateway-name: agentgateway
+    ports:
+    - protocol: TCP
+      port: 8000
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: agentgateway
+      podSelector:
+        matchLabels:
+          gateway.networking.k8s.io/gateway-name: agentgateway
+    ports:
+    - protocol: TCP
+      port: 8080
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: ark-image-mcp
+  namespace: ark-gateway
+spec:
+  mcp:
+    sessionRouting: Stateless
+    prefixMode: Never
+    targets:
+    - name: images
+      static:
+        host: ark-image-mcp.ark-gateway.svc.cluster.local
+        port: 8000
+        path: /mcp/
+        protocol: StreamableHTTP
+        policies:
+          auth:
+            secretRef:
+              name: ark-image-mcp-upstream-auth
+          http:
+            requestTimeout: 190s
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ark-image-mcp
+  namespace: ark-gateway
+spec:
+  parentRefs:
+  - name: agentgateway
+    namespace: agentgateway
+  rules:
+  - matches:
+    - path:
+        type: Exact
+        value: /mcp/images
+    backendRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: ark-image-mcp
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: ark-image-mcp-client-auth
+  namespace: ark-gateway
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: ark-image-mcp
+  traffic:
+    apiKeyAuthentication:
+      mode: Strict
+      secretRef:
+        name: agentgateway-client-keys
+      location:
+        expression: >-
+          (type(default(request.headers.authorization, "")) != string ||
+           type(default(request.headers["x-api-key"], "")) != string)
+          ? ""
+          : (has(request.headers.authorization)
+            ? (request.headers.authorization.matches("(?i)^Bearer .+$")
+              ? request.headers.authorization.substring(7) : "")
+            : default(request.headers["x-api-key"], ""))
+    headerModifiers:
+      request:
+        remove: [x-api-key, authorization]

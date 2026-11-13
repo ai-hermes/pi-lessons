@@ -1,0 +1,5 @@
+# Use patched SDK and HTTP transport versions; lock transitive dependencies too.
+mcp==1.30.0
+httpx==0.28.1
+starlette==1.10.0
+uvicorn==0.54.0
