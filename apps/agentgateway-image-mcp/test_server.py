@@ -75,6 +75,29 @@ class ImageMcpTests(unittest.IsolatedAsyncioTestCase):
             async with RealClient(transport=httpx.ASGITransport(app=server.app), base_url="http://localhost:8000") as client:
                 self.assertEqual((await client.post("/mcp", json={})).status_code, 401)
 
+    async def test_authenticated_http_handshake_and_tool_listing(self):
+        with patch.dict(os.environ, {"MCP_UPSTREAM_AUTHORIZATION": "Bearer test-only"}):
+            async with server.app.router.lifespan_context(server.app):
+                async with RealClient(
+                    transport=httpx.ASGITransport(app=server.app),
+                    base_url="http://localhost:8000",
+                    headers={"Authorization": "Bearer test-only", "Accept": "application/json, text/event-stream"},
+                ) as client:
+                    initialized = await client.post("/mcp/", json={
+                        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-03-26", "capabilities": {},
+                            "clientInfo": {"name": "test-only", "version": "1"},
+                        },
+                    })
+                    self.assertEqual(initialized.status_code, 200)
+                    self.assertIn("protocolVersion", initialized.json()["result"])
+                    listed = await client.post("/mcp/", json={
+                        "jsonrpc": "2.0", "id": 2, "method": "tools/list",
+                    })
+                    self.assertEqual(listed.status_code, 200)
+                    self.assertEqual([tool["name"] for tool in listed.json()["result"]["tools"]], ["generate_image"])
+
 
 if __name__ == "__main__":
     unittest.main()
