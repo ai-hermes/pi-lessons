@@ -42,3 +42,12 @@ bakup/
 *.swp
 *.swo
 *~
+
+# Image MCP dependencies and offline deployment output.
+__pycache__/
+.venv/
+deploy/images/*.tar
+deploy/images/images.manifest.tsv
+deploy/agentgateway-image-mcp/
+deploy/.incoming/
+deploy/.download/
