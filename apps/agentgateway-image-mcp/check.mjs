@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { userInfo } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -8,7 +9,7 @@ const endpoint = new URL(process.env.AGENTGATEWAY_MCP_URL);
 assert.equal(endpoint.protocol, "https:");
 const base = endpoint.origin;
 const key = execFileSync("/usr/bin/security", [
-  "find-generic-password", "-w", "-a", process.env.USER, "-s", "agentgateway-api-aii",
+  "find-generic-password", "-w", "-a", userInfo().username, "-s", "agentgateway-api-aii",
 ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 const init = {
   jsonrpc: "2.0", id: 1, method: "initialize",
