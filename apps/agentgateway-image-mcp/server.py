@@ -66,7 +66,11 @@ async def generate_image(
                 "output_format": output_format,
                 "response_format": "url",
                 "watermark": watermark,
-                "sequential_image_generation": "disabled",
+                **(
+                    {"sequential_image_generation": "disabled"}
+                    if model in ("doubao-seedream-5.0-lite", "doubao-seedream-4.5", "doubao-seedream-4.0")
+                    else {}
+                ),
             },
         )
         if not response.is_success:
