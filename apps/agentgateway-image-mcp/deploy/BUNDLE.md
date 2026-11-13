@@ -38,7 +38,8 @@ bash config/publish.sh .
 
 Enter the registry password through stdin. The script validates the lock,
 checks the manifest with the Kubernetes API, copies the downloaded image with
-local skopeo, verifies its registry digest, and rolls out the pinned image.
+local skopeo's `oci-archive:` transport, verifies its registry digest, and rolls
+out the pinned image.
 The registry location comes from `images.lock`. A different existing image tag
 is never overwritten. A failed rollout restores the previous Deployment.
 Existing Secrets and the previous source ConfigMap are retained.
