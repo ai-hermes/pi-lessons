@@ -49,7 +49,7 @@ async def healthz(request):
 )
 async def generate_image(
     prompt: Annotated[str, Field(min_length=1, max_length=8000)],
-    model: Model = "doubao-seedream-5.0-pro",
+    model: Model = "doubao-seedream-5.0-flash",
     size: Annotated[str, Field(pattern=r"^(1K|2K|4K|[1-9][0-9]{2,3}x[1-9][0-9]{2,3})$")] = "1K",
     output_format: Literal["png", "jpeg"] = "png",
     watermark: bool = True,

@@ -2,18 +2,21 @@
 
 ## Prerequisites
 
-Supported platform: `linux/amd64`. Install `bdpan`, `skopeo`, `kubectl`,
+Supported platforms: `linux/amd64` and `linux/arm64`. Install `bdpan`, `skopeo`, `kubectl`,
 GNU `envsubst`, Python 3, Bash, and `shasum`. An existing Agentgateway installation,
 the `ark-gateway` namespace, its registry pull secret, client-key secret, and
 independent MCP upstream-auth secret are required. Secrets are not included.
 The `charts/` directory is intentionally empty: deployment uses raw manifests.
+The stateless MCP service uses default Kubernetes scheduling, with no fixed node
+list or custom node labels. Both architectures share one image index; nodes pull
+the matching image.
 
 ## Download and verify
 
 Set `REMOTE_ROOT` to `bd://deploy/agentgateway-image-mcp/<version>`.
 Download `README.md`, `SHA256SUMS`, and `images.lock` first.
 Download only the archive named in `images.lock` from this package's `images/`
-directory, plus `config/resources.yaml`, `config/publish.sh`, and
+directory, plus `config/resources.yaml`, `config/publish.sh`, `config/inspect_index.py`, and
 `charts/.gitkeep`, preserving relative paths. Use `bdpan cp --dryrun`
 before the image transfer. Then run:
 
@@ -30,16 +33,14 @@ corrupt downloaded file and retry once; do not overwrite remote artifacts.
 ```bash
 export KUBECONFIG='<kubeconfig-path>'
 export REGISTRY_USERNAME='<robot-username>'
-export MCP_NODE_1='<eligible-node-hostname>'
-export MCP_NODE_2='<eligible-node-hostname>'
-export MCP_NODE_3='<eligible-node-hostname>'
 bash config/publish.sh .
 ```
 
 Enter the registry password through stdin. The script validates the lock,
 checks the manifest with the Kubernetes API, copies the downloaded image with
-local skopeo's `oci-archive:` transport, verifies its registry digest, and rolls
-out the pinned image.
+local skopeo's `oci-archive:` transport with `--all --preserve-digests`, verifies
+both platforms and the registry index digest, and rolls out the image pinned to
+that index digest.
 The registry location comes from `images.lock`. A different existing image tag
 is never overwritten. A failed rollout restores the previous Deployment.
 Existing Secrets and the previous source ConfigMap are retained.
@@ -53,7 +54,7 @@ kubectl -n ark-gateway get pods -l app=ark-image-mcp
 
 The endpoint remains `/mcp/images` on the existing public gateway.
 Use the repository's `check.mjs` with `AGENTGATEWAY_MCP_URL` configured to
-test public authentication, tool listing, and the local bridge without
+test public authentication, tool listing, and invalid arguments without
 generating billable images. NetworkPolicy is defense in depth, not a
 replacement for application authentication.
 

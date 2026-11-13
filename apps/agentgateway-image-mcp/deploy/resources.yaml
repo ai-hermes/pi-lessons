@@ -16,14 +16,6 @@ spec:
       automountServiceAccountToken: false
       imagePullSecrets:
       - name: cr-ai-insight-cr-cn-beijing
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: kubernetes.io/hostname
-                operator: In
-                values: ["${MCP_NODE_1}", "${MCP_NODE_2}", "${MCP_NODE_3}"]
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -185,15 +177,6 @@ spec:
       mode: Strict
       secretRef:
         name: agentgateway-client-keys
-      location:
-        expression: >-
-          (type(default(request.headers.authorization, "")) != string ||
-           type(default(request.headers["x-api-key"], "")) != string)
-          ? ""
-          : (has(request.headers.authorization)
-            ? (request.headers.authorization.matches("(?i)^Bearer .+$")
-              ? request.headers.authorization.substring(7) : "")
-            : default(request.headers["x-api-key"], ""))
     headerModifiers:
       request:
         remove: [x-api-key, authorization]

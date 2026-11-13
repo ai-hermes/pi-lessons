@@ -3,9 +3,6 @@ set -euo pipefail
 
 : "${KUBECONFIG:?Set the VKE kubeconfig}"
 : "${REGISTRY_USERNAME:?Set the registry robot username}"
-: "${MCP_NODE_1:?Set the first eligible node hostname}"
-: "${MCP_NODE_2:?Set the second eligible node hostname}"
-: "${MCP_NODE_3:?Set the third eligible node hostname}"
 bundle="$(cd "${1:?Usage: bash publish.sh <verified-bundle-directory>}" && pwd)"
 for tool in skopeo kubectl envsubst shasum python3; do command -v "$tool" >/dev/null; done
 (cd "$bundle" && shasum -a 256 -c SHA256SUMS)
@@ -13,13 +10,12 @@ test "$(awk '!/^#/ { n++ } END { print n }' "$bundle/images.lock")" = 1
 IFS=$'\t' read -r archive image platform digest archive_hash < <(awk '!/^#/' "$bundle/images.lock")
 [[ "$archive" != */* && "$archive" != *..* && "$archive" == *.tar ]]
 [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
-test "$platform" = "linux/amd64"
-test "$(skopeo inspect --override-os linux --override-arch amd64 "oci-archive:$bundle/images/$archive" --format '{{.Digest}}')" = "$digest"
-test "$(skopeo inspect --override-os linux --override-arch amd64 "oci-archive:$bundle/images/$archive" --format '{{.Os}}/{{.Architecture}}')" = "$platform"
+test "$platform" = "linux/amd64,linux/arm64"
+test "$(skopeo inspect --raw "oci-archive:$bundle/images/$archive" | python3 "$bundle/config/inspect_index.py")" = "$digest"
 temp_dir="$(mktemp -d)"
-trap 'rm -f "$temp_dir/auth.json" "$temp_dir/resources.yaml" "$temp_dir/previous-deployment.json"; rmdir "$temp_dir"' EXIT
+trap 'rm -f "$temp_dir/auth.json" "$temp_dir/resources.yaml" "$temp_dir/previous-deployment.json" "$temp_dir/registry-index.json"; rmdir "$temp_dir"' EXIT
 export MCP_IMAGE="${image%:*}@$digest"
-envsubst '${MCP_IMAGE} ${MCP_NODE_1} ${MCP_NODE_2} ${MCP_NODE_3}' < "$bundle/config/resources.yaml" > "$temp_dir/resources.yaml"
+envsubst '${MCP_IMAGE}' < "$bundle/config/resources.yaml" > "$temp_dir/resources.yaml"
 kubectl apply --dry-run=server -f "$temp_dir/resources.yaml"
 printf 'Registry password (stdin, never persisted in the repository): ' >&2
 if test -t 0; then
@@ -30,13 +26,14 @@ if test -t 0; then
 else
   skopeo login --authfile "$temp_dir/auth.json" --username "$REGISTRY_USERNAME" --password-stdin "${image%%/*}"
 fi
-if existing="$(skopeo inspect --authfile "$temp_dir/auth.json" "docker://$image" --format '{{.Digest}}' 2>/dev/null)"; then
+if skopeo inspect --authfile "$temp_dir/auth.json" --raw "docker://$image" > "$temp_dir/registry-index.json" 2>/dev/null; then
+  existing="$(python3 "$bundle/config/inspect_index.py" < "$temp_dir/registry-index.json")"
   test "$existing" = "$digest" || { echo "Refusing to overwrite a different image tag" >&2; exit 1; }
 else
-  skopeo copy --override-os linux --override-arch amd64 --authfile "$temp_dir/auth.json" --preserve-digests \
+  skopeo copy --all --authfile "$temp_dir/auth.json" --preserve-digests \
     "oci-archive:$bundle/images/$archive" "docker://$image"
 fi
-test "$(skopeo inspect --authfile "$temp_dir/auth.json" "docker://$image" --format '{{.Digest}}')" = "$digest"
+test "$(skopeo inspect --authfile "$temp_dir/auth.json" --raw "docker://$image" | python3 "$bundle/config/inspect_index.py")" = "$digest"
 kubectl -n ark-gateway get deployment ark-image-mcp -o json | python3 -c '
 import json, sys
 d = json.load(sys.stdin)

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "check": "node check.mjs",
-    "test": "node --test test_bridge.mjs"
+    "test": "node --check check.mjs && node --test test_check.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2"
