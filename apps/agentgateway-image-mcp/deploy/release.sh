@@ -8,7 +8,7 @@ run_id="${1:?Usage: bash deploy/release.sh <successful-main-workflow-run-id>}"
 app_root="$(cd "$(dirname "$0")/.." && pwd)"
 repo_root="$(git -C "$app_root" rev-parse --show-toplevel)"
 cd "$repo_root"
-for tool in gh bdpan skopeo shasum; do command -v "$tool" >/dev/null; done
+for tool in gh bdpan skopeo shasum python3; do command -v "$tool" >/dev/null; done
 bdpan info
 run="$(gh run view "$run_id" --repo ai-hermes/pi-lessons --json conclusion,headBranch,headSha,workflowName)"
 read -r commit version < <(printf '%s' "$run" | python3 -c '
@@ -20,7 +20,7 @@ print(r["headSha"], "v1.0.0-" + r["headSha"][:12])
 ')
 test "$(git rev-parse HEAD)" = "$commit"
 test -z "$(git status --porcelain -- apps/agentgateway-image-mcp .github/workflows/agentgateway-image-mcp.yml)"
-archive="agentgateway-image-mcp-$version-amd64.tar"
+archive="agentgateway-image-mcp-$version-multiarch.tar"
 bundle="deploy/agentgateway-image-mcp/$version"
 incoming="deploy/.incoming/$run_id"
 download="deploy/.download/$version"
@@ -31,14 +31,13 @@ if bdpan ls "$remote/"; then
   exit 1
 fi
 mkdir -p "$incoming" deploy/images "$bundle/images" "$bundle/config" "$bundle/charts"
-gh run download "$run_id" --repo ai-hermes/pi-lessons -n agentgateway-image-mcp-amd64 -D "$incoming"
+gh run download "$run_id" --repo ai-hermes/pi-lessons -n agentgateway-image-mcp-multiarch -D "$incoming"
 (cd "$incoming" && shasum -a 256 -c SHA256SUMS)
 test -f "$incoming/$archive"
 test ! -e "deploy/images/$archive"
 mv "$incoming/$archive" "deploy/images/$archive"
-platform="$(skopeo inspect --override-os linux --override-arch amd64 "oci-archive:deploy/images/$archive" --format '{{.Os}}/{{.Architecture}}')"
-test "$platform" = "linux/amd64"
-digest="$(skopeo inspect --override-os linux --override-arch amd64 "oci-archive:deploy/images/$archive" --format '{{.Digest}}')"
+platform="linux/amd64,linux/arm64"
+digest="$(skopeo inspect --raw "oci-archive:deploy/images/$archive" | python3 "$app_root/deploy/inspect_index.py")"
 archive_hash="$(shasum -a 256 "deploy/images/$archive" | cut -d ' ' -f1)"
 bdpan cp bd://deploy/images/images.manifest.tsv "$incoming/images.manifest.before.tsv" --no-overwrite
 test ! -e deploy/images/images.manifest.tsv || cmp deploy/images/images.manifest.tsv "$incoming/images.manifest.before.tsv"
@@ -51,6 +50,7 @@ cp "deploy/images/$archive" "$bundle/images/$archive"
 cp "$app_root/deploy/resources.yaml" "$bundle/config/resources.yaml"
 cp "$app_root/deploy/BUNDLE.md" "$bundle/README.md"
 cp "$app_root/deploy/publish.sh" "$bundle/config/publish.sh"
+cp "$app_root/deploy/inspect_index.py" "$bundle/config/inspect_index.py"
 touch "$bundle/charts/.gitkeep"
 (cd "$bundle" && find . -type f ! -name SHA256SUMS | LC_ALL=C sort | while IFS= read -r file; do shasum -a 256 "${file#./}"; done > SHA256SUMS)
 bdpan cp "deploy/images/$archive" "bd://deploy/images/$archive" --dryrun --no-overwrite
@@ -64,7 +64,7 @@ bdpan cp deploy/images/images.manifest.tsv bd://deploy/images/images.manifest.ts
 bdpan cp deploy/images/images.manifest.tsv bd://deploy/images/images.manifest.tsv
 bdpan ls "$remote/"
 mkdir -p "$download/images" "$download/config" "$download/charts"
-for file in README.md SHA256SUMS images.lock config/resources.yaml config/publish.sh charts/.gitkeep; do
+for file in README.md SHA256SUMS images.lock config/resources.yaml config/publish.sh config/inspect_index.py charts/.gitkeep; do
   bdpan cp "$remote/$file" "$download/$file" --no-overwrite
 done
 cmp "$bundle/images.lock" "$download/images.lock"

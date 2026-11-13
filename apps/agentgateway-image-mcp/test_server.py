@@ -17,6 +17,7 @@ class ImageMcpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(request.url.path, "/v1/images/generations")
             self.assertEqual(request.headers["authorization"], "Bearer test-only")
             payload = json.loads(request.content)
+            self.assertEqual(payload["model"], "doubao-seedream-5.0-flash")
             self.assertNotIn("sequential_image_generation", payload)
             self.assertEqual(payload["prompt"], "a cat")
             self.assertEqual(payload["response_format"], "url")
@@ -119,6 +120,10 @@ class ImageMcpTests(unittest.IsolatedAsyncioTestCase):
                     })
                     self.assertEqual(listed.status_code, 200)
                     self.assertEqual([tool["name"] for tool in listed.json()["result"]["tools"]], ["generate_image"])
+                    self.assertEqual(
+                        listed.json()["result"]["tools"][0]["inputSchema"]["properties"]["model"]["default"],
+                        "doubao-seedream-5.0-flash",
+                    )
 
 
 if __name__ == "__main__":

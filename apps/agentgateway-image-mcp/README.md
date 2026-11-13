@@ -3,6 +3,10 @@
 Standalone Streamable HTTP MCP server exposing `generate_image`. It reuses
 the existing gateway's Ark image API, model aliases, authentication, and
 billing controls. The public route is `/mcp/images`; no second domain is needed.
+The MCP route accepts only `Authorization: Bearer <key>`, not `x-api-key`;
+the existing image API's authentication is unchanged.
+The default model is `doubao-seedream-5.0-flash`; pass
+`model="doubao-seedream-5.0-pro"` explicitly when requesting Pro.
 It returns image URLs, never retries a possibly billed request, and requires
 independent backend authentication even when NetworkPolicy is not enforced.
 Seedream 5.0 pro/flash omit the unsupported `sequential_image_generation`
@@ -19,20 +23,23 @@ npm ci --ignore-scripts
 npm test
 ```
 
-The Python dependencies and base image are pinned; SDK and HTTP transport
-versions include known security fixes. The local bridge owns its SDK instead of importing
-from an unrelated plugin cache. Refresh locks deliberately, with compatibility
-and security testing.
+The Python dependencies and base image are pinned. The HTTP verification client
+uses its own locked SDK dependency. Refresh locks deliberately, with compatibility
+and security testing. `npm test` checks script syntax and verifies that plaintext
+endpoints and missing credentials are rejected before any network request. It
+also checks the MCP policy, default scheduling, multi-architecture index
+validation, and OCI archive copying (when skopeo is installed).
 
 ## CI/CD
 
 The `agentgateway-image-mcp CI` workflow runs on relevant PRs, main pushes,
-and manual dispatch. It audits dependencies, tests the bridge, builds a dedicated `linux/amd64`
-image, runs Python tests both during build and as the runtime user, and checks
-read-only startup and unauthorized HTTP access. Main/manual runs publish a
-OCI-compatible Docker export with SHA-256 metadata as a GitHub Actions artifact.
-Both packaging and publishing use skopeo's `oci-archive:` transport to preserve
-the exported compressed-layer manifest digest.
+and manual dispatch. It audits dependencies, checks the HTTP verification client,
+and uses Buildx with QEMU to build `linux/amd64` and `linux/arm64` images. Both
+architectures run Python tests during build and as the runtime user, plus
+read-only startup and unauthorized HTTP access checks. Main/manual runs upload
+one OCI archive with SHA-256 metadata as `agentgateway-image-mcp-multiarch`.
+Packaging validates both platforms. Publishing uses skopeo's `oci-archive:`
+transport with `--all --preserve-digests` to retain the complete image index.
 
 The deployment stage deliberately runs locally: no Netdisk, registry, or
 VKE credentials are uploaded to GitHub. Run it from the exact clean commit
@@ -51,34 +58,54 @@ Large archives and generated packages are Git-ignored.
 
 Then follow [the bundle instructions](deploy/BUNDLE.md) to copy the downloaded
 archive into the VKE registry using local skopeo and roll out the image by
-digest. Existing Secrets, Service, routing, gateway policies, and eligibility
-of the three configured nodes remain unchanged. On rollout failure, the
+index digest, so amd64 and arm64 nodes pull the matching image. No fixed node
+list or custom node labels are required. Existing Secrets, Service, routing,
+and gateway policies remain in place. On rollout failure, the
 deployment script restores the previous Deployment.
 
 ## Local Codex configuration
 
-Install the Node dependency with `npm ci --ignore-scripts`. Store the existing
-gateway client key in macOS Keychain under service `agentgateway-api-aii`,
-with the current username as its account. Do not put the key in TOML.
+Codex connects directly to the public Streamable HTTP endpoint; no local MCP
+process or Node dependency is needed for normal use. Its process must inherit
+`AGENTGATEWAY_API_KEY`. Do not put the key in TOML.
 
 ```toml
 [mcp_servers.agentgateway_images]
-command = "<absolute-node-path>"
-args = ["<repository-path>/apps/agentgateway-image-mcp/local-bridge.mjs"]
+url = "https://<gateway-domain>/mcp/images"
+bearer_token_env_var = "AGENTGATEWAY_API_KEY"
 startup_timeout_sec = 30
 tool_timeout_sec = 210
-
-[mcp_servers.agentgateway_images.env]
-AGENTGATEWAY_MCP_URL = "https://<gateway-domain>/mcp/images"
 ```
 
-Restart the client to load changed MCP configuration. Verify without billing:
+On macOS, the existing key can stay in Keychain under service
+`agentgateway-api-aii`, with the current username as its account. Load it before
+starting the CLI:
+
+```bash
+export AGENTGATEWAY_API_KEY="$(/usr/bin/security find-generic-password -w -a "$(id -un)" -s agentgateway-api-aii)"
+codex
+```
+
+For a desktop client, set its launch environment before fully quitting and
+reopening the app:
+
+```bash
+launchctl setenv AGENTGATEWAY_API_KEY "$AGENTGATEWAY_API_KEY"
+```
+
+The launch environment lasts only for the current macOS login session; repeat
+after logout or reboot. Environment variables are inherited by child processes,
+so keep this key out of logs and untrusted processes.
+
+Restart the client to load changed MCP configuration. Node dependencies are
+only needed for the verification script. Verify without billing:
 
 ```bash
 export AGENTGATEWAY_MCP_URL='https://<gateway-domain>/mcp/images'
+npm --prefix apps/agentgateway-image-mcp ci --ignore-scripts
 npm --prefix apps/agentgateway-image-mcp run check
 ```
 
-The check covers missing/invalid authentication, public and stdio tool listing,
+The check covers missing/invalid Bearer authentication, rejection of `x-api-key`-only requests, public HTTP tool listing,
 invalid tool arguments, and existing gateway routes. It omits the image prompt
 when probing the media API, so no real image is generated.
