@@ -3,7 +3,7 @@
 ## Prerequisites
 
 Supported platform: `linux/amd64`. Install `bdpan`, `skopeo`, `kubectl`,
-GNU `envsubst`, Bash, and `shasum`. An existing Agentgateway installation,
+GNU `envsubst`, Python 3, Bash, and `shasum`. An existing Agentgateway installation,
 the `ark-gateway` namespace, its registry pull secret, client-key secret, and
 independent MCP upstream-auth secret are required. Secrets are not included.
 The `charts/` directory is intentionally empty: deployment uses raw manifests.
@@ -63,6 +63,10 @@ replacement for application authentication.
 kubectl -n ark-gateway rollout undo deployment/ark-image-mcp
 kubectl -n ark-gateway rollout status deployment/ark-image-mcp
 ```
+
+After a manual rollback, reapply the previous version's rendered manifest
+before releasing again, so client-side apply tracking matches the old template.
+The deployment script's automatic rollback restores both from a local snapshot.
 
 After confirming the service is no longer needed, render the resource template
 with the same variables and use `kubectl delete -f <rendered-resource-file>`.

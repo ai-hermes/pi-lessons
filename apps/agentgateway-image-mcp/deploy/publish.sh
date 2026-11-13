@@ -7,7 +7,7 @@ set -euo pipefail
 : "${MCP_NODE_2:?Set the second eligible node hostname}"
 : "${MCP_NODE_3:?Set the third eligible node hostname}"
 bundle="$(cd "${1:?Usage: bash publish.sh <verified-bundle-directory>}" && pwd)"
-for tool in skopeo kubectl envsubst shasum; do command -v "$tool" >/dev/null; done
+for tool in skopeo kubectl envsubst shasum python3; do command -v "$tool" >/dev/null; done
 (cd "$bundle" && shasum -a 256 -c SHA256SUMS)
 test "$(awk '!/^#/ { n++ } END { print n }' "$bundle/images.lock")" = 1
 IFS=$'\t' read -r archive image platform digest archive_hash < <(awk '!/^#/' "$bundle/images.lock")
@@ -17,7 +17,7 @@ test "$platform" = "linux/amd64"
 test "$(skopeo inspect --override-os linux --override-arch amd64 "oci-archive:$bundle/images/$archive" --format '{{.Digest}}')" = "$digest"
 test "$(skopeo inspect --override-os linux --override-arch amd64 "oci-archive:$bundle/images/$archive" --format '{{.Os}}/{{.Architecture}}')" = "$platform"
 temp_dir="$(mktemp -d)"
-trap 'rm -f "$temp_dir/auth.json" "$temp_dir/resources.yaml"; rmdir "$temp_dir"' EXIT
+trap 'rm -f "$temp_dir/auth.json" "$temp_dir/resources.yaml" "$temp_dir/previous-deployment.json"; rmdir "$temp_dir"' EXIT
 export MCP_IMAGE="${image%:*}@$digest"
 envsubst '${MCP_IMAGE} ${MCP_NODE_1} ${MCP_NODE_2} ${MCP_NODE_3}' < "$bundle/config/resources.yaml" > "$temp_dir/resources.yaml"
 kubectl apply --dry-run=server -f "$temp_dir/resources.yaml"
@@ -37,9 +37,19 @@ else
     "oci-archive:$bundle/images/$archive" "docker://$image"
 fi
 test "$(skopeo inspect --authfile "$temp_dir/auth.json" "docker://$image" --format '{{.Digest}}')" = "$digest"
+kubectl -n ark-gateway get deployment ark-image-mcp -o json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+for key in ("resourceVersion", "uid", "generation", "creationTimestamp", "managedFields"):
+    d["metadata"].pop(key, None)
+d.pop("status", None)
+d["metadata"].get("annotations", {}).pop("kubectl.kubernetes.io/last-applied-configuration", None)
+print(json.dumps(d))
+' > "$temp_dir/previous-deployment.json"
 kubectl apply -f "$temp_dir/resources.yaml"
 if ! kubectl -n ark-gateway rollout status deployment/ark-image-mcp --timeout=180s; then
-  kubectl -n ark-gateway rollout undo deployment/ark-image-mcp
+  # Reapply the snapshot so client-side apply tracking is restored with the pod template.
+  kubectl apply -f "$temp_dir/previous-deployment.json"
   kubectl -n ark-gateway rollout status deployment/ark-image-mcp --timeout=180s
   exit 1
 fi
