@@ -22,7 +22,14 @@ export MCP_IMAGE="${image%:*}@$digest"
 envsubst '${MCP_IMAGE} ${MCP_NODE_1} ${MCP_NODE_2} ${MCP_NODE_3}' < "$bundle/config/resources.yaml" > "$temp_dir/resources.yaml"
 kubectl apply --dry-run=server -f "$temp_dir/resources.yaml"
 printf 'Registry password (stdin, never persisted in the repository): ' >&2
-skopeo login --authfile "$temp_dir/auth.json" --username "$REGISTRY_USERNAME" --password-stdin "${image%%/*}"
+if test -t 0; then
+  IFS= read -rs password
+  printf '\n' >&2
+  printf '%s' "$password" | skopeo login --authfile "$temp_dir/auth.json" --username "$REGISTRY_USERNAME" --password-stdin "${image%%/*}"
+  unset password
+else
+  skopeo login --authfile "$temp_dir/auth.json" --username "$REGISTRY_USERNAME" --password-stdin "${image%%/*}"
+fi
 if existing="$(skopeo inspect --authfile "$temp_dir/auth.json" "docker://$image" --format '{{.Digest}}' 2>/dev/null)"; then
   test "$existing" = "$digest" || { echo "Refusing to overwrite a different image tag" >&2; exit 1; }
 else
