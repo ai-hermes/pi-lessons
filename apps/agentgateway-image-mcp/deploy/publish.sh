@@ -14,8 +14,8 @@ IFS=$'\t' read -r archive image platform digest archive_hash < <(awk '!/^#/' "$b
 [[ "$archive" != */* && "$archive" != *..* && "$archive" == *.tar ]]
 [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
 test "$platform" = "linux/amd64"
-test "$(skopeo inspect "docker-archive:$bundle/images/$archive" --format '{{.Digest}}')" = "$digest"
-test "$(skopeo inspect "docker-archive:$bundle/images/$archive" --format '{{.Os}}/{{.Architecture}}')" = "$platform"
+test "$(skopeo inspect --override-os linux --override-arch amd64 "oci-archive:$bundle/images/$archive" --format '{{.Digest}}')" = "$digest"
+test "$(skopeo inspect --override-os linux --override-arch amd64 "oci-archive:$bundle/images/$archive" --format '{{.Os}}/{{.Architecture}}')" = "$platform"
 temp_dir="$(mktemp -d)"
 trap 'rm -f "$temp_dir/auth.json" "$temp_dir/resources.yaml"; rmdir "$temp_dir"' EXIT
 export MCP_IMAGE="${image%:*}@$digest"
@@ -33,8 +33,8 @@ fi
 if existing="$(skopeo inspect --authfile "$temp_dir/auth.json" "docker://$image" --format '{{.Digest}}' 2>/dev/null)"; then
   test "$existing" = "$digest" || { echo "Refusing to overwrite a different image tag" >&2; exit 1; }
 else
-  skopeo copy --authfile "$temp_dir/auth.json" --preserve-digests \
-    "docker-archive:$bundle/images/$archive" "docker://$image"
+  skopeo copy --override-os linux --override-arch amd64 --authfile "$temp_dir/auth.json" --preserve-digests \
+    "oci-archive:$bundle/images/$archive" "docker://$image"
 fi
 test "$(skopeo inspect --authfile "$temp_dir/auth.json" "docker://$image" --format '{{.Digest}}')" = "$digest"
 kubectl apply -f "$temp_dir/resources.yaml"

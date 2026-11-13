@@ -28,7 +28,9 @@ The `agentgateway-image-mcp CI` workflow runs on relevant PRs, main pushes,
 and manual dispatch. It audits dependencies, tests the bridge, builds a dedicated `linux/amd64`
 image, runs Python tests both during build and as the runtime user, and checks
 read-only startup and unauthorized HTTP access. Main/manual runs publish a
-Docker image archive with SHA-256 metadata as a GitHub Actions artifact.
+OCI-compatible Docker export with SHA-256 metadata as a GitHub Actions artifact.
+Both packaging and publishing use skopeo's `oci-archive:` transport to preserve
+the exported compressed-layer manifest digest.
 
 The deployment stage deliberately runs locally: no Netdisk, registry, or
 VKE credentials are uploaded to GitHub. Run it from the exact clean commit

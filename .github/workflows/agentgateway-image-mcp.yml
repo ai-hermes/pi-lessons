@@ -60,7 +60,13 @@ jobs:
             --connect-timeout 2 --max-time 5 --fail http://localhost:8000/healthz
           test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/mcp)" = 401
           mkdir -p deploy/images
+          sudo apt-get update -qq
+          sudo apt-get install -y skopeo
+          # Keep the exported compressed manifests, not reconstructed Docker archive digests.
           docker save "$image" -o "deploy/images/agentgateway-image-mcp-$version-amd64.tar"
+          test "$(skopeo inspect --override-os linux --override-arch amd64 \
+            "oci-archive:deploy/images/agentgateway-image-mcp-$version-amd64.tar" \
+            --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
           cd deploy/images
           sha256sum *.tar > SHA256SUMS
       - uses: actions/upload-artifact@v4

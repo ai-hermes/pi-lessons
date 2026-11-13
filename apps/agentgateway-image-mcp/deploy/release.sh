@@ -36,9 +36,9 @@ gh run download "$run_id" --repo ai-hermes/pi-lessons -n agentgateway-image-mcp-
 test -f "$incoming/$archive"
 test ! -e "deploy/images/$archive"
 mv "$incoming/$archive" "deploy/images/$archive"
-platform="$(skopeo inspect --override-os linux --override-arch amd64 "docker-archive:deploy/images/$archive" --format '{{.Os}}/{{.Architecture}}')"
+platform="$(skopeo inspect --override-os linux --override-arch amd64 "oci-archive:deploy/images/$archive" --format '{{.Os}}/{{.Architecture}}')"
 test "$platform" = "linux/amd64"
-digest="$(skopeo inspect "docker-archive:deploy/images/$archive" --format '{{.Digest}}')"
+digest="$(skopeo inspect --override-os linux --override-arch amd64 "oci-archive:deploy/images/$archive" --format '{{.Digest}}')"
 archive_hash="$(shasum -a 256 "deploy/images/$archive" | cut -d ' ' -f1)"
 bdpan cp bd://deploy/images/images.manifest.tsv "$incoming/images.manifest.before.tsv" --no-overwrite
 test ! -e deploy/images/images.manifest.tsv || cmp deploy/images/images.manifest.tsv "$incoming/images.manifest.before.tsv"
