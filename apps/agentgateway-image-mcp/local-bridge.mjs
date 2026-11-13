@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
+import { userInfo } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -12,7 +13,7 @@ if (url.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(url.hostna
 }
 const key = execFileSync(
   "/usr/bin/security",
-  ["find-generic-password", "-w", "-a", process.env.USER, "-s", "agentgateway-api-aii"],
+  ["find-generic-password", "-w", "-a", userInfo().username, "-s", "agentgateway-api-aii"],
   { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
 ).trim();
 if (!key) throw new Error("Missing Agentgateway API key in Keychain.");

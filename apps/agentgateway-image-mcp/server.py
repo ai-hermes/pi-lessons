@@ -24,6 +24,7 @@ mcp = FastMCP(
     "agentgateway-images",
     host="0.0.0.0",
     port=8000,
+    streamable_http_path="/mcp/",
     stateless_http=True,
     json_response=True,
     transport_security=TransportSecuritySettings(
