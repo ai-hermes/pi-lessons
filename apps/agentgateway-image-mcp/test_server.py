@@ -17,7 +17,7 @@ class ImageMcpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(request.url.path, "/v1/images/generations")
             self.assertEqual(request.headers["authorization"], "Bearer test-only")
             payload = json.loads(request.content)
-            self.assertEqual(payload["sequential_image_generation"], "disabled")
+            self.assertNotIn("sequential_image_generation", payload)
             self.assertEqual(payload["prompt"], "a cat")
             self.assertEqual(payload["response_format"], "url")
             return httpx.Response(200, json={"data": [{"url": "https://example.com/image.png"}]})
@@ -26,6 +26,28 @@ class ImageMcpTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(server.httpx, "AsyncClient", lambda **kw: RealClient(transport=httpx.MockTransport(handle), **kw)):
                 result = await server.generate_image("a cat")
         self.assertEqual(result["data"][0]["url"], "https://example.com/image.png")
+
+    async def test_model_specific_single_image_parameters(self):
+        for model in (
+            "doubao-seedream-5.0-pro",
+            "doubao-seedream-5.0-flash",
+            "doubao-seedream-5.0-lite",
+            "doubao-seedream-4.5",
+            "doubao-seedream-4.0",
+        ):
+            with self.subTest(model=model):
+                def handle(request):
+                    payload = json.loads(request.content)
+                    self.assertEqual(payload["model"], model)
+                    if model in ("doubao-seedream-5.0-pro", "doubao-seedream-5.0-flash"):
+                        self.assertNotIn("sequential_image_generation", payload)
+                    else:
+                        self.assertEqual(payload["sequential_image_generation"], "disabled")
+                    return httpx.Response(200, json={"data": [{"url": "https://example.com/image.png"}]})
+
+                with patch.dict(os.environ, {"AGENTGATEWAY_CLIENT_CREDENTIAL": '{"key":"test-only"}'}):
+                    with patch.object(server.httpx, "AsyncClient", lambda **kw: RealClient(transport=httpx.MockTransport(handle), **kw)):
+                        await server.generate_image("a cat", model=model)
 
     async def test_failure_not_retried_or_leaked(self):
         calls = []
