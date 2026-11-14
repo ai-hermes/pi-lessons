@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 concurrency:
   group: image-mcp-${{ github.ref }}
@@ -39,7 +40,7 @@ jobs:
       - name: Install image transport tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y skopeo
+          sudo apt-get install -y skopeo gettext-base
       - name: Check HTTP client and deployment scripts
         working-directory: apps/agentgateway-image-mcp
         run: |
@@ -59,6 +60,8 @@ jobs:
           archive="deploy/images/agentgateway-image-mcp-$version-multiarch.tar"
           docker buildx build --platform linux/amd64,linux/arm64 \
             --provenance=false --sbom=false --tag "agentgateway-image-mcp:$version" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --output "type=oci,dest=$archive" apps/agentgateway-image-mcp
           skopeo inspect --raw "oci-archive:$archive" |
             python3 apps/agentgateway-image-mcp/deploy/inspect_index.py
@@ -80,10 +83,38 @@ jobs:
             docker rm -f "$container"
             trap - EXIT
           done
+      - name: Push tested image to GHCR
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="v1.0.0-${GITHUB_SHA:0:12}"
+          archive="deploy/images/agentgateway-image-mcp-$version-multiarch.tar"
+          repository="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/agentgateway-image-mcp"
+          image="$repository:$version"
+          digest="$(skopeo inspect --raw "oci-archive:$archive" |
+            python3 apps/agentgateway-image-mcp/deploy/inspect_index.py)"
+          auth_dir="$(mktemp -d)"
+          authfile="$auth_dir/auth.json"
+          trap 'rm -f "$authfile"; rmdir "$auth_dir"' EXIT
+          printf '%s' "$GHCR_TOKEN" | skopeo login --authfile "$authfile" \
+            --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+          if skopeo inspect --authfile "$authfile" --raw "docker://$image" > deploy/images/existing-index.json 2>/dev/null; then
+            test "$(python3 apps/agentgateway-image-mcp/deploy/inspect_index.py < deploy/images/existing-index.json)" = "$digest" ||
+              { echo "Refusing to overwrite a different image tag" >&2; exit 1; }
+          else
+            skopeo copy --all --authfile "$authfile" --preserve-digests \
+              "oci-archive:$archive" "docker://$image"
+          fi
+          test "$(skopeo inspect --authfile "$authfile" --raw "docker://$image" |
+            python3 apps/agentgateway-image-mcp/deploy/inspect_index.py)" = "$digest"
+          rm -f deploy/images/existing-index.json
+          printf '%s@%s\n' "$repository" "$digest" > deploy/images/image.txt
+          printf 'Image: `%s`\n\nPinned image: `%s@%s`\n' "$image" "$repository" "$digest" >> "$GITHUB_STEP_SUMMARY"
           cd deploy/images
-          sha256sum -- *.tar > SHA256SUMS
+          sha256sum -- *.tar image.txt > SHA256SUMS
       - uses: actions/upload-artifact@v4
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         with:
           name: agentgateway-image-mcp-multiarch
           path: deploy/images/

@@ -30,38 +30,82 @@ endpoints and missing credentials are rejected before any network request. It
 also checks the MCP policy, default scheduling, multi-architecture index
 validation, and OCI archive copying (when skopeo is installed).
 
-## CI/CD
+## Image build and GHCR
 
 The `agentgateway-image-mcp CI` workflow runs on relevant PRs, main pushes,
 and manual dispatch. It audits dependencies, checks the HTTP verification client,
 and uses Buildx with QEMU to build `linux/amd64` and `linux/arm64` images. Both
 architectures run Python tests during build and as the runtime user, plus
-read-only startup and unauthorized HTTP access checks. Main/manual runs upload
-one OCI archive with SHA-256 metadata as `agentgateway-image-mcp-multiarch`.
-Packaging validates both platforms. Publishing uses skopeo's `oci-archive:`
-transport with `--all --preserve-digests` to retain the complete image index.
+read-only startup and unauthorized HTTP access checks. Successful main runs
+(including manual runs on main) push the tested image to:
 
-The deployment stage deliberately runs locally: no Netdisk, registry, or
-VKE credentials are uploaded to GitHub. Run it from the exact clean commit
-used by a successful main workflow:
-
-```bash
-export REGISTRY_IMAGE='<registry>/<namespace>/agentgateway-image-mcp'
-bash apps/agentgateway-image-mcp/deploy/release.sh <workflow-run-id>
+```text
+ghcr.io/ai-hermes/agentgateway-image-mcp:v1.0.0-<commit-sha12>
 ```
 
-This stores archives under root `deploy/images/`, maintains the global TSV
-index with a remote backup, creates an immutable self-contained package at
-`bd://deploy/agentgateway-image-mcp/<version>/`, uploads using `bdpan`, and
-downloads the selected package again for checksum validation.
-Large archives and generated packages are Git-ignored.
+The workflow uses `GITHUB_TOKEN` with `packages: write`, links the image to this
+repository, and reports its immutable index digest in the run summary. It refuses
+to replace a version tag with different image content. PRs and non-main manual
+runs only build and test; they do not publish. Existing GHCR package permissions
+must allow this repository to write. Package visibility is configured in GitHub,
+not changed by the workflow; private pulls need GHCR credentials.
 
-Then follow [the bundle instructions](deploy/BUNDLE.md) to copy the downloaded
-archive into the VKE registry using local skopeo and roll out the image by
-index digest, so amd64 and arm64 nodes pull the matching image. No fixed node
-list or custom node labels are required. Existing Secrets, Service, routing,
-and gateway policies remain in place. On rollout failure, the
-deployment script restores the previous Deployment.
+The same OCI archive, pinned `image.txt`, and SHA-256 checksums are retained for
+30 days as the `agentgateway-image-mcp-multiarch` GitHub artifact. CI stops here:
+it does not upload to Netdisk or a business registry, or access Kubernetes.
+
+## Optional reproducibility archive
+
+Archiving is recommended to retain the exact image, source, workflow, and
+environment-specific configuration beyond GitHub artifact retention. It is not a
+deployment prerequisite. From the clean commit used by a successful main run:
+
+```bash
+bash apps/agentgateway-image-mcp/deploy/release.sh <workflow-run-id>
+# Add --upload to also archive this version on Netdisk:
+bash apps/agentgateway-image-mcp/deploy/release.sh <workflow-run-id> --upload
+```
+
+Choose one command; the script refuses to overwrite an existing local version.
+It creates and verifies `deploy/agentgateway-image-mcp/<version>/`. `--upload`
+also copies it to `bd://deploy/agentgateway-image-mcp/<version>/` without replacing
+remote files. No global mutable index, duplicate image upload, or automatic
+download-back is involved. `bdpan` is needed only with `--upload`. Archives are
+Git-ignored. See [archive contents and restoration](deploy/BUNDLE.md).
+
+## Optional deployment: author's VKE environment
+
+`deploy/resources.yaml` and `deploy/publish.sh` record the author's environment,
+not a portable installer. They use namespace `ark-gateway`, the existing
+Agentgateway, internal DNS, Secret names, and NetworkPolicy selectors. Review
+and adapt these before using another cluster. Building or archiving an image
+does not require deploying it.
+
+For this environment, copy the GHCR image directly to the business registry and
+then apply the local resource template:
+
+```bash
+export KUBECONFIG=/Users/aholic/.kube/aiinsight-boe.conf
+export REGISTRY_USERNAME='crrobot@ai-insight'
+export REGISTRY_IMAGE='ai-insight-cr-cn-beijing.cr.volces.com/container/agentgateway-image-mcp:v1.0.0-<commit-sha12>'
+bash apps/agentgateway-image-mcp/deploy/publish.sh \
+  'ghcr.io/ai-hermes/agentgateway-image-mcp:v1.0.0-<commit-sha12>'
+```
+
+Install `skopeo`, `kubectl`, GNU `envsubst`, Bash, and Python 3. Authenticate to
+GHCR with `skopeo login ghcr.io` first if the package is private; the business
+registry password is entered through stdin and stored only in temporary auth
+configuration. No personal registry, Netdisk, or Kubernetes credentials go to CI.
+
+The script resolves the source to a digest, validates both platforms, copies
+registry-to-registry with `--all --preserve-digests`, refuses conflicting
+destination tags, and deploys the verified destination digest. It performs a
+server-side dry-run and waits for rollout. No fixed node list or labels are used.
+For an existing Deployment, rollout failure restores its snapshot only; it does
+not restore Service, NetworkPolicy, Backend, HTTPRoute, or policy changes. A
+failed first deployment retains resources for inspection rather than deleting
+them. Clusters that can pull GHCR directly can use its pinned image without this
+business-registry copy, after adapting their resource configuration.
 
 ## Local Codex configuration
 
