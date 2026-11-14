@@ -1,73 +1,96 @@
-# Image MCP offline bundle
+# Optional reproducibility archive
 
-## Prerequisites
+The archive preserves a tested `linux/amd64` + `linux/arm64` image and its source.
+Netdisk upload is recommended for long-term retention, but neither archiving nor
+Netdisk is required to use the image from GHCR. No deployment is performed.
 
-Supported platform: `linux/amd64`. Install `bdpan`, `skopeo`, `kubectl`,
-GNU `envsubst`, Python 3, Bash, and `shasum`. An existing Agentgateway installation,
-the `ark-gateway` namespace, its registry pull secret, client-key secret, and
-independent MCP upstream-auth secret are required. Secrets are not included.
-The `charts/` directory is intentionally empty: deployment uses raw manifests.
+## Create and optionally upload
 
-## Download and verify
-
-Set `REMOTE_ROOT` to `bd://deploy/agentgateway-image-mcp/<version>`.
-Download `README.md`, `SHA256SUMS`, and `images.lock` first.
-Download only the archive named in `images.lock` from this package's `images/`
-directory, plus `config/resources.yaml`, `config/publish.sh`, and
-`charts/.gitkeep`, preserving relative paths. Use `bdpan cp --dryrun`
-before the image transfer. Then run:
+Use the exact clean commit of a successful main CI run. Install `gh`, `skopeo`,
+Python 3, Bash, and `shasum`; authenticate `gh`. Add `bdpan` only for upload.
 
 ```bash
-cd <bundle-directory>
+bash apps/agentgateway-image-mcp/deploy/release.sh <workflow-run-id> --upload
+```
+
+Omit `--upload` to create only the local archive. Choose one invocation; existing
+local or remote version directories are not overwritten. The local path is
+`deploy/agentgateway-image-mcp/<version>/`; the remote path, if uploaded, is
+`bd://deploy/agentgateway-image-mcp/<version>/`.
+
+Contents:
+
+```text
+<version>/
+├── README.md
+├── SHA256SUMS
+├── images.lock
+├── source.tar                 # exact application source and CI workflow
+├── images/
+│   ├── agentgateway-image-mcp-<version>-multiarch.tar
+│   ├── image.txt              # immutable GHCR image reference
+│   └── SHA256SUMS
+└── config/
+    ├── resources.yaml         # author's environment template
+    ├── publish.sh             # author's optional VKE procedure
+    └── inspect_index.py
+```
+
+The outer checksums cover the files above, including the inner checksums.
+`images.lock` records the archive filename, GHCR tag, platforms, index digest, and
+archive hash. It is not a global mutable manifest. Secrets and kubeconfig are
+not included; archived manifests still need the environment's external
+dependencies. Reproducing the deployed image means retaining these bytes, not
+assuming a future rebuild will produce an identical digest.
+
+## Download and verify when needed
+
+Download the selected version directory from Netdisk only when restoring or
+moving the archive to another machine. Then run:
+
+```bash
+cd <archive-directory>
 shasum -a 256 -c SHA256SUMS
+digest="$(skopeo inspect --raw "oci-archive:images/agentgateway-image-mcp-<version>-multiarch.tar" |
+  python3 config/inspect_index.py)"
+test "$(cat images/image.txt)" = "ghcr.io/ai-hermes/agentgateway-image-mcp@$digest"
 ```
 
-Do not load or publish an archive with a checksum mismatch. Discard only the
-corrupt downloaded file and retry once; do not overwrite remote artifacts.
+Stop on a checksum or digest mismatch. Download-back is not a routine publishing
+step. An independent restore/check is useful for important archived versions.
 
-## Install
+## Restore the archived image
+
+If GHCR is unavailable, copy the verified archive to a chosen registry:
 
 ```bash
-export KUBECONFIG='<kubeconfig-path>'
-export REGISTRY_USERNAME='<robot-username>'
-export MCP_NODE_1='<eligible-node-hostname>'
-export MCP_NODE_2='<eligible-node-hostname>'
-export MCP_NODE_3='<eligible-node-hostname>'
-bash config/publish.sh .
+skopeo login <destination-registry>
+skopeo copy --all --preserve-digests \
+  'oci-archive:images/agentgateway-image-mcp-<version>-multiarch.tar' \
+  'docker://<destination-registry>/<repository>:<version>'
+test "$(skopeo inspect --raw 'docker://<destination-registry>/<repository>:<version>' |
+  python3 config/inspect_index.py)" = "$digest"
 ```
 
-Enter the registry password through stdin. The script validates the lock,
-checks the manifest with the Kubernetes API, copies the downloaded image with
-local skopeo's `oci-archive:` transport, verifies its registry digest, and rolls
-out the pinned image.
-The registry location comes from `images.lock`. A different existing image tag
-is never overwritten. A failed rollout restores the previous Deployment.
-Existing Secrets and the previous source ConfigMap are retained.
+Use a new version tag; do not overwrite an existing tag with different content.
+Keep both architectures and deploy by the verified digest.
 
-## Verify
+## Deployment is separate and environment-specific
+
+Normally use GHCR directly, without downloading this archive. The repository's
+README records the author's optional GHCR → business registry → VKE procedure.
+The archived `config/publish.sh` takes a source registry image, not this directory:
 
 ```bash
-kubectl -n ark-gateway rollout status deployment/ark-image-mcp
-kubectl -n ark-gateway get pods -l app=ark-image-mcp
+export KUBECONFIG='<your-reviewed-kubeconfig>'
+export REGISTRY_USERNAME='<destination-registry-username>'
+export REGISTRY_IMAGE='<destination-registry>/<repository>:<version>'
+bash config/publish.sh "$(cat images/image.txt)"
 ```
 
-The endpoint remains `/mcp/images` on the existing public gateway.
-Use the repository's `check.mjs` with `AGENTGATEWAY_MCP_URL` configured to
-test public authentication, tool listing, and the local bridge without
-generating billable images. NetworkPolicy is defense in depth, not a
-replacement for application authentication.
-
-## Rollback and cleanup
-
-```bash
-kubectl -n ark-gateway rollout undo deployment/ark-image-mcp
-kubectl -n ark-gateway rollout status deployment/ark-image-mcp
-```
-
-After a manual rollback, reapply the previous version's rendered manifest
-before releasing again, so client-side apply tracking matches the old template.
-The deployment script's automatic rollback restores both from a local snapshot.
-
-After confirming the service is no longer needed, render the resource template
-with the same variables and use `kubectl delete -f <rendered-resource-file>`.
-Do not delete shared gateway resources, client keys, or registry credentials.
+Only run that script after reviewing `config/resources.yaml` for the target
+cluster. Its namespace, Secret names, gateway references, DNS, and networking
+match the author's environment. A failed rollout restores an existing
+Deployment only; other resource changes require separate review. Failed first
+deployments retain their resources. Never delete shared gateways or credentials
+as part of rollback.
