@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${REGISTRY_IMAGE:?Set the destination repository without a tag}"
-[[ "$REGISTRY_IMAGE" =~ ^[a-z0-9.-]+(/[a-z0-9._-]+)+$ ]] || { echo "Invalid destination repository" >&2; exit 1; }
-run_id="${1:?Usage: bash deploy/release.sh <successful-main-workflow-run-id>}"
+run_id="${1:?Usage: bash deploy/release.sh <successful-main-workflow-run-id> [--upload]}"
 [[ "$run_id" =~ ^[0-9]+$ ]] || { echo "Invalid workflow run ID" >&2; exit 1; }
+[[ $# -le 2 && ( "${2:-}" == "" || "${2:-}" == "--upload" ) ]] || { echo "Expected optional --upload" >&2; exit 1; }
 app_root="$(cd "$(dirname "$0")/.." && pwd)"
 repo_root="$(git -C "$app_root" rev-parse --show-toplevel)"
 cd "$repo_root"
-for tool in gh bdpan skopeo shasum python3; do command -v "$tool" >/dev/null; done
-bdpan info
+for tool in gh skopeo shasum python3; do command -v "$tool" >/dev/null; done
+if [[ "${2:-}" == "--upload" ]]; then
+  command -v bdpan >/dev/null
+  bdpan info
+fi
 run="$(gh run view "$run_id" --repo ai-hermes/pi-lessons --json conclusion,headBranch,headSha,workflowName)"
 read -r commit version < <(printf '%s' "$run" | python3 -c '
 import json, sys
@@ -22,59 +24,35 @@ test "$(git rev-parse HEAD)" = "$commit"
 test -z "$(git status --porcelain -- apps/agentgateway-image-mcp .github/workflows/agentgateway-image-mcp.yml)"
 archive="agentgateway-image-mcp-$version-multiarch.tar"
 bundle="deploy/agentgateway-image-mcp/$version"
-incoming="deploy/.incoming/$run_id"
-download="deploy/.download/$version"
 remote="bd://deploy/agentgateway-image-mcp/$version"
-bdpan ls bd://deploy/images/
-if bdpan ls "$remote/"; then
-  echo "The version already exists; use publish.sh to resume instead of replacing it." >&2
-  exit 1
-fi
-mkdir -p "$incoming" deploy/images "$bundle/images" "$bundle/config" "$bundle/charts"
-gh run download "$run_id" --repo ai-hermes/pi-lessons -n agentgateway-image-mcp-multiarch -D "$incoming"
-(cd "$incoming" && shasum -a 256 -c SHA256SUMS)
-test -f "$incoming/$archive"
-test ! -e "deploy/images/$archive"
-mv "$incoming/$archive" "deploy/images/$archive"
+test ! -e "$bundle" || { echo "Archive directory already exists: $bundle" >&2; exit 1; }
+mkdir -p "$bundle/images" "$bundle/config"
+gh run download "$run_id" --repo ai-hermes/pi-lessons -n agentgateway-image-mcp-multiarch -D "$bundle/images"
+(cd "$bundle/images" && shasum -a 256 -c SHA256SUMS)
+test -f "$bundle/images/$archive"
 platform="linux/amd64,linux/arm64"
-digest="$(skopeo inspect --raw "oci-archive:deploy/images/$archive" | python3 "$app_root/deploy/inspect_index.py")"
-archive_hash="$(shasum -a 256 "deploy/images/$archive" | cut -d ' ' -f1)"
-bdpan cp bd://deploy/images/images.manifest.tsv "$incoming/images.manifest.before.tsv" --no-overwrite
-test ! -e deploy/images/images.manifest.tsv || cmp deploy/images/images.manifest.tsv "$incoming/images.manifest.before.tsv"
-cp "$incoming/images.manifest.before.tsv" deploy/images/images.manifest.tsv
-! awk -F '\t' -v ref="$REGISTRY_IMAGE:$version" '$2 == ref { found=1 } END { exit !found }' deploy/images/images.manifest.tsv
-printf '%s\t%s\t%s\t%s\tsha256:%s\n' "$archive" "$REGISTRY_IMAGE:$version" "$platform" "$digest" "$archive_hash" >> deploy/images/images.manifest.tsv
-head -n 1 deploy/images/images.manifest.tsv > "$bundle/images.lock"
-tail -n 1 deploy/images/images.manifest.tsv >> "$bundle/images.lock"
-cp "deploy/images/$archive" "$bundle/images/$archive"
+digest="$(skopeo inspect --raw "oci-archive:$bundle/images/$archive" | python3 "$app_root/deploy/inspect_index.py")"
+image="ghcr.io/ai-hermes/agentgateway-image-mcp"
+test "$(cat "$bundle/images/image.txt")" = "$image@$digest"
+archive_hash="$(shasum -a 256 "$bundle/images/$archive" | cut -d ' ' -f1)"
+printf '# archive\timage\tplatform\tdigest\tarchive_hash\n%s\t%s\t%s\t%s\tsha256:%s\n' \
+  "$archive" "$image:$version" "$platform" "$digest" "$archive_hash" > "$bundle/images.lock"
+git archive --format=tar --output="$bundle/source.tar" "$commit" -- \
+  apps/agentgateway-image-mcp .github/workflows/agentgateway-image-mcp.yml
 cp "$app_root/deploy/resources.yaml" "$bundle/config/resources.yaml"
 cp "$app_root/deploy/BUNDLE.md" "$bundle/README.md"
 cp "$app_root/deploy/publish.sh" "$bundle/config/publish.sh"
 cp "$app_root/deploy/inspect_index.py" "$bundle/config/inspect_index.py"
-touch "$bundle/charts/.gitkeep"
-(cd "$bundle" && find . -type f ! -name SHA256SUMS | LC_ALL=C sort | while IFS= read -r file; do shasum -a 256 "${file#./}"; done > SHA256SUMS)
-bdpan cp "deploy/images/$archive" "bd://deploy/images/$archive" --dryrun --no-overwrite
-bdpan cp "$bundle/" "$remote/" --recursive --dryrun --no-overwrite
-bdpan cp "deploy/images/$archive" "bd://deploy/images/$archive" --no-overwrite
-bdpan cp "$bundle/" "$remote/" --recursive --no-overwrite
-# Only the mutable index is replaced; preserve its previous content first.
-bdpan cp "$incoming/images.manifest.before.tsv" "bd://deploy/images/images.manifest-before-image-mcp-$version.tsv" --dryrun --no-overwrite
-bdpan cp "$incoming/images.manifest.before.tsv" "bd://deploy/images/images.manifest-before-image-mcp-$version.tsv" --no-overwrite
-bdpan cp deploy/images/images.manifest.tsv bd://deploy/images/images.manifest.tsv --dryrun
-bdpan cp deploy/images/images.manifest.tsv bd://deploy/images/images.manifest.tsv
-bdpan ls "$remote/"
-mkdir -p "$download/images" "$download/config" "$download/charts"
-for file in README.md SHA256SUMS images.lock config/resources.yaml config/publish.sh config/inspect_index.py charts/.gitkeep; do
-  bdpan cp "$remote/$file" "$download/$file" --no-overwrite
-done
-cmp "$bundle/images.lock" "$download/images.lock"
-# Select downloads from the project lock, not the mutable global index.
-while IFS=$'\t' read -r file _; do
-  [[ "$file" == \#* ]] && continue
-  [[ "$file" == "$archive" ]] || { echo "Unexpected archive in project lock" >&2; exit 1; }
-  bdpan cp "$remote/images/$file" "$download/images/$file" --dryrun --no-overwrite
-  bdpan cp "$remote/images/$file" "$download/images/$file" --no-overwrite
-done < "$download/images.lock"
-(cd "$download" && shasum -a 256 -c SHA256SUMS)
-echo "Verified offline bundle: $download"
-echo "Next: bash $download/config/publish.sh $download"
+(cd "$bundle" && find . -type f ! -path ./SHA256SUMS | LC_ALL=C sort | while IFS= read -r file; do shasum -a 256 "${file#./}"; done > SHA256SUMS)
+(cd "$bundle" && shasum -a 256 -c SHA256SUMS)
+echo "Verified reproducibility archive: $bundle"
+if [[ "${2:-}" == "--upload" ]]; then
+  if bdpan ls "$remote/"; then
+    echo "Remote version already exists; refusing to overwrite it." >&2
+    exit 1
+  fi
+  bdpan cp "$bundle/" "$remote/" --recursive --dryrun --no-overwrite
+  bdpan cp "$bundle/" "$remote/" --recursive --no-overwrite
+  bdpan ls "$remote/"
+fi
+echo "Archiving does not upload to a business registry or deploy to Kubernetes."
