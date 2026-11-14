@@ -7,10 +7,32 @@ The MCP route accepts only `Authorization: Bearer <key>`, not `x-api-key`;
 the existing image API's authentication is unchanged.
 The default model is `doubao-seedream-5.0-flash`; pass
 `model="doubao-seedream-5.0-pro"` explicitly when requesting Pro.
-It returns image URLs, never retries a possibly billed request, and requires
+It returns image URLs plus a standard MCP image content block when a preview is
+available, never retries a possibly billed request, and requires
 independent backend authentication even when NetworkPolicy is not enforced.
 Seedream 5.0 pro/flash omit the unsupported `sequential_image_generation`
 parameter; 5.0 lite, 4.5, and 4.0 explicitly set it to `disabled`.
+
+## Image previews
+
+The original API response is preserved in `structuredContent` and the first JSON
+text block. Only the first returned image is downloaded and appended as a separate
+`ImageContent` block; all original URLs remain available.
+
+Set `MCP_IMAGE_ALLOWED_HOSTS` to a comma-separated list of exact trusted image
+hostnames confirmed from existing generation results. The default is empty
+(downloads disabled); no wildcards, suffix matching, or automatic trust of
+returned URLs. Downloads require HTTPS on port 443 without URL credentials,
+use a separate client with no authentication headers or environment proxies,
+and do not follow redirects. They have a five-second total deadline, a streaming
+5 MiB limit (inclusive), and PNG/JPEG content-type and signature checks.
+Encoded downloads are rejected; images are not decoded or resized.
+
+Download failures, blocked addresses, timeouts, and oversized images append only
+a preview-unavailable text block. They do not turn a successful generation into
+an error or issue another billed generation request. Clients without inline image
+support can continue using the JSON/URLs. A protocol image block alone does not
+prove that Codex or Pi actually displays it; verify each client's TUI separately.
 
 ## Development
 
@@ -29,6 +51,9 @@ and security testing. `npm test` checks script syntax and verifies that plaintex
 endpoints and missing credentials are rejected before any network request. It
 also checks the MCP policy, default scheduling, multi-architecture index
 validation, and OCI archive copying (when skopeo is installed).
+Python tests use mocked generation/download requests and in-process ASGI protocol
+checks, including authentication, tool discovery, and separate image blocks.
+They do not start a local service or make billed image-generation calls.
 
 ## Image build and GHCR
 
