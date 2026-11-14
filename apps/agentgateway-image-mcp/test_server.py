@@ -1,3 +1,5 @@
+import asyncio
+import base64
 import json
 import os
 import unittest
@@ -9,9 +11,148 @@ from mcp.server.fastmcp.exceptions import ToolError
 import server
 
 RealClient = httpx.AsyncClient
+IMAGE_URL = "https://images.example.com/image.png"
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1cAAAAASUVORK5CYII="
+)
+
+
+class ImageStream(httpx.AsyncByteStream):
+    def __init__(self, chunks, delay=0):
+        self.chunks = chunks
+        self.delay = delay
+        self.closed = False
+        self.consumed = 0
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            if self.delay:
+                await asyncio.sleep(self.delay)
+            self.consumed += 1
+            yield chunk
+
+    async def aclose(self):
+        self.closed = True
 
 
 class ImageMcpTests(unittest.IsolatedAsyncioTestCase):
+    async def preview_result(self, response, url=IMAGE_URL, images=None):
+        calls = []
+        body = {"data": images if images is not None else [{"url": url}], "usage": {"test": 1}}
+
+        def handle(request):
+            calls.append(request)
+            if request.method == "POST":
+                self.assertEqual(request.headers["authorization"], "Bearer test-only")
+                return httpx.Response(200, json=body)
+            self.assertNotIn("authorization", request.headers)
+            self.assertNotIn("x-api-key", request.headers)
+            self.assertNotIn("cookie", request.headers)
+            self.assertEqual(request.headers["accept-encoding"], "identity")
+            self.assertEqual(request.url.host, "images.example.com")
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        def client(**kwargs):
+            self.assertFalse(kwargs["trust_env"])
+            if kwargs["timeout"] != 180:
+                self.assertFalse(kwargs["follow_redirects"])
+                self.assertEqual(kwargs["timeout"], server.IMAGE_DOWNLOAD_TIMEOUT)
+            return RealClient(transport=httpx.MockTransport(handle), **kwargs)
+
+        with patch.dict(os.environ, {
+            "AGENTGATEWAY_CLIENT_CREDENTIAL": '{"key":"test-only"}',
+            "MCP_IMAGE_ALLOWED_HOSTS": "images.example.com",
+            "HTTPS_PROXY": "http://untrusted.example.com",
+        }), patch.object(server.httpx, "AsyncClient", client):
+            result = await server.generate_image("a cat")
+        self.assertEqual(sum(request.method == "POST" for request in calls), 1)
+        self.assertFalse(result.isError)
+        self.assertEqual(result.structuredContent, body)
+        self.assertEqual(json.loads(result.content[0].text), body)
+        return result, calls
+
+    async def test_preview_success_and_first_image_only(self):
+        for mime, image in [("image/png; charset=binary", PNG), ("image/jpeg", b"\xff\xd8\xff\xe0test")]:
+            with self.subTest(mime=mime):
+                result, calls = await self.preview_result(
+                    httpx.Response(200, content=image, headers={"content-type": mime}),
+                    images=[{"url": IMAGE_URL}, {"url": "https://other.example.com/second.png"}],
+                )
+                self.assertEqual(len(calls), 2)
+                self.assertEqual([block.type for block in result.content], ["text", "image"])
+                self.assertEqual(result.content[1].mimeType, mime.split(";")[0])
+                self.assertEqual(base64.b64decode(result.content[1].data), image)
+
+    async def test_inline_size_boundary_and_stream_limit(self):
+        at_limit = PNG + b"\0" * (server.MAX_IMAGE_BYTES - len(PNG))
+        for extra in (0, 1, 64 * 1024):
+            with self.subTest(extra=extra):
+                stream = ImageStream([at_limit, b"x" * extra])
+                if extra == 64 * 1024:
+                    stream.chunks.append(b"not consumed")
+                result, _ = await self.preview_result(httpx.Response(
+                    200, stream=stream, headers={"content-type": "image/png"},
+                ))
+                self.assertEqual(result.content[1].type, "image" if not extra else "text")
+                self.assertTrue(stream.closed)
+                if extra == 64 * 1024:
+                    self.assertLess(stream.consumed, 3)
+
+    async def test_preview_failures_preserve_success_and_do_not_retry(self):
+        for response in [
+            httpx.Response(302, headers={"location": "https://images.example.com/redirect"}),
+            httpx.Response(404),
+            httpx.Response(200, content=PNG, headers={"content-type": "image/gif"}),
+            httpx.Response(200, content=b"invalid", headers={"content-type": "image/png"}),
+            httpx.Response(200, content=PNG, headers={"content-type": "image/jpeg"}),
+            httpx.Response(200, content=b"", headers={"content-type": "image/png"}),
+            httpx.Response(200, content=PNG, headers={"content-type": "image/png", "content-length": "invalid"}),
+            httpx.Response(200, stream=ImageStream([PNG]), headers={
+                "content-type": "image/png", "content-length": str(server.MAX_IMAGE_BYTES + 1),
+            }),
+            httpx.Response(200, stream=ImageStream([PNG]), headers={
+                "content-type": "image/png", "content-encoding": "gzip",
+            }),
+            httpx.ConnectError("private upstream details"),
+            httpx.ReadTimeout("private upstream details"),
+        ]:
+            with self.subTest(response=response):
+                result, calls = await self.preview_result(response)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual([block.type for block in result.content], ["text", "text"])
+                self.assertEqual(result.content[1].text, "Inline preview unavailable; use the original image URL.")
+
+    async def test_untrusted_addresses_are_not_downloaded(self):
+        for url in [
+            "http://images.example.com/image.png",
+            "https://images.example.com.evil.com/image.png",
+            "https://sub.images.example.com/image.png",
+            "https://user:password@images.example.com/image.png",
+            "https://images.example.com:8443/image.png",
+            "https://127.0.0.1/image.png",
+            "https://[::1]/image.png",
+            "file:///etc/passwd",
+            "not a URL",
+            "https://images.example.com/\n",
+        ]:
+            with self.subTest(url=url):
+                result, calls = await self.preview_result(httpx.Response(200), url=url)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(result.content[1].type, "text")
+
+    async def test_total_timeout_closes_download(self):
+        stream = ImageStream([PNG] * 10, delay=0.02)
+        with patch.object(server, "IMAGE_DOWNLOAD_TIMEOUT", 0.05):
+            result, calls = await self.preview_result(httpx.Response(
+                200, stream=stream, headers={"content-type": "image/png"},
+            ))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result.content[1].type, "text")
+        self.assertTrue(stream.closed)
+        self.assertLess(stream.consumed, 10)
+
     async def test_request_and_url(self):
         def handle(request):
             self.assertEqual(request.url.path, "/v1/images/generations")
@@ -23,10 +164,13 @@ class ImageMcpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["response_format"], "url")
             return httpx.Response(200, json={"data": [{"url": "https://example.com/image.png"}]})
 
-        with patch.dict(os.environ, {"AGENTGATEWAY_CLIENT_CREDENTIAL": '{"key":"test-only"}'}):
+        with patch.dict(os.environ, {
+            "AGENTGATEWAY_CLIENT_CREDENTIAL": '{"key":"test-only"}', "MCP_IMAGE_ALLOWED_HOSTS": "",
+        }):
             with patch.object(server.httpx, "AsyncClient", lambda **kw: RealClient(transport=httpx.MockTransport(handle), **kw)):
                 result = await server.generate_image("a cat")
-        self.assertEqual(result["data"][0]["url"], "https://example.com/image.png")
+        self.assertEqual(result.structuredContent["data"][0]["url"], "https://example.com/image.png")
+        self.assertEqual([block.type for block in result.content], ["text", "text"])
 
     async def test_model_specific_single_image_parameters(self):
         for model in (
@@ -124,6 +268,32 @@ class ImageMcpTests(unittest.IsolatedAsyncioTestCase):
                         listed.json()["result"]["tools"][0]["inputSchema"]["properties"]["model"]["default"],
                         "doubao-seedream-5.0-flash",
                     )
+                    calls = []
+
+                    def handle(request):
+                        calls.append(request.method)
+                        if request.method == "POST":
+                            return httpx.Response(200, json={"data": [{"url": IMAGE_URL}]})
+                        self.assertNotIn("authorization", request.headers)
+                        return httpx.Response(200, content=PNG, headers={"content-type": "image/png"})
+
+                    with patch.dict(os.environ, {
+                        "AGENTGATEWAY_CLIENT_CREDENTIAL": '{"key":"test-only"}',
+                        "MCP_IMAGE_ALLOWED_HOSTS": "images.example.com",
+                    }), patch.object(server.httpx, "AsyncClient", lambda **kw: RealClient(
+                        transport=httpx.MockTransport(handle), **kw,
+                    )):
+                        called = await client.post("/mcp/", json={
+                            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                            "params": {"name": "generate_image", "arguments": {"prompt": "a cat"}},
+                        })
+                    self.assertEqual(called.status_code, 200)
+                    result = called.json()["result"]
+                    self.assertFalse(result["isError"])
+                    self.assertEqual([block["type"] for block in result["content"]], ["text", "image"])
+                    self.assertEqual(base64.b64decode(result["content"][1]["data"]), PNG)
+                    self.assertEqual(result["structuredContent"], json.loads(result["content"][0]["text"]))
+                    self.assertEqual(calls, ["POST", "GET"])
 
 
 if __name__ == "__main__":
