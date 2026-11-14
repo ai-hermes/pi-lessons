@@ -77,7 +77,8 @@ jobs:
               --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp \
               -e MCP_UPSTREAM_AUTHORIZATION='Bearer ci-only' -p 8000:8000 "$image"
             trap 'docker logs "$container"; docker rm -f "$container"' EXIT
-            curl --retry 10 --retry-delay 1 --retry-all-errors \
+            # Python startup under arm64 emulation can exceed ten seconds.
+            curl --retry 60 --retry-delay 2 --retry-max-time 120 --retry-all-errors \
               --connect-timeout 2 --max-time 5 --fail http://localhost:8000/healthz
             test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/mcp)" = 401
             docker rm -f "$container"
