@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import httpx
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import JSONRPCResponse
 
 import server
 
@@ -36,9 +37,11 @@ class ImageStream(httpx.AsyncByteStream):
 
 
 class ImageMcpTests(unittest.IsolatedAsyncioTestCase):
-    async def preview_result(self, response, url=IMAGE_URL, images=None):
+    async def preview_result(self, response, url=IMAGE_URL, images=None, metadata=None, preserve_body=True):
         calls = []
         body = {"data": images if images is not None else [{"url": url}], "usage": {"test": 1}}
+        if metadata:
+            body.update(metadata)
 
         def handle(request):
             calls.append(request)
@@ -69,9 +72,46 @@ class ImageMcpTests(unittest.IsolatedAsyncioTestCase):
             result = await server.generate_image("a cat")
         self.assertEqual(sum(request.method == "POST" for request in calls), 1)
         self.assertFalse(result.isError)
-        self.assertEqual(result.structuredContent, body)
-        self.assertEqual(json.loads(result.content[0].text), body)
+        if preserve_body:
+            self.assertEqual(result.structuredContent, body)
+            self.assertEqual(json.loads(result.content[0].text), body)
         return result, calls
+
+    async def test_serialized_response_budget_includes_image_json_and_envelope(self):
+        response = lambda: httpx.Response(200, content=PNG, headers={"content-type": "image/png"})
+        result, _ = await self.preview_result(response())
+        size = len(JSONRPCResponse(
+            jsonrpc="2.0", id=0, result=result.model_dump(by_alias=True, exclude_none=True),
+        ).model_dump_json(by_alias=True, exclude_none=True).encode())
+        for limit, types in [(size, ["text", "image"]), (size - 1, ["text", "text"])]:
+            with self.subTest(limit=limit), patch.object(server, "MAX_MCP_RESPONSE_BYTES", limit):
+                result, calls = await self.preview_result(response())
+                self.assertEqual([block.type for block in result.content], types)
+                self.assertLessEqual(server.response_bytes(result), limit)
+                self.assertEqual(len(calls), 2)
+
+    async def test_oversized_metadata_falls_back_to_urls_without_retry(self):
+        result, calls = await self.preview_result(
+            httpx.Response(200, content=PNG, headers={"content-type": "image/png"}),
+            metadata={"extra": "x" * (6 * 1024 * 1024)}, preserve_body=False,
+        )
+        urls = {"data": [{"url": IMAGE_URL}]}
+        self.assertEqual(result.structuredContent, urls)
+        self.assertEqual(json.loads(result.content[0].text), urls)
+        self.assertEqual([block.type for block in result.content], ["text", "text"])
+        self.assertLessEqual(server.response_bytes(result), 10 * 1024 * 1024)
+        self.assertEqual(len(calls), 2)
+
+    async def test_oversized_image_response_keeps_metadata_when_it_fits_without_image(self):
+        result, calls = await self.preview_result(
+            httpx.Response(200, stream=ImageStream([
+                PNG, b"x" * (server.MAX_IMAGE_BYTES - len(PNG)),
+            ]), headers={"content-type": "image/png"}),
+            metadata={"extra": "猫" * (400 * 1024)},
+        )
+        self.assertEqual([block.type for block in result.content], ["text", "text"])
+        self.assertLessEqual(server.response_bytes(result), server.MAX_MCP_RESPONSE_BYTES)
+        self.assertEqual(len(calls), 2)
 
     async def test_preview_success_and_first_image_only(self):
         for mime, image in [("image/png; charset=binary", PNG), ("image/jpeg", b"\xff\xd8\xff\xe0test")]:
@@ -294,6 +334,25 @@ class ImageMcpTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(base64.b64decode(result["content"][1]["data"]), PNG)
                     self.assertEqual(result["structuredContent"], json.loads(result["content"][0]["text"]))
                     self.assertEqual(calls, ["POST", "GET"])
+                    request_id = "request-" + "x" * 1024
+                    envelope = JSONRPCResponse(jsonrpc="2.0", id=request_id, result=result)
+                    response_size = len(envelope.model_dump_json(by_alias=True, exclude_none=True).encode())
+                    for limit, expected in [(response_size, ["text", "image"]), (response_size - 1, ["text", "text"])]:
+                        with self.subTest(limit=limit), patch.object(server, "MAX_MCP_RESPONSE_BYTES", limit):
+                            with patch.dict(os.environ, {
+                                "AGENTGATEWAY_CLIENT_CREDENTIAL": '{"key":"test-only"}',
+                                "MCP_IMAGE_ALLOWED_HOSTS": "images.example.com",
+                            }), patch.object(server.httpx, "AsyncClient", lambda **kw: RealClient(
+                                transport=httpx.MockTransport(handle), **kw,
+                            )):
+                                reply = await client.post("/mcp/", json={
+                                    "jsonrpc": "2.0", "id": request_id, "method": "tools/call",
+                                    "params": {"name": "generate_image", "arguments": {"prompt": "a cat"}},
+                                })
+                        self.assertEqual(reply.status_code, 200)
+                        self.assertEqual(reply.json()["id"], request_id)
+                        self.assertEqual([block["type"] for block in reply.json()["result"]["content"]], expected)
+                        self.assertLessEqual(len(reply.content), limit)
 
 
 if __name__ == "__main__":

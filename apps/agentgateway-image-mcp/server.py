@@ -12,7 +12,7 @@ import httpx
 import uvicorn
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import CallToolResult, ImageContent, TextContent
+from mcp.types import CallToolResult, ImageContent, JSONRPCResponse, TextContent
 from pydantic import Field
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import PlainTextResponse
@@ -25,6 +25,7 @@ Model = Literal[
     "doubao-seedream-4.0",
 ]
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_MCP_RESPONSE_BYTES = 10 * 1024 * 1024
 IMAGE_DOWNLOAD_TIMEOUT = 5
 # HTTPX request logs otherwise include signed image URL query strings.
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -83,6 +84,17 @@ async def image_preview(url: str) -> ImageContent:
                 return ImageContent(type="image", mimeType=mime_type, data=base64.b64encode(image).decode("ascii"))
 
 
+def response_bytes(result: CallToolResult) -> int:
+    try:
+        request_id = mcp.get_context().request_context.request_id
+    except ValueError:
+        request_id = 0  # Direct, in-process calls have no protocol envelope.
+    message = JSONRPCResponse(
+        jsonrpc="2.0", id=request_id, result=result.model_dump(by_alias=True, exclude_none=True),
+    )
+    return len(message.model_dump_json(by_alias=True, exclude_none=True).encode("utf-8"))
+
+
 @mcp.custom_route("/healthz", methods=["GET"])
 async def healthz(request):
     return PlainTextResponse("ok")
@@ -135,6 +147,16 @@ async def generate_image(
     except (httpx.HTTPError, httpx.InvalidURL, ValueError, TimeoutError):
         # A missing preview must not retry or invalidate a potentially billed generation.
         result.content.append(TextContent(type="text", text="Inline preview unavailable; use the original image URL."))
+    if response_bytes(result) > MAX_MCP_RESPONSE_BYTES:
+        unavailable = TextContent(type="text", text="Inline preview unavailable; use the original image URL.")
+        result.content = [result.content[0], unavailable]
+        if response_bytes(result) > MAX_MCP_RESPONSE_BYTES:
+            # Oversized metadata must not prevent returning the generated image URLs.
+            urls = {"data": [{"url": item["url"]} for item in data["data"]]}
+            result = CallToolResult(
+                structuredContent=urls,
+                content=[TextContent(type="text", text=json.dumps(urls)), unavailable],
+            )
     return result
 
 
