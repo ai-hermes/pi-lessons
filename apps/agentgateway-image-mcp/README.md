@@ -25,7 +25,7 @@ hostnames confirmed from existing generation results. The default is empty
 returned URLs. Downloads require HTTPS on port 443 without URL credentials,
 use a separate client with no authentication headers or environment proxies,
 and do not follow redirects. They have a five-second total deadline, a streaming
-5 MiB limit (inclusive), and PNG/JPEG content-type and signature checks.
+10 MiB limit (inclusive), and PNG/JPEG content-type and signature checks.
 Encoded downloads are rejected; images are not decoded or resized.
 
 The image HTTPRoute's request buffer budget is `10Mi`. Agentgateway v1.7.0
@@ -39,7 +39,10 @@ request ID, original JSON text, structured result, and Base64 image, against
 10 MiB (inclusive). On overflow it removes the image block and returns the
 original JSON/URLs with a preview-unavailable note. If the original metadata
 alone is too large, it returns only the URL list in JSON and `structuredContent`.
-The original image download cap remains 5 MiB; it is not raised to 10 MiB.
+The original image download and serialized response caps are both 10 MiB.
+Base64 expands image bytes by approximately one third, so an image below the
+download cap may still fall back to URLs when the encoded response exceeds its
+cap.
 
 Download failures, blocked addresses, timeouts, and oversized images append only
 a preview-unavailable text block. They do not turn a successful generation into

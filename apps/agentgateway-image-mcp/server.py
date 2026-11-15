@@ -24,8 +24,8 @@ Model = Literal[
     "doubao-seedream-4.5",
     "doubao-seedream-4.0",
 ]
-MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_MCP_RESPONSE_BYTES = 10 * 1024 * 1024
+MAX_IMAGE_BYTES = MAX_MCP_RESPONSE_BYTES
 IMAGE_DOWNLOAD_TIMEOUT = 5
 # HTTPX request logs otherwise include signed image URL query strings.
 logging.getLogger("httpx").setLevel(logging.WARNING)
