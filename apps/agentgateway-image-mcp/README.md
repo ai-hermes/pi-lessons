@@ -7,17 +7,19 @@ The MCP route accepts only `Authorization: Bearer <key>`, not `x-api-key`;
 the existing image API's authentication is unchanged.
 The default model is `doubao-seedream-5.0-flash`; pass
 `model="doubao-seedream-5.0-pro"` explicitly when requesting Pro.
-It returns image URLs plus a standard MCP image content block when a preview is
-available, never retries a possibly billed request, and requires
+It returns a Base64 MCP image content block or a URL fallback, never both.
+It never retries a possibly billed request and requires
 independent backend authentication even when NetworkPolicy is not enforced.
 Seedream 5.0 pro/flash omit the unsupported `sequential_image_generation`
 parameter; 5.0 lite, 4.5, and 4.0 explicitly set it to `disabled`.
 
 ## Image previews
 
-The original API response is preserved in `structuredContent` and the first JSON
-text block. Only the first returned image is downloaded and appended as a separate
-`ImageContent` block; all original URLs remain available.
+Only the first returned image is downloaded. When its serialized MCP response
+fits within 10 MiB, the result contains only one `ImageContent` block whose
+`data` is Base64. It has no URL text, original API JSON, or `structuredContent`.
+On overflow or download failure, the result contains only the original URL(s)
+in one text block, one URL per line.
 
 Set `MCP_IMAGE_ALLOWED_HOSTS` to a comma-separated list of exact trusted image
 hostnames confirmed from existing generation results. The default is empty
@@ -35,19 +37,16 @@ keep their existing budgets. This is a bounded memory budget, not a preallocated
 buffer; concurrent large responses can still multiply gateway memory use.
 
 The server checks the UTF-8 serialized JSON-RPC response, including the actual
-request ID, original JSON text, structured result, and Base64 image, against
-10 MiB (inclusive). On overflow it removes the image block and returns the
-original JSON/URLs with a preview-unavailable note. If the original metadata
-alone is too large, it returns only the URL list in JSON and `structuredContent`.
+request ID and Base64 image, against 10 MiB (inclusive). On overflow it returns
+only URLs, not the image or API metadata.
 The original image download and serialized response caps are both 10 MiB.
 Base64 expands image bytes by approximately one third, so an image below the
 download cap may still fall back to URLs when the encoded response exceeds its
 cap.
 
-Download failures, blocked addresses, timeouts, and oversized images append only
-a preview-unavailable text block. They do not turn a successful generation into
-an error or issue another billed generation request. Clients without inline image
-support can continue using the JSON/URLs. A protocol image block alone does not
+Download failures, blocked addresses, timeouts, and oversized images return only
+URLs. They do not turn a successful generation into an error or issue another
+billed generation request. A protocol image block alone does not
 prove that Codex or Pi actually displays it; verify each client's TUI separately.
 
 ## Development

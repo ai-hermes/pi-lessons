@@ -1,4 +1,4 @@
-"""Text-to-image MCP adapter; billing and aliases stay on the existing gateway."""
+"""Image MCP adapter; billing and aliases stay on the existing gateway."""
 
 import asyncio
 import base64
@@ -101,7 +101,7 @@ async def healthz(request):
 
 
 @mcp.tool(
-    description="Generate one image through VKE Agentgateway and Ark, returning its URL and an inline preview when available. "
+    description="Generate one image through VKE Agentgateway and Ark, returning a Base64 image block or URL fallback. "
     "This incurs image-generation charges; call only when the user explicitly requests an image."
 )
 async def generate_image(
@@ -138,26 +138,16 @@ async def generate_image(
             raise ValueError("Image API did not return image URLs.")
         if not all(isinstance(item, dict) and isinstance(item.get("url"), str) and item["url"] for item in data["data"]):
             raise ValueError("Image API did not return image URLs.")
-    result = CallToolResult(
-        structuredContent=data,
-        content=[TextContent(type="text", text=json.dumps(data))],
-    )
     try:
-        result.content.append(await image_preview(data["data"][0]["url"]))
+        result = CallToolResult(content=[await image_preview(data["data"][0]["url"])])
+        if response_bytes(result) <= MAX_MCP_RESPONSE_BYTES:
+            return result
     except (httpx.HTTPError, httpx.InvalidURL, ValueError, TimeoutError):
-        # A missing preview must not retry or invalidate a potentially billed generation.
-        result.content.append(TextContent(type="text", text="Inline preview unavailable; use the original image URL."))
-    if response_bytes(result) > MAX_MCP_RESPONSE_BYTES:
-        unavailable = TextContent(type="text", text="Inline preview unavailable; use the original image URL.")
-        result.content = [result.content[0], unavailable]
-        if response_bytes(result) > MAX_MCP_RESPONSE_BYTES:
-            # Oversized metadata must not prevent returning the generated image URLs.
-            urls = {"data": [{"url": item["url"]} for item in data["data"]]}
-            result = CallToolResult(
-                structuredContent=urls,
-                content=[TextContent(type="text", text=json.dumps(urls)), unavailable],
-            )
-    return result
+        # A missing image must not retry or invalidate a potentially billed generation.
+        pass
+    return CallToolResult(content=[
+        TextContent(type="text", text="\n".join(item["url"] for item in data["data"])),
+    ])
 
 
 app = mcp.streamable_http_app()
