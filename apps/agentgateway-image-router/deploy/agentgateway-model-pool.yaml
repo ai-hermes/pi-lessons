@@ -1,0 +1,151 @@
+# NewAPI-only example; existing Ark Plan/PAYG models are deliberately omitted.
+# Requires HTTPRoute/ark-chat with a rule named models. No Secret values included.
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: agentgateway.dev/v1alpha1
+    kind: AgentgatewayModel
+    metadata:
+      name: thirdparty-codex
+      namespace: ark-gateway
+    spec:
+      baseURL: https://third-party-upstream.example.com
+      match:
+        model: thirdparty-codex/*
+      parentRefs: &chat-parent
+        - group: gateway.networking.k8s.io
+          kind: HTTPRoute
+          name: ark-chat
+          sectionName: models
+      policies:
+        auth:
+          secretRef:
+            name: thirdparty-codex-key
+        headers:
+          response:
+            set:
+              - name: x-ark-channel
+                value: thirdparty-codex
+        health: &channel-health
+          eviction:
+            consecutiveFailures: 1
+            duration: 5m
+            healthThreshold: 1
+            restoreHealth: 10
+          unhealthyCondition: response.code == 429 || response.code >= 500
+        transformations:
+          - expression: llmRequest.model.stripPrefix("thirdparty-codex/")
+            field: model
+      provider: Custom
+      custom:
+        providerOverride: openai
+        formats:
+          - type: Completions
+            path: /v1/chat/completions
+      visibility: Internal
+
+  - apiVersion: agentgateway.dev/v1alpha1
+    kind: AgentgatewayModel
+    metadata:
+      name: thirdparty-claude
+      namespace: ark-gateway
+    spec:
+      baseURL: https://third-party-upstream.example.com
+      match:
+        model: thirdparty-claude/*
+      parentRefs: *chat-parent
+      policies:
+        auth:
+          secretRef:
+            name: thirdparty-claude-key
+        headers:
+          response:
+            set:
+              - name: x-ark-channel
+                value: thirdparty-claude
+        health: *channel-health
+        transformations:
+          - expression: llmRequest.model.stripPrefix("thirdparty-claude/")
+            field: model
+      provider: Custom
+      custom:
+        providerOverride: openai
+        formats:
+          - type: Completions
+            path: /v1/chat/completions
+      visibility: Internal
+
+  - apiVersion: agentgateway.dev/v1alpha1
+    kind: AgentgatewayModel
+    metadata:
+      name: gpt-6-astra
+      namespace: ark-gateway
+    spec:
+      parentRefs: *chat-parent
+      virtualModel:
+        failover:
+          targets:
+            - model: thirdparty-codex/gpt-6-astra
+              modelRef:
+                name: thirdparty-codex
+              priority: 0
+
+  - apiVersion: agentgateway.dev/v1alpha1
+    kind: AgentgatewayModel
+    metadata:
+      name: gpt-6.1-sol
+      namespace: ark-gateway
+    spec:
+      parentRefs: *chat-parent
+      virtualModel:
+        failover:
+          targets:
+            - model: thirdparty-codex/gpt-6.1-sol
+              modelRef:
+                name: thirdparty-codex
+              priority: 0
+
+  - apiVersion: agentgateway.dev/v1alpha1
+    kind: AgentgatewayModel
+    metadata:
+      name: claude-fable-5-1
+      namespace: ark-gateway
+    spec:
+      parentRefs: *chat-parent
+      virtualModel:
+        failover:
+          targets:
+            - model: thirdparty-claude/claude-fable-5-1
+              modelRef:
+                name: thirdparty-claude
+              priority: 0
+
+  - apiVersion: agentgateway.dev/v1alpha1
+    kind: AgentgatewayModel
+    metadata:
+      name: claude-opus-5-5
+      namespace: ark-gateway
+    spec:
+      parentRefs: *chat-parent
+      virtualModel:
+        failover:
+          targets:
+            - model: thirdparty-claude/claude-opus-5-5
+              modelRef:
+                name: thirdparty-claude
+              priority: 0
+
+  - apiVersion: agentgateway.dev/v1alpha1
+    kind: AgentgatewayModel
+    metadata:
+      name: claude-sonnet-5-5
+      namespace: ark-gateway
+    spec:
+      parentRefs: *chat-parent
+      virtualModel:
+        failover:
+          targets:
+            - model: thirdparty-claude/claude-sonnet-5-5
+              modelRef:
+                name: thirdparty-claude
+              priority: 0
