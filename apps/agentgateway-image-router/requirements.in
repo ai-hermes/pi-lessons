@@ -1,4 +1,4 @@
 # Pin direct dependencies and compile requirements.txt with hashes.
 httpx==0.28.1
-starlette==0.41.3
-uvicorn==0.29.0
+starlette==1.10.0
+uvicorn==0.54.0
