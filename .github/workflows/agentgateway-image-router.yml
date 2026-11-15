@@ -1,0 +1,141 @@
+name: agentgateway-image-router CI
+
+on:
+  pull_request:
+    paths:
+      - "apps/agentgateway-image-router/**"
+      - ".github/workflows/agentgateway-image-router.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/agentgateway-image-router/**"
+      - ".github/workflows/agentgateway-image-router.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: image-router-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install locked dependencies
+        working-directory: apps/agentgateway-image-router
+        run: |
+          python -m pip install --require-hashes -r requirements.txt
+
+      - name: Audit Python dependencies
+        run: |
+          python -m pip install pip-audit==2.10.1
+          pip-audit --disable-pip \
+            -r apps/agentgateway-image-router/requirements.txt \
+            --progress-spinner off
+
+      - name: Run unit tests
+        working-directory: apps/agentgateway-image-router
+        run: python -m unittest -v
+
+      - name: Validate deployment records and credential hygiene
+        working-directory: apps/agentgateway-image-router
+        run: |
+          python -m pip install PyYAML==6.0.3
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          import yaml
+
+          root = Path(".")
+          resources = (root / "deploy/resources.yaml").read_text()
+          rendered = resources.replace(
+              "${IMAGE_ROUTER_IMAGE}",
+              "example.invalid/agentgateway-image-router:validation",
+          )
+          assert list(yaml.safe_load_all(rendered))
+          assert list(yaml.safe_load_all((root / "deploy/httproute.yaml").read_text()))
+
+          patterns = [
+              r"sk-[A-Za-z0-9_-]{16,}",
+              r"AKLT[A-Za-z0-9]{12,}",
+              r"AIza[A-Za-z0-9_-]{20,}",
+              r"ghp_[A-Za-z0-9]{20,}",
+              r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
+          ]
+          excluded = {"requirements.txt"}
+          for path in root.rglob("*"):
+              if not path.is_file() or ".venv" in path.parts or path.name in excluded:
+                  continue
+              text = path.read_text(errors="ignore")
+              for pattern in patterns:
+                  if re.search(pattern, text):
+                      raise SystemExit(f"credential-shaped value found in {path}")
+          PY
+
+      - name: Build local runtime image
+        run: |
+          docker build \
+            --tag agentgateway-image-router:ci \
+            apps/agentgateway-image-router
+
+      - name: Smoke-test runtime image
+        run: |
+          container=image-router-ci
+          docker run -d --name "$container" \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp \
+            -e THIRDPARTY_AUTHORIZATION='Bearer ci-only' \
+            -e ARK_AUTHORIZATION='Bearer ci-only' \
+            -p 8000:8000 \
+            agentgateway-image-router:ci
+          trap 'docker logs "$container"; docker rm -f "$container"' EXIT
+          curl --retry 30 --retry-delay 1 --retry-all-errors \
+            --connect-timeout 2 --max-time 5 --fail \
+            http://localhost:8000/healthz
+          test "$(curl -sS -o /tmp/unknown.json -w '%{http_code}' \
+            -H 'Content-Type: application/json' \
+            -d '{"model":"unsupported-ci-model"}' \
+            http://localhost:8000/v1/images/generations)" = 400
+          grep -q 'Unsupported image model' /tmp/unknown.json
+          docker rm -f "$container"
+          trap - EXIT
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@v3
+
+      - id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/agentgateway-image-router
+          tags: type=sha,format=long,prefix=v1.0.0-
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build amd64 and arm64 images
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/agentgateway-image-router
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=agentgateway-image-router
+          cache-to: type=gha,mode=max,scope=agentgateway-image-router
