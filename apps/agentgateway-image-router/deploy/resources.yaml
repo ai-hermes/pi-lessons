@@ -1,0 +1,125 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentgateway-image-router
+  namespace: ark-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agentgateway-image-router
+  template:
+    metadata:
+      labels:
+        app: agentgateway-image-router
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: router
+          image: ${IMAGE_ROUTER_IMAGE}
+          env:
+            - name: THIRDPARTY_AUTHORIZATION
+              valueFrom:
+                secretKeyRef:
+                  name: thirdparty-image-key
+                  key: Authorization
+            - name: ARK_AUTHORIZATION
+              valueFrom:
+                secretKeyRef:
+                  name: ark-payg-key
+                  key: Authorization
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentgateway-image-router
+  namespace: ark-gateway
+spec:
+  selector:
+    app: agentgateway-image-router
+  ports:
+    - port: 8000
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentgateway-image-router
+  namespace: ark-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: agentgateway-image-router
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentgateway
+          podSelector:
+            matchLabels:
+              gateway.networking.k8s.io/gateway-name: agentgateway
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: image-model-router
+  namespace: ark-gateway
+spec:
+  policies:
+    http:
+      requestTimeout: 190s
+  static:
+    host: agentgateway-image-router.ark-gateway.svc.cluster.local
+    port: 8000
