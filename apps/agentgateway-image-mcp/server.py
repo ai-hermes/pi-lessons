@@ -1,7 +1,10 @@
-"""Text-to-image MCP adapter; billing and aliases stay on the existing gateway."""
+"""Image MCP adapter; billing and aliases stay on the existing gateway."""
 
+import asyncio
+import base64
 import hmac
 import json
+import logging
 import os
 from typing import Annotated, Literal
 
@@ -9,6 +12,7 @@ import httpx
 import uvicorn
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import CallToolResult, ImageContent, JSONRPCResponse, TextContent
 from pydantic import Field
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import PlainTextResponse
@@ -19,7 +23,13 @@ Model = Literal[
     "doubao-seedream-5.0-lite",
     "doubao-seedream-4.5",
     "doubao-seedream-4.0",
+    "gpt-image-2",
 ]
+MAX_MCP_RESPONSE_BYTES = 10 * 1024 * 1024
+MAX_IMAGE_BYTES = MAX_MCP_RESPONSE_BYTES
+IMAGE_DOWNLOAD_TIMEOUT = 5
+# HTTPX request logs otherwise include signed image URL query strings.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 mcp = FastMCP(
     "agentgateway-images",
     host="0.0.0.0",
@@ -38,22 +48,83 @@ mcp = FastMCP(
 )
 
 
+async def image_preview(url: str) -> ImageContent:
+    allowed_hosts = {
+        host.strip().lower() for host in os.environ.get("MCP_IMAGE_ALLOWED_HOSTS", "").split(",") if host.strip()
+    }
+    address = httpx.URL(url)
+    if (
+        address.scheme != "https" or address.host not in allowed_hosts
+        or address.username or address.password or address.port not in (None, 443)
+    ):
+        raise ValueError("Image address is not allowed.")
+    async with asyncio.timeout(IMAGE_DOWNLOAD_TIMEOUT):
+        # Never send generation credentials to an image download host.
+        async with httpx.AsyncClient(timeout=IMAGE_DOWNLOAD_TIMEOUT, trust_env=False, follow_redirects=False) as client:
+            async with client.stream("GET", address, headers={"Accept-Encoding": "identity"}) as response:
+                if response.status_code != 200:
+                    raise ValueError("Image download did not return HTTP 200.")
+                mime_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+                if mime_type not in ("image/png", "image/jpeg"):
+                    raise ValueError("Image type is not supported.")
+                if response.headers.get("content-encoding", "identity").lower() != "identity":
+                    raise ValueError("Encoded image downloads are not supported.")
+                if int(response.headers.get("content-length", "0")) > MAX_IMAGE_BYTES:
+                    raise ValueError("Image exceeds the inline limit.")
+                image = bytearray()
+                async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                    if len(image) + len(chunk) > MAX_IMAGE_BYTES:
+                        raise ValueError("Image exceeds the inline limit.")
+                    image.extend(chunk)
+                signature = b"\x89PNG\r\n\x1a\n" if mime_type == "image/png" else b"\xff\xd8\xff"
+                if not image.startswith(signature):
+                    raise ValueError("Image signature does not match its type.")
+                return ImageContent(type="image", mimeType=mime_type, data=base64.b64encode(image).decode("ascii"))
+
+
+def response_bytes(result: CallToolResult) -> int:
+    try:
+        request_id = mcp.get_context().request_context.request_id
+    except ValueError:
+        request_id = 0  # Direct, in-process calls have no protocol envelope.
+    message = JSONRPCResponse(
+        jsonrpc="2.0", id=request_id, result=result.model_dump(by_alias=True, exclude_none=True),
+    )
+    return len(message.model_dump_json(by_alias=True, exclude_none=True).encode("utf-8"))
+
+
 @mcp.custom_route("/healthz", methods=["GET"])
 async def healthz(request):
     return PlainTextResponse("ok")
 
 
 @mcp.tool(
-    description="Generate one image through VKE Agentgateway and Ark, returning its URL. "
+    description="Generate one image through VKE Agentgateway using Seedream or GPT Image 2, returning a standard "
+    "Base64 image block, with original URL fallback on preview failure or the 10 MiB response limit. "
+    "GPT Image 2 sizes: 1K=1024x1024, 2K=2560x1440, 4K=3840x2160, "
+    "auto or explicit dimensions; watermark applies only to Seedream. "
     "This incurs image-generation charges; call only when the user explicitly requests an image."
 )
 async def generate_image(
     prompt: Annotated[str, Field(min_length=1, max_length=8000)],
     model: Model = "doubao-seedream-5.0-flash",
-    size: Annotated[str, Field(pattern=r"^(1K|2K|4K|[1-9][0-9]{2,3}x[1-9][0-9]{2,3})$")] = "1K",
+    size: Annotated[str, Field(pattern=r"^(auto|1K|2K|4K|[1-9][0-9]{2,3}x[1-9][0-9]{2,3})$")] = "1K",
     output_format: Literal["png", "jpeg"] = "png",
     watermark: bool = True,
-) -> dict:
+) -> CallToolResult:
+    is_gpt = model == "gpt-image-2"
+    if is_gpt:
+        size = {"1K": "1024x1024", "2K": "2560x1440", "4K": "3840x2160"}.get(size, size)
+        if size != "auto":
+            width, height = map(int, size.split("x"))
+            if (
+                width % 16 or height % 16 or max(width, height) > 3840
+                or max(width, height) > 3 * min(width, height)
+                or not 655360 <= width * height <= 8294400
+            ):
+                raise ValueError("GPT Image 2 size must satisfy its pixel, edge, aspect ratio and multiple-of-16 limits.")
+    elif size == "auto":
+        raise ValueError("Seedream does not support size=auto.")
     key = json.loads(os.environ["AGENTGATEWAY_CLIENT_CREDENTIAL"])["key"]
     async with httpx.AsyncClient(timeout=180, trust_env=False) as client:
         response = await client.post(
@@ -64,8 +135,7 @@ async def generate_image(
                 "prompt": prompt,
                 "size": size,
                 "output_format": output_format,
-                "response_format": "url",
-                "watermark": watermark,
+                **({"n": 1} if is_gpt else {"response_format": "url", "watermark": watermark}),
                 **(
                     {"sequential_image_generation": "disabled"}
                     if model in ("doubao-seedream-5.0-lite", "doubao-seedream-4.5", "doubao-seedream-4.0")
@@ -79,9 +149,47 @@ async def generate_image(
         data = response.json()
         if not isinstance(data, dict) or not isinstance(data.get("data"), list) or not data["data"]:
             raise ValueError("Image API did not return image URLs.")
-        if not all(isinstance(item, dict) and isinstance(item.get("url"), str) and item["url"] for item in data["data"]):
+        if not all(isinstance(item, dict) and (
+            isinstance(item.get("url"), str) and item["url"]
+            or isinstance(item.get("b64_json"), str) and item["b64_json"]
+        ) for item in data["data"]):
             raise ValueError("Image API did not return image URLs.")
-        return data
+    try:
+        first = data["data"][0]
+        if first.get("b64_json"):
+            encoded = first["b64_json"]
+            if not isinstance(encoded, str) or len(encoded) > ((MAX_IMAGE_BYTES + 2) // 3) * 4:
+                raise ValueError("Image exceeds the inline limit or is not Base64.")
+            image = base64.b64decode(encoded, validate=True)
+            if len(image) > MAX_IMAGE_BYTES:
+                raise ValueError("Image exceeds the inline limit.")
+            if image.startswith(b"\x89PNG\r\n\x1a\n"):
+                mime_type = "image/png"
+            elif image.startswith(b"\xff\xd8\xff"):
+                mime_type = "image/jpeg"
+            else:
+                raise ValueError("Image type is not supported.")
+            content = ImageContent(type="image", mimeType=mime_type, data=encoded)
+        else:
+            content = await image_preview(first["url"])
+        result = CallToolResult(content=[content])
+        if response_bytes(result) <= MAX_MCP_RESPONSE_BYTES:
+            return result
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, TimeoutError):
+        # Preview failures must not invalidate or retry a potentially billed generation.
+        pass
+    result = CallToolResult(content=[
+        TextContent(type="text", text="\n".join(
+            item["url"] for item in data["data"] if isinstance(item.get("url"), str) and item["url"]
+        )
+                    or "Image generated, but its preview is unavailable or exceeds the 10 MiB limit. "
+                    "The upstream returned no URL; generation was not retried."),
+    ])
+    if response_bytes(result) > MAX_MCP_RESPONSE_BYTES:
+        return CallToolResult(content=[TextContent(
+            type="text", text="Image generated, but its URL response exceeds the 10 MiB limit; generation was not retried.",
+        )])
+    return result
 
 
 app = mcp.streamable_http_app()

@@ -316,6 +316,16 @@ test("MCP policy uses default Bearer extraction and clears incoming credentials"
   assert.match(policy, /remove: \[x-api-key, authorization\]/);
 });
 
+test("10 MiB MCP buffer budget is scoped to the image route", () => {
+  const resources = readFileSync(new URL("./deploy/resources.yaml", import.meta.url), "utf8");
+  const policies = resources.split(/^---$/m).filter(block => block.includes("kind: AgentgatewayPolicy"));
+  const buffered = policies.filter(block => block.includes("maxBytes:"));
+  assert.equal(buffered.length, 1);
+  assert.match(buffered[0], /kind: HTTPRoute\s+name: ark-image-mcp/);
+  assert.match(buffered[0], /buffer:\s+request:\s+maxBytes: 10Mi\s+failureMode: FailClosed/);
+  assert.doesNotMatch(buffered[0], /frontend:/);
+});
+
 for (const [name, env, expected] of [
   ["rejects plaintext endpoints", {
     AGENTGATEWAY_MCP_URL: "http://example.com/mcp/images",

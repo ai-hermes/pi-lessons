@@ -30,6 +30,10 @@ pnpm typecheck:pi-opensandbox
 pnpm test:pi-opensandbox
 ```
 
+## Agentgateway 图片模型路由
+
+[`apps/agentgateway-image-router`](./apps/agentgateway-image-router/README.md) 记录一个按图片请求体 `model` 字段选择上游的轻量服务。它让统一的 `/v1/images/generations` 接口同时支持 `gpt-image-2` 和 Seedream，而不要求客户端发送 provider 分流头。
+
 ## 安全
 
 不要提交 `.env`、API Key、会话记录或本机路径；提交配置示例时使用占位值。

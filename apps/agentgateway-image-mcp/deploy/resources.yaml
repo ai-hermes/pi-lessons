@@ -173,6 +173,11 @@ spec:
     kind: HTTPRoute
     name: ark-image-mcp
   traffic:
+    # MCP upstream responses inherit this route's request buffer budget.
+    buffer:
+      request:
+        maxBytes: 10Mi
+        failureMode: FailClosed
     apiKeyAuthentication:
       mode: Strict
       secretRef:
