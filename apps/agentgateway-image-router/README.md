@@ -154,10 +154,16 @@ client model=gpt-6-astra
 ```
 
 The model pool contains GPT (`gpt-6-astra`, `gpt-6.1-sol`) and Claude
-(`claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`) examples. These are
+(`claude-fable-5.1`, `claude-opus-5.5`, `claude-sonnet-5.5`) examples. These are
 deployment model IDs, not a guarantee that another account's group offers them.
 Check your group's model list before adapting the file. Each virtual model has
 one target; this example does not provide cross-channel failover.
+
+The three public Claude names use dots in the version; their upstream targets
+remain `claude-fable-5-1`, `claude-opus-5-5` and `claude-sonnet-5-5`. Renaming
+`AgentgatewayModel.metadata.name` does not require renaming the upstream model ID.
+Applying these renamed resources does not delete previously deployed Claude
+resources; migrate clients before removing the old names separately.
 
 The pool attaches to an **existing** `HTTPRoute/ark-chat` with a rule named
 `models`. That chat route and Gateway are not supplied here. Keep existing
