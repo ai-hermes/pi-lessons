@@ -23,6 +23,7 @@ Model = Literal[
     "doubao-seedream-5.0-lite",
     "doubao-seedream-4.5",
     "doubao-seedream-4.0",
+    "gpt-image-2",
 ]
 MAX_MCP_RESPONSE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_BYTES = MAX_MCP_RESPONSE_BYTES
@@ -53,15 +54,12 @@ async def image_preview(url: str) -> ImageContent:
     }
     address = httpx.URL(url)
     if (
-        address.scheme != "https"
-        or address.host not in allowed_hosts
-        or address.username
-        or address.password
-        or address.port not in (None, 443)
+        address.scheme != "https" or address.host not in allowed_hosts
+        or address.username or address.password or address.port not in (None, 443)
     ):
         raise ValueError("Image address is not allowed.")
     async with asyncio.timeout(IMAGE_DOWNLOAD_TIMEOUT):
-        # Keep image downloads separate from the authenticated generation client.
+        # Never send generation credentials to an image download host.
         async with httpx.AsyncClient(timeout=IMAGE_DOWNLOAD_TIMEOUT, trust_env=False, follow_redirects=False) as client:
             async with client.stream("GET", address, headers={"Accept-Encoding": "identity"}) as response:
                 if response.status_code != 200:
@@ -101,16 +99,32 @@ async def healthz(request):
 
 
 @mcp.tool(
-    description="Generate one image through VKE Agentgateway and Ark, returning a Base64 image block or URL fallback. "
+    description="Generate one image through VKE Agentgateway using Seedream or GPT Image 2, returning a standard "
+    "Base64 image block, with original URL fallback on preview failure or the 10 MiB response limit. "
+    "GPT Image 2 sizes: 1K=1024x1024, 2K=2560x1440, 4K=3840x2160, "
+    "auto or explicit dimensions; watermark applies only to Seedream. "
     "This incurs image-generation charges; call only when the user explicitly requests an image."
 )
 async def generate_image(
     prompt: Annotated[str, Field(min_length=1, max_length=8000)],
     model: Model = "doubao-seedream-5.0-flash",
-    size: Annotated[str, Field(pattern=r"^(1K|2K|4K|[1-9][0-9]{2,3}x[1-9][0-9]{2,3})$")] = "1K",
+    size: Annotated[str, Field(pattern=r"^(auto|1K|2K|4K|[1-9][0-9]{2,3}x[1-9][0-9]{2,3})$")] = "1K",
     output_format: Literal["png", "jpeg"] = "png",
     watermark: bool = True,
 ) -> CallToolResult:
+    is_gpt = model == "gpt-image-2"
+    if is_gpt:
+        size = {"1K": "1024x1024", "2K": "2560x1440", "4K": "3840x2160"}.get(size, size)
+        if size != "auto":
+            width, height = map(int, size.split("x"))
+            if (
+                width % 16 or height % 16 or max(width, height) > 3840
+                or max(width, height) > 3 * min(width, height)
+                or not 655360 <= width * height <= 8294400
+            ):
+                raise ValueError("GPT Image 2 size must satisfy its pixel, edge, aspect ratio and multiple-of-16 limits.")
+    elif size == "auto":
+        raise ValueError("Seedream does not support size=auto.")
     key = json.loads(os.environ["AGENTGATEWAY_CLIENT_CREDENTIAL"])["key"]
     async with httpx.AsyncClient(timeout=180, trust_env=False) as client:
         response = await client.post(
@@ -121,8 +135,7 @@ async def generate_image(
                 "prompt": prompt,
                 "size": size,
                 "output_format": output_format,
-                "response_format": "url",
-                "watermark": watermark,
+                **({"n": 1} if is_gpt else {"response_format": "url", "watermark": watermark}),
                 **(
                     {"sequential_image_generation": "disabled"}
                     if model in ("doubao-seedream-5.0-lite", "doubao-seedream-4.5", "doubao-seedream-4.0")
@@ -136,18 +149,47 @@ async def generate_image(
         data = response.json()
         if not isinstance(data, dict) or not isinstance(data.get("data"), list) or not data["data"]:
             raise ValueError("Image API did not return image URLs.")
-        if not all(isinstance(item, dict) and isinstance(item.get("url"), str) and item["url"] for item in data["data"]):
+        if not all(isinstance(item, dict) and (
+            isinstance(item.get("url"), str) and item["url"]
+            or isinstance(item.get("b64_json"), str) and item["b64_json"]
+        ) for item in data["data"]):
             raise ValueError("Image API did not return image URLs.")
     try:
-        result = CallToolResult(content=[await image_preview(data["data"][0]["url"])])
+        first = data["data"][0]
+        if first.get("b64_json"):
+            encoded = first["b64_json"]
+            if not isinstance(encoded, str) or len(encoded) > ((MAX_IMAGE_BYTES + 2) // 3) * 4:
+                raise ValueError("Image exceeds the inline limit or is not Base64.")
+            image = base64.b64decode(encoded, validate=True)
+            if len(image) > MAX_IMAGE_BYTES:
+                raise ValueError("Image exceeds the inline limit.")
+            if image.startswith(b"\x89PNG\r\n\x1a\n"):
+                mime_type = "image/png"
+            elif image.startswith(b"\xff\xd8\xff"):
+                mime_type = "image/jpeg"
+            else:
+                raise ValueError("Image type is not supported.")
+            content = ImageContent(type="image", mimeType=mime_type, data=encoded)
+        else:
+            content = await image_preview(first["url"])
+        result = CallToolResult(content=[content])
         if response_bytes(result) <= MAX_MCP_RESPONSE_BYTES:
             return result
     except (httpx.HTTPError, httpx.InvalidURL, ValueError, TimeoutError):
-        # A missing image must not retry or invalidate a potentially billed generation.
+        # Preview failures must not invalidate or retry a potentially billed generation.
         pass
-    return CallToolResult(content=[
-        TextContent(type="text", text="\n".join(item["url"] for item in data["data"])),
+    result = CallToolResult(content=[
+        TextContent(type="text", text="\n".join(
+            item["url"] for item in data["data"] if isinstance(item.get("url"), str) and item["url"]
+        )
+                    or "Image generated, but its preview is unavailable or exceeds the 10 MiB limit. "
+                    "The upstream returned no URL; generation was not retried."),
     ])
+    if response_bytes(result) > MAX_MCP_RESPONSE_BYTES:
+        return CallToolResult(content=[TextContent(
+            type="text", text="Image generated, but its URL response exceeds the 10 MiB limit; generation was not retried.",
+        )])
+    return result
 
 
 app = mcp.streamable_http_app()
