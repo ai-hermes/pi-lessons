@@ -73,6 +73,21 @@ Build locally:
 docker build -t agentgateway-image-router:dev .
 ```
 
+## CI
+
+`.github/workflows/agentgateway-image-router.yml` is path-scoped. Pull requests run it only when this app or its workflow changes. Pushes to `main` use the same path filters.
+
+The workflow:
+
+1. installs the hashed Python dependency lock;
+2. audits dependencies and runs unit tests;
+3. validates deployment YAML and scans for credential-shaped values;
+4. builds and smoke-tests the runtime container without external image calls;
+5. builds `linux/amd64` and `linux/arm64` images;
+6. pushes the tested multi-platform image to GHCR only on a matching `main` push.
+
+Manual runs execute CI but do not publish an image.
+
 ## Deployment record
 
 `deploy/resources.yaml` records the Deployment, Service, NetworkPolicy, and
