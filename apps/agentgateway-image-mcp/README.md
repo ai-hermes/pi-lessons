@@ -1,16 +1,86 @@
 # Agentgateway image MCP
 
 Standalone Streamable HTTP MCP server exposing `generate_image`. It reuses
-the existing gateway's Ark image API, model aliases, authentication, and
+the existing gateway's image API, model aliases, authentication, and
 billing controls. The public route is `/mcp/images`; no second domain is needed.
 The MCP route accepts only `Authorization: Bearer <key>`, not `x-api-key`;
 the existing image API's authentication is unchanged.
 The default model is `doubao-seedream-5.0-flash`; pass
 `model="doubao-seedream-5.0-pro"` explicitly when requesting Pro.
-It returns image URLs, never retries a possibly billed request, and requires
+It normalizes both URL and native Base64 results to a standard MCP image block.
+Successful previews contain only one Base64 `ImageContent`, not URL text,
+API JSON, or `structuredContent`. Original URLs are a failure/overflow fallback.
+It never retries a possibly billed request and requires
 independent backend authentication even when NetworkPolicy is not enforced.
 Seedream 5.0 pro/flash omit the unsupported `sequential_image_generation`
 parameter; 5.0 lite, 4.5, and 4.0 explicitly set it to `disabled`.
+
+## GPT Image 2
+
+Pass `model="gpt-image-2"` to use the cluster's existing Thirdparty channel.
+Both models use `POST /v1/images/generations` without `x-image-provider`.
+The cluster's `image-model-router` backend forwards requests to
+`agentgateway-image-router:8000`, which selects Thirdparty for `gpt-image-2`
+and Ark for `doubao-seedream-*` from the JSON `model` field.
+The gateway's credentials and billing are unchanged.
+The default model remains Seedream Flash.
+
+GPT requests send `n=1` and omit Ark's `watermark`,
+`sequential_image_generation`, and `response_format` parameters.
+`watermark` has no effect on GPT Image 2. PNG and JPEG output are supported.
+For GPT, `1K` maps to `1024x1024`, `2K` to `2560x1440`, and `4K` to
+`3840x2160`; these shorthand sizes do not all have the same aspect ratio.
+Use explicit dimensions (for example `1536x1024`) to choose the aspect ratio,
+or `auto` for automatic sizing (GPT only). Explicit GPT dimensions must be
+multiples of 16, neither edge may exceed 3840 pixels, the aspect ratio must
+not exceed 3:1, and total pixels must be between 655,360 and 8,294,400.
+Sizes above `2560x1440` are experimental upstream.
+
+Native GPT `b64_json` is validated and returned unchanged in a standard MCP
+image block, without downloading, resizing, or transcoding. Its MIME is checked
+against PNG/JPEG signatures. URL results use the same safe download path as
+Seedream. The adapter does not send GPT's unsupported `response_format` parameter.
+If an image cannot be returned, any original URL(s) are the fallback.
+If the upstream returned only Base64 and no URL, an unavailable/oversized preview
+instead produces a notice. It does not retry, fabricate a URL, upload the image
+elsewhere, or mark generation as failed.
+
+Example tool arguments:
+
+```json
+{"prompt": "A peaceful blue sky with soft white clouds", "model": "gpt-image-2", "size": "1536x1024", "output_format": "png"}
+```
+
+## Unified Base64 image results
+
+Only the first image is inlined. URL results are downloaded and Base64 encoded;
+native `b64_json` results are validated and used directly. Both become the same
+standalone `ImageContent` block. Images are not resized or transcoded.
+
+`MCP_IMAGE_ALLOWED_HOSTS` is a comma-separated exact hostname allowlist,
+confirmed from existing image results. The default is empty (no downloads);
+no suffix matching, wildcards, or automatic trust of returned URLs.
+Downloads require HTTPS on port 443 without URL credentials, use a separate
+client with no authentication headers or environment proxies, and do not
+follow redirects. A five-second total deadline, streaming 10 MiB inclusive
+size limit, and PNG/JPEG MIME/signature checks apply. Encoded downloads
+are rejected. Native Base64 is strictly decoded and subject to the same
+10 MiB raw image cap and PNG/JPEG signature checks.
+
+The image HTTPRoute's request buffer budget is `10Mi`. Agentgateway v1.7.0
+propagates that budget to the MCP upstream response parser; setting only an
+outgoing response-buffer policy would not fix upstream parsing. Other routes
+keep their existing budgets. This is a bounded memory budget, not a preallocated
+buffer; concurrent large responses can still multiply gateway memory use.
+
+The server checks the full UTF-8 serialized JSON-RPC image response, including
+the actual request ID, against 10 MiB (inclusive). Base64 expands the image by
+approximately one third, so a raw image below 10 MiB may still exceed the full
+response budget. Failures and overflow return only original URL(s), one per line,
+or a notice if no URL is available. An oversized URL fallback also becomes a
+short notice. Generation is never retried after a successful upstream call.
+A standard image block does not guarantee terminal pixel rendering in Codex
+or Pi; actual TUI display must be verified separately.
 
 ## Development
 
@@ -29,6 +99,10 @@ and security testing. `npm test` checks script syntax and verifies that plaintex
 endpoints and missing credentials are rejected before any network request. It
 also checks the MCP policy, default scheduling, multi-architecture index
 validation, and OCI archive copying (when skopeo is installed).
+Python tests use mocked generation/download requests and in-process ASGI protocol
+checks, including authentication, tool discovery, unified Base64 image blocks,
+safe downloads, MIME/signatures, no-URL notices, and serialized response budgets.
+They do not start a local service or make billed image-generation calls.
 
 ## Image build and GHCR
 
@@ -83,6 +157,15 @@ does not require deploying it.
 
 For this environment, copy the GHCR image directly to the business registry and
 then apply the local resource template:
+
+The running deployment currently uses the temporary
+`ark-image-mcp-preview-code` ConfigMap mounted read-only at `/mcp/server.py`,
+so its code differs from the container image. This mount is not part of the
+permanent resource template. Keep it until an image containing the same code
+is deployed; then remove the `preview-code` mount/volume and code-hash annotation,
+restore `maxSurge`/`maxUnavailable` to their original `25%` values, wait for
+rollout, and delete the temporary ConfigMap. Retain the confirmed
+`MCP_IMAGE_ALLOWED_HOSTS` configuration for image downloads in the formal release.
 
 ```bash
 export KUBECONFIG=~/.kube/config
