@@ -28,6 +28,19 @@ and do not follow redirects. They have a five-second total deadline, a streaming
 5 MiB limit (inclusive), and PNG/JPEG content-type and signature checks.
 Encoded downloads are rejected; images are not decoded or resized.
 
+The image HTTPRoute's request buffer budget is `10Mi`. Agentgateway v1.7.0
+propagates that budget to the MCP upstream response parser; setting only an
+outgoing response-buffer policy would not fix upstream parsing. Other routes
+keep their existing budgets. This is a bounded memory budget, not a preallocated
+buffer; concurrent large responses can still multiply gateway memory use.
+
+The server checks the UTF-8 serialized JSON-RPC response, including the actual
+request ID, original JSON text, structured result, and Base64 image, against
+10 MiB (inclusive). On overflow it removes the image block and returns the
+original JSON/URLs with a preview-unavailable note. If the original metadata
+alone is too large, it returns only the URL list in JSON and `structuredContent`.
+The original image download cap remains 5 MiB; it is not raised to 10 MiB.
+
 Download failures, blocked addresses, timeouts, and oversized images append only
 a preview-unavailable text block. They do not turn a successful generation into
 an error or issue another billed generation request. Clients without inline image
