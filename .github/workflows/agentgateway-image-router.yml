@@ -77,6 +77,11 @@ jobs:
               for record in records if record["kind"] == "AgentgatewayModel"
           }
           assert len(models) == 7, "expected two internal and five public NewAPI models"
+          upstream_names = {
+              "claude-fable-5.1": "claude-fable-5-1",
+              "claude-opus-5.5": "claude-opus-5-5",
+              "claude-sonnet-5.5": "claude-sonnet-5-5",
+          }
           for name, model in models.items():
               if model.get("visibility") == "Internal":
                   assert model["match"]["model"] == f"{name}/*"
@@ -89,7 +94,7 @@ jobs:
                   for target in model["virtualModel"]["failover"]["targets"]:
                       channel = target["modelRef"]["name"]
                       assert models[channel]["visibility"] == "Internal"
-                      assert target["model"] == f"{channel}/{name}"
+                      assert target["model"] == f"{channel}/{upstream_names.get(name, name)}"
           policies = [record for record in records if record["kind"] == "AgentgatewayPolicy"]
           assert len(policies) == 2
           for policy in policies:

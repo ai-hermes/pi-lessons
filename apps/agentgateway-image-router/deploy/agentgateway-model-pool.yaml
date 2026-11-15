@@ -108,7 +108,7 @@ items:
   - apiVersion: agentgateway.dev/v1alpha1
     kind: AgentgatewayModel
     metadata:
-      name: claude-fable-5-1
+      name: claude-fable-5.1
       namespace: ark-gateway
     spec:
       parentRefs: *chat-parent
@@ -123,7 +123,7 @@ items:
   - apiVersion: agentgateway.dev/v1alpha1
     kind: AgentgatewayModel
     metadata:
-      name: claude-opus-5-5
+      name: claude-opus-5.5
       namespace: ark-gateway
     spec:
       parentRefs: *chat-parent
@@ -138,7 +138,7 @@ items:
   - apiVersion: agentgateway.dev/v1alpha1
     kind: AgentgatewayModel
     metadata:
-      name: claude-sonnet-5-5
+      name: claude-sonnet-5.5
       namespace: ark-gateway
     spec:
       parentRefs: *chat-parent
