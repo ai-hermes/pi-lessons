@@ -32,6 +32,8 @@ try {
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map(tool => tool.name), ["generate_image"]);
   assert.match(tools[0].description, /charges/);
+  assert.match(tools[0].description, /Base64 image block/);
+  assert.ok(tools[0].inputSchema.properties.model.enum.includes("gpt-image-2"));
   const invalid = await client.callTool({ name: "generate_image", arguments: { prompt: "" } });
   assert.equal(invalid.isError, true);
   console.log("Public MCP: initialize, tools/list, invalid tools/call passed");
