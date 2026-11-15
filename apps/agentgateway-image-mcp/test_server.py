@@ -126,19 +126,37 @@ class ImageMcpTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(base64.b64decode(result.content[1].data), image)
 
     async def test_inline_size_boundary_and_stream_limit(self):
+        self.assertEqual(server.MAX_IMAGE_BYTES, 10 * 1024 * 1024)
+        self.assertEqual(server.MAX_IMAGE_BYTES, server.MAX_MCP_RESPONSE_BYTES)
         at_limit = PNG + b"\0" * (server.MAX_IMAGE_BYTES - len(PNG))
         for extra in (0, 1, 64 * 1024):
             with self.subTest(extra=extra):
                 stream = ImageStream([at_limit, b"x" * extra])
                 if extra == 64 * 1024:
                     stream.chunks.append(b"not consumed")
-                result, _ = await self.preview_result(httpx.Response(
-                    200, stream=stream, headers={"content-type": "image/png"},
-                ))
+                # Isolate the download cap from the encoded response budget.
+                with patch.object(server, "MAX_MCP_RESPONSE_BYTES", 20 * 1024 * 1024):
+                    result, _ = await self.preview_result(httpx.Response(
+                        200, stream=stream, headers={"content-type": "image/png"},
+                    ))
                 self.assertEqual(result.content[1].type, "image" if not extra else "text")
                 self.assertTrue(stream.closed)
                 if extra == 64 * 1024:
                     self.assertLess(stream.consumed, 3)
+
+    async def test_larger_downloads_respect_encoded_response_budget(self):
+        for size, types in [
+            (6 * 1024 * 1024, ["text", "image"]),
+            (10 * 1024 * 1024, ["text", "text"]),
+        ]:
+            with self.subTest(size=size):
+                image = PNG + b"\0" * (size - len(PNG))
+                result, calls = await self.preview_result(httpx.Response(
+                    200, content=image, headers={"content-type": "image/png"},
+                ))
+                self.assertEqual([block.type for block in result.content], types)
+                self.assertLessEqual(server.response_bytes(result), server.MAX_MCP_RESPONSE_BYTES)
+                self.assertEqual(len(calls), 2)
 
     async def test_preview_failures_preserve_success_and_do_not_retry(self):
         for response in [
