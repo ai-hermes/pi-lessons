@@ -159,11 +159,17 @@ deployment model IDs, not a guarantee that another account's group offers them.
 Check your group's model list before adapting the file. Each virtual model has
 one target; this example does not provide cross-channel failover.
 
-The three public Claude names use dots in the version; their upstream targets
-remain `claude-fable-5-1`, `claude-opus-5-5` and `claude-sonnet-5-5`. Renaming
-`AgentgatewayModel.metadata.name` does not require renaming the upstream model ID.
-Applying these renamed resources does not delete previously deployed Claude
-resources; migrate clients before removing the old names separately.
+Claude public names and upstream IDs are separate:
+
+| Public `AgentgatewayModel.metadata.name` | Internal target `model` |
+| --- | --- |
+| `claude-fable-5.1` | `thirdparty-claude/claude-fable-5-1` |
+| `claude-opus-5.5` | `thirdparty-claude/claude-opus-5-5` |
+| `claude-sonnet-5.5` | `thirdparty-claude/claude-sonnet-5-5` |
+
+The internal channel strips only `thirdparty-claude/`; NewAPI receives the
+hyphenated upstream ID. Existing hyphenated public aliases can remain for
+client compatibility and are not removed by applying this example.
 
 The pool attaches to an **existing** `HTTPRoute/ark-chat` with a rule named
 `models`. That chat route and Gateway are not supplied here. Keep existing
