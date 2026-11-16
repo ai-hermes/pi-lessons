@@ -1,0 +1,65 @@
+# A fake OpenAI-compatible upstream, modelled as a real AI backend so
+# agentgateway emits token-usage and cost attributes on its access log.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: lab-llm
+  namespace: agentgateway-demo
+spec:
+  ai:
+    provider:
+      openai:
+        model: lab-model
+      host: echo-backend.agentgateway-demo.svc.cluster.local
+      port: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: llm
+  namespace: agentgateway-demo
+spec:
+  parentRefs:
+  - name: agentgateway-demo
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /v1
+    backendRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: lab-llm
+---
+# Same external authorization, now also guarding the LLM route.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: llm-ext-auth
+  namespace: agentgateway-demo
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: llm
+  traffic:
+    extAuth:
+      backendRef:
+        name: extauth
+        port: 9001
+      http:
+        path: '"/check"'
+        allowedRequestHeaders:
+        - authorization
+        - x-api-key
+        - x-session-token
+        - x-forwarded-for
+        - x-request-id
+        allowedResponseHeaders:
+        - x-client-id
+        - x-tenant-id
+        - x-plan
+        - x-auth-source
+        - x-budget-remaining-cents
+        - x-auth-denial-reason
+      failureMode: FailClosed

@@ -1,0 +1,39 @@
+# Envoy-compatible gRPC ext_authz path: same policy engine, extAuth.grpc
+# instead of extAuth.http. Useful when an existing authz service already
+# speaks the Envoy v3 protocol.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grpc-echo
+  namespace: agentgateway-demo
+spec:
+  parentRefs:
+  - name: agentgateway-demo
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /grpc
+    backendRefs:
+    - name: echo-backend
+      port: 8080
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: grpc-ext-auth
+  namespace: agentgateway-demo
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: grpc-echo
+  traffic:
+    extAuth:
+      backendRef:
+        name: extauth
+        port: 9002
+      grpc:
+        contextExtensions:
+          lab-tenant-tier: pro
+      failureMode: FailClosed

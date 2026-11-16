@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: finops
+  namespace: agentgateway-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: finops
+  template:
+    metadata:
+      labels:
+        app: finops
+    spec:
+      containers:
+      - name: finops
+        image: agentgateway-lab/finops:v0.1.0
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: FINOPS_ADDR
+          value: :9100
+        - name: FINOPS_GRPC_ADDR
+          value: :9101
+        - name: FINOPS_PG_DSN
+          valueFrom:
+            secretKeyRef:
+              name: lab-secrets
+              key: finops-dsn
+        - name: FINOPS_ADMIN_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: lab-secrets
+              key: admin-token
+        ports:
+        - name: http
+          containerPort: 9100
+        - name: grpc
+          containerPort: 9101
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 9100
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: finops
+  namespace: agentgateway-demo
+spec:
+  selector:
+    app: finops
+  ports:
+  - name: http
+    port: 9100
+    targetPort: 9100
+  - name: grpc
+    port: 9101
+    targetPort: 9101
