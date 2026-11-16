@@ -41,7 +41,7 @@ ROWS=$(kubectl -n agentgateway-demo exec deploy/lab-postgres -- psql -U agw -d a
 check "usage_events with realized cost" 1 "$([ "$ROWS" -ge 1 ] && echo 1 || echo 0)"
 
 TRACES=$(kubectl -n agentgateway-demo exec deploy/finops -- wget -qO- http://127.0.0.1:9100/v1/traces/summary \
-  | sed 's/.*"spans":\([0-9]*\).*/\1/')
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["spans"])')
 check "traces ingested" 1 "$([ "$TRACES" -ge 1 ] && echo 1 || echo 0)"
 
 SUMMARY=$(kubectl -n agentgateway-demo exec deploy/finops -- wget -qO- \
