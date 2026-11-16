@@ -56,13 +56,53 @@ jobs:
           import yaml
 
           root = Path(".")
-          resources = (root / "deploy/resources.yaml").read_text()
-          rendered = resources.replace(
-              "${IMAGE_ROUTER_IMAGE}",
-              "example.invalid/agentgateway-image-router:validation",
-          )
-          assert list(yaml.safe_load_all(rendered))
-          assert list(yaml.safe_load_all((root / "deploy/httproute.yaml").read_text()))
+          paths = sorted((root / "deploy").glob("*.yaml"))
+          assert paths, "deployment records are missing"
+          records = []
+          for path in paths:
+              rendered = path.read_text().replace(
+                  "${IMAGE_ROUTER_IMAGE}",
+                  "example.invalid/agentgateway-image-router:validation",
+              )
+              documents = list(yaml.safe_load_all(rendered))
+              assert documents and all(isinstance(doc, dict) for doc in documents), path
+              for doc in documents:
+                  records.extend(doc["items"] if doc["kind"] == "List" else [doc])
+          for record in records:
+              assert record["apiVersion"] and record["metadata"]["name"]
+              assert record["kind"] != "Secret", "publish Secret references, never values"
+
+          models = {
+              record["metadata"]["name"]: record["spec"]
+              for record in records if record["kind"] == "AgentgatewayModel"
+          }
+          assert len(models) == 7, "expected two internal and five public NewAPI models"
+          upstream_names = {
+              "claude-fable-5.1": "claude-fable-5-1",
+              "claude-opus-5.5": "claude-opus-5-5",
+              "claude-sonnet-5.5": "claude-sonnet-5-5",
+          }
+          for name, model in models.items():
+              if model.get("visibility") == "Internal":
+                  assert model["match"]["model"] == f"{name}/*"
+                  assert model["policies"]["auth"]["secretRef"]["name"]
+                  assert model["policies"]["transformations"] == [{
+                      "expression": f'llmRequest.model.stripPrefix("{name}/")',
+                      "field": "model",
+                  }]
+              else:
+                  for target in model["virtualModel"]["failover"]["targets"]:
+                      channel = target["modelRef"]["name"]
+                      assert models[channel]["visibility"] == "Internal"
+                      assert target["model"] == f"{channel}/{upstream_names.get(name, name)}"
+          policies = [record for record in records if record["kind"] == "AgentgatewayPolicy"]
+          assert len(policies) == 2
+          for policy in policies:
+              traffic = policy["spec"]["traffic"]
+              assert traffic["apiKeyAuthentication"]["mode"] == "Strict"
+              assert set(traffic["headerModifiers"]["request"]["remove"]) == {
+                  "authorization", "x-api-key",
+              }
 
           patterns = [
               r"sk-[A-Za-z0-9_-]{16,}",

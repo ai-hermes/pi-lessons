@@ -90,27 +90,129 @@ Manual runs execute CI but do not publish an image.
 
 ## Deployment record
 
-`deploy/resources.yaml` records the Deployment, Service, NetworkPolicy, and
-`AgentgatewayBackend`. `deploy/httproute.yaml` records the public image route.
-They are environment-aware templates, not a portable one-command installer.
+The former `deploy/resources.yaml` is split by responsibility without changing
+its resource specifications. These are environment-aware templates, not a
+portable one-command installer.
 
-Set the image to an immutable digest before applying:
+| File in `deploy/` | Responsibility |
+| --- | --- |
+| `deployment.yaml` | Router image, upstream Secret references, probes and pod security |
+| `service.yaml` | Stable in-cluster address for the Router pods |
+| `networkpolicy.yaml` | Gateway-only ingress, HTTPS upstream egress and DNS |
+| `backend.yaml` | Connect Agentgateway to the Service, with a 190-second timeout |
+| `httproute.yaml` | Send `POST /v1/images/generations` to `image-model-router` |
+| `agentgateway-model-pool.yaml` | Optional NewAPI text models: two internal channels and five public virtual models |
+| `agentgateway-client-auth.yaml` | Strict client authentication for chat and images; remove client credentials before forwarding |
+
+`httproute.yaml` is also the sanitized counterpart of the local
+`agentgateway-thirdparty-image.yaml`; that file defines an HTTPRoute, not a
+Backend. There is no duplicate image route to apply.
+
+Create the namespaces, Gateway and required Secrets outside Git first. Install
+compatible Agentgateway CRDs, and review namespace names, Gateway references,
+Secret names, DNS selectors and cluster egress rules. The NetworkPolicy permits
+outbound TCP 443 because the Router connects to two external HTTPS upstreams.
+
+From this app directory, set the image to an immutable digest. Validate **all**
+selected resources before applying. Apply the client-auth policy before exposing
+the image route. If a route already has an authentication policy, merge the
+example into that policy rather than attach another policy to the same route:
 
 ```bash
 export IMAGE_ROUTER_IMAGE='registry.example.com/agentgateway-image-router@sha256:<digest>'
-envsubst < deploy/resources.yaml | kubectl apply --dry-run=server -f -
-envsubst < deploy/resources.yaml | kubectl apply -f -
-kubectl apply --dry-run=server -f deploy/httproute.yaml
+envsubst '${IMAGE_ROUTER_IMAGE}' < deploy/deployment.yaml | kubectl apply --dry-run=server -f -
+kubectl apply --dry-run=server \
+  -f deploy/service.yaml -f deploy/networkpolicy.yaml -f deploy/backend.yaml \
+  -f deploy/agentgateway-client-auth.yaml -f deploy/httproute.yaml
+kubectl apply -f deploy/agentgateway-client-auth.yaml
+kubectl describe agentgatewaypolicy ark-image-client-auth -n ark-gateway
+# Confirm that the policy is accepted before exposing the route below.
+kubectl apply -f deploy/networkpolicy.yaml -f deploy/service.yaml -f deploy/backend.yaml
+envsubst '${IMAGE_ROUTER_IMAGE}' < deploy/deployment.yaml | kubectl apply -f -
 kubectl apply -f deploy/httproute.yaml
 ```
 
-The namespace, Gateway name, Secret names, DNS selectors, and cluster egress
-policy must be reviewed for each environment. The NetworkPolicy permits outbound
-TCP 443 because the router connects directly to two external HTTPS upstreams.
+Do not use `kubectl apply -f deploy/`: the image placeholder needs rendering and
+the text models have separate prerequisites. Scripts using the old
+`deploy/resources.yaml` path must switch to these individual files. Splitting
+files does not delete or rename the existing Kubernetes resources.
 
-Verify routing without generating an image by sending a valid model and omitting
-`prompt`. A provider validation error proves the route and credential worked,
-but does not create a generation task.
+### NewAPI text model example
+
+Different NewAPI API keys select different groups, and each group has its own
+available models. The examples use Codex and Claude groups for text, plus a
+separate image-group key in `deployment.yaml`. Keep those upstream keys separate
+from the gateway's client keys.
+
+```text
+client model=gpt-6-astra
+  -> public virtual model gpt-6-astra
+  -> target thirdparty-codex/gpt-6-astra
+  -> internal channel thirdparty-codex (its own Secret)
+  -> strip thirdparty-codex/
+  -> NewAPI receives model=gpt-6-astra
+```
+
+The model pool contains GPT (`gpt-6-astra`, `gpt-6.1-sol`) and Claude
+(`claude-fable-5.1`, `claude-opus-5.5`, `claude-sonnet-5.5`) examples. These are
+deployment model IDs, not a guarantee that another account's group offers them.
+Check your group's model list before adapting the file. Each virtual model has
+one target; this example does not provide cross-channel failover.
+
+Claude public names and upstream IDs are separate:
+
+| Public `AgentgatewayModel.metadata.name` | Internal target `model` |
+| --- | --- |
+| `claude-fable-5.1` | `thirdparty-claude/claude-fable-5-1` |
+| `claude-opus-5.5` | `thirdparty-claude/claude-opus-5-5` |
+| `claude-sonnet-5.5` | `thirdparty-claude/claude-sonnet-5-5` |
+
+The internal channel strips only `thirdparty-claude/`; NewAPI receives the
+hyphenated upstream ID. Existing hyphenated public aliases can remain for
+client compatibility and are not removed by applying this example.
+
+The pool attaches to an **existing** `HTTPRoute/ark-chat` with a rule named
+`models`. That chat route and Gateway are not supplied here. Keep existing
+Agent Plan, Coding Plan and PAYG resources in your own configuration; this
+NewAPI-only excerpt deliberately excludes private group names and endpoint IDs.
+It does not replace the complete model pool. YAML anchors are defined within
+this file; copy the full document or expand aliases when extracting a model.
+
+Once the chat route and `thirdparty-codex-key` / `thirdparty-claude-key`
+Secrets exist, apply the optional text example:
+
+```bash
+kubectl apply --dry-run=server -f deploy/agentgateway-model-pool.yaml
+kubectl apply -f deploy/agentgateway-model-pool.yaml
+```
+
+The auth policy accepts `Authorization: Bearer <gateway-client-key>` or
+`x-api-key: <gateway-client-key>`. Authorization takes precedence: an invalid
+Authorization header does not fall back to `x-api-key`. Both headers are removed
+after validation; upstream Model policies or Router environment variables supply
+the provider credentials. The referenced `agentgateway-client-keys` Secret must
+use the format supported by your installed Agentgateway version.
+
+The auth example targets chat and images only. It intentionally does not target
+an existing video route. Do not remove or overwrite a broader media policy
+without preserving that route's authentication.
+
+Images still follow `HTTPRoute -> AgentgatewayBackend -> Router`; adding the text
+model pool does not turn image models into AgentgatewayModels or change their
+discovery behavior.
+
+Check that the auth policy has been accepted before applying the image route;
+server-side dry-run alone does not establish that the controller enforces it.
+For an existing deployment, inspect route and policy status after applying:
+
+```bash
+kubectl get httproute,agentgatewaybackend,agentgatewaypolicy -n ark-gateway
+kubectl describe agentgatewaypolicy ark-image-client-auth -n ark-gateway
+```
+
+A request with a missing `prompt` is not an authentication test: an upstream may
+validate the body before checking credentials. Use mocked tests for a no-cost
+local routing check; any live inference probe may incur charges.
 
 ## Removing the custom service
 

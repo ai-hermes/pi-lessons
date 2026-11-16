@@ -1,0 +1,58 @@
+# Client authentication is separate from upstream Model/Router credentials.
+# Authorization takes precedence; strip both client headers after validation.
+# This example covers chat and images only, not the existing video route.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: ark-chat-client-auth
+  namespace: ark-gateway
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: ark-chat
+  traffic:
+    apiKeyAuthentication:
+      mode: Strict
+      secretRef:
+        name: agentgateway-client-keys
+      location:
+        expression: >-
+          (type(default(request.headers.authorization, "")) != string ||
+           type(default(request.headers["x-api-key"], "")) != string)
+          ? ""
+          : (has(request.headers.authorization)
+            ? (request.headers.authorization.matches("(?i)^Bearer .+$")
+              ? request.headers.authorization.substring(7) : "")
+            : default(request.headers["x-api-key"], ""))
+    headerModifiers:
+      request:
+        remove: [x-api-key, authorization]
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: ark-image-client-auth
+  namespace: ark-gateway
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: ark-image-generation
+  traffic:
+    apiKeyAuthentication:
+      mode: Strict
+      secretRef:
+        name: agentgateway-client-keys
+      location:
+        expression: >-
+          (type(default(request.headers.authorization, "")) != string ||
+           type(default(request.headers["x-api-key"], "")) != string)
+          ? ""
+          : (has(request.headers.authorization)
+            ? (request.headers.authorization.matches("(?i)^Bearer .+$")
+              ? request.headers.authorization.substring(7) : "")
+            : default(request.headers["x-api-key"], ""))
+    headerModifiers:
+      request:
+        remove: [x-api-key, authorization]
