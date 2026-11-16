@@ -2,6 +2,16 @@
 
 Standalone Pi extension that runs Pi's `bash`, `read`, `write`, `edit`, `ls`, `find`, and `grep` tools, plus user `!` shell commands, inside OpenSandbox. It includes optional Skill upload and does not depend on another OpenSandbox extension.
 
+## Architecture
+
+Pi's agent loop always runs locally. When remote mode is active, the extension
+replaces the operations of the built-in tools and user `!` commands so that
+they execute in OpenSandbox.
+
+![pi-opensandbox architecture](./docs/architecture.png)
+
+Source diagram: [`docs/architecture.svg`](./docs/architecture.svg).
+
 ## Structure
 
 - `package.json`: Pi package manifest; `pi.extensions` points to `./dist/index.js`.
@@ -12,6 +22,7 @@ Standalone Pi extension that runs Pi's `bash`, `read`, `write`, `edit`, `ls`, `f
 - `src/skills.ts`: optional Skill validation, immutable cache, upload, and verification.
 - `src/sandbox/`: OpenSandbox configuration, active Sandbox module, session state, and Pi tool adapters.
 - `test/`: configuration and integration tests.
+- `docs/`: architecture diagram (SVG source and PNG export).
 - `dist/`: generated JavaScript and declarations for Node.js consumers (not committed).
 
 This follows Pi's [package-with-dependencies layout](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md#extension-styles).
