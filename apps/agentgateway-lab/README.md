@@ -112,6 +112,36 @@ lab 的 `usage_events.realized_cost_micros` 就等于网关算出来的值（例
 6. **cost 单位**：catalog 的 `rates` 是「USD / 1M tokens」的字符串；库里用 integer micro-USD 存，避免浮点累计误差。
 7. **OTLP 属性名以网关为准**：缓存命中是 `gen_ai.usage.cache_read.input_tokens`（带点），不是下划线形式；两种都做了兼容。
 
+## 对外域名
+
+| 域名 | 落点 | 配置 |
+| --- | --- | --- |
+| `<prod-ingress-domain>` | 生产 `ark-gateway` | nginx `conf.d/agentgateway-aii.conf`（已有） |
+| `<lab-ingress-domain>` | 本 lab（16.62 kind） | nginx `conf.d/st2-aii.conf`（本目录 `deploy/nginx/`） |
+
+数据面：nginx → `<lab-host-ip>:14001` → kind `NodePort 30080`。
+UI / `config_dump`：nginx → `<lab-host-ip>:14003` → 宿主机 systemd
+`agentgateway-lab-ui-port-forward.service`（`kubectl port-forward deploy/agentgateway-demo 14003:15000`）。
+kind 的 `extraPortMappings` 只映射了 30080，所以 UI 不走 NodePort，改由 port-forward 暴露。
+
+nginx 主机（`<nginx-host>`，<nginx-host-ip>）发布：
+
+```bash
+scp deploy/nginx/st2-aii.conf jump-user@<nginx-host>:/tmp/st2-aii.conf
+sudo install -m 644 /tmp/st2-aii.conf /etc/nginx/conf.d/st2-aii.conf
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+验证（公网域名，已实测）：
+
+```bash
+H=<lab-ingress-domain>
+curl -s -o /dev/null -w '%{http_code}\n' http://$H/ui/                                  # 200
+curl -s -o /dev/null -w '%{http_code}\n' -H 'x-api-key: sk-lab-alice' http://$H/echo    # 200
+curl -s -o /dev/null -w '%{http_code}\n' -H 'x-api-key: sk-lab-bob'   http://$H/echo    # 429
+curl -s -o /dev/null -w '%{http_code}\n' http://$H/config_dump                          # 200
+```
+
 ## 清理
 
 ```bash
