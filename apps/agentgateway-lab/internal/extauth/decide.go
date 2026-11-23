@@ -88,7 +88,7 @@ func (c *Config) Evaluate(store Store, req Request) Decision {
 }
 
 func (c *Config) evaluate(store Store, req Request) Decision {
-	kind, raw := Credential(req.Headers)
+	_, raw := Credential(req.Headers)
 	if raw == "" {
 		return deny(401, ReasonMissingCredential, "none")
 	}
@@ -141,7 +141,6 @@ func (c *Config) evaluate(store Store, req Request) Decision {
 		}
 		client = cli
 	}
-	_ = kind
 
 	if client.Status != "" && client.Status != "active" {
 		d := deny(403, ReasonInactiveClient, source)
