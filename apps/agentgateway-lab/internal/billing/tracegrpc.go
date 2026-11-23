@@ -73,20 +73,6 @@ type TraceRow struct {
 	OutputTokens int64
 }
 
-// __delete_me__
-type TraceRowUnused struct {
-	TraceID    string
-	SpanID     string
-	Name       string
-	Service    string
-	Route      string
-	ClientID   string
-	Model      string
-	DurationMS int64
-	StatusCode int64
-	AttrsJSON  string
-}
-
 func (s *Store) TraceCount(ctx context.Context) (int64, error) {
 	var n int64
 	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM traces`).Scan(&n)
