@@ -114,25 +114,17 @@ lab 的 `usage_events.realized_cost_micros` 就等于网关算出来的值（例
 
 ## 对外域名
 
-| 域名 | 落点 | 配置 |
-| --- | --- | --- |
-| `<prod-ingress-domain>` | 生产 `ark-gateway` | nginx `conf.d/agentgateway-aii.conf`（已有） |
-| `<lab-ingress-domain>` | 本 lab（16.62 kind） | nginx `conf.d/st2-aii.conf`（本目录 `deploy/nginx/`） |
+内网拓扑与接入配置（nginx vhost、systemd port-forward、域名、IP）不入本仓库，只保留结构约定：
 
-数据面：nginx → `<lab-host-ip>:14001` → kind `NodePort 30080`。
-UI / `config_dump`：nginx → `<lab-host-ip>:14003` → 宿主机 systemd
-`agentgateway-lab-ui-port-forward.service`（`kubectl port-forward deploy/agentgateway-demo 14003:15000`）。
-kind 的 `extraPortMappings` 只映射了 30080，所以 UI 不走 NodePort，改由 port-forward 暴露。
+| 项 | 约定 |
+| --- | --- |
+| 数据面 | 反向代理 → `<lab-host-ip>:<dataplane-port>` → kind `NodePort 30080` |
+| UI / `config_dump` | 反向代理 → `<lab-host-ip>:<ui-port>` → 宿主机 `kubectl port-forward deploy/agentgateway-demo <ui-port>:15000` |
+| 域名 | `<lab-ingress-domain>`（本 lab）；生产环境域名与配置不入库 |
 
-nginx 主机（`<nginx-host>`，<nginx-host-ip>）发布：
+kind 的 `extraPortMappings` 只映射 30080，UI 不走 NodePort，改由 port-forward 暴露；admin 面板（`:15000`，含 `/config_dump`）**不要**绑定 `0.0.0.0` 对外。
 
-```bash
-scp deploy/nginx/st2-aii.conf tiger@<nginx-host>:/tmp/st2-aii.conf
-sudo install -m 644 /tmp/st2-aii.conf /etc/nginx/conf.d/st2-aii.conf
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-验证（公网域名，已实测）：
+验证（公网域名占位，已实测）：
 
 ```bash
 H=<lab-ingress-domain>
