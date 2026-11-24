@@ -89,12 +89,12 @@ spec:
 - `backendRef`：鉴权服务地址，`9001` = HTTP 门面，`9002` = gRPC 门面
 - `http.path`：检查端点；CEL 字符串，内层引号不能省
 - `allowedRequestHeaders`：网关默认不转发凭证头，不列 = 鉴权服务永远看不到凭证（100% `missing_credential` 且不报错）；`cookie` / `x-forwarded-for` / `x-request-id` 用于审计排错，可按需增删
-- `allowedResponseHeaders`：放行响应中被列出的头复制到上游请求（identity 注入通道）；`x-auth-denial-reason` 仅拒绝响应
+- `allowedResponseHeaders`：采用白名单机制，仅放行响应中被列出的头复制到上游请求，把 auth 服务识别出的调用方身份随请求带给后端；`x-auth-denial-reason` 只在拒绝时出现，随拒绝响应回给调用方
 - `failureMode: FailClosed`：鉴权服务不可用时宁可拒绝，不放未鉴权流量
 
 **请求契约**：网关 `POST` `path`，只透传 `allowedRequestHeaders` 列出的头；鉴权服务返回 **2xx 即放行**，其他状态码与响应体原样回给调用方（`401` / `403` / `429` + 拒绝原因）。
 
-**放行**：2xx 响应中被 `allowedResponseHeaders` 列出的头复制到上游请求——这就是 identity 注入通道，后续限流与计费都依赖 `X-Client-Id`。
+**放行**：2xx 响应中被 `allowedResponseHeaders` 列出的头复制到上游请求——auth 服务识别出的调用方身份就是靠这一步随请求带给后端的，后续限流与计费都依赖 `X-Client-Id`。
 
 **拒绝**：`X-Auth-Denial-Reason` 仅出现在拒绝响应头；gRPC 门面用 `DeniedHttpResponse` 表达同样语义。
 
