@@ -238,20 +238,12 @@ func (c *Config) evaluate(store Store, req Request) Decision {
 
 ## 四、协议门面：HTTP 与 gRPC
 
-### 4.1 对照表
+第三章的 `Evaluate()` 是协议无关的，两个门面的差异只在「请求怎么递过来、决策怎么送回去」。下面把两种协议的请求处理并排对照，先 HTTP 后 gRPC。
 
-| 维度 | HTTP（`:9001`） | gRPC（`:9002`） |
-| --- | --- | --- |
-| 协议契约 | 网关 `POST` 到 `http.path`，透传 `allowedRequestHeaders` | Envoy `ext_authz` v3 的 `CheckRequest`（结构化 `AttributeContext`） |
-| 允许信号 | 鉴权服务返回 **2xx** | `CheckResponse` 返回 `OK` + `OkHttpResponse` |
-| 拒绝信号 | 非 2xx 即拒绝，状态码与响应体**原样透传**给客户端 | `Denied` + `DeniedHttpResponse`（自定义 HTTP status / body / headers） |
-| 静态上下文 | 靠请求头 | `grpc.contextExtensions` 键值对 |
-| 典型场景 | 自研鉴权服务、复用现有 REST、`curl` 可调试 | 已有 Envoy 体系 `ext_authz` 服务，不改协议直接接入 |
-| 开销 | 每请求一次 HTTP 调用 | HTTP/2 长连接 + protobuf，连接复用；同集群内两者都在 1–2ms |
-
-### 4.2 HTTP 门面
+**HTTP（`:9001`）——自研鉴权服务、复用现有 REST，`curl` 可直接调试**
 
 ```go
+// 网关 POST /check，只透传 allowedRequestHeaders 列的头
 func (h *HTTPAuth) check(w http.ResponseWriter, r *http.Request) {
 	dec := h.Engine.Evaluate(h.Store, reqFrom(r))
 	if !dec.Allow {
@@ -259,7 +251,8 @@ func (h *HTTPAuth) check(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(dec.HTTPStatus)
 		return
 	}
-	// 2xx：identity headers 写入响应头，由网关按 allowedResponseHeaders 复制
+	// 2xx：identity headers 写入响应头，
+	// 网关按 allowedResponseHeaders 复制到上游
 	for k, v := range dec.Headers {
 		w.Header().Set(k, v)
 	}
@@ -267,38 +260,36 @@ func (h *HTTPAuth) check(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-HTTP 门面跑在 `:9001`，另有 `/admin/clients`、`/admin/jwt`、`/admin/session` 管理端点（见七章）。
+契约一句话：**2xx 即放行**；其他状态码与响应体原样透传，拒绝原因调用方直接可见。
 
-### 4.3 gRPC 门面
+**gRPC（`:9002`）——存量 Envoy `ext_authz` 服务，不改协议直接接入**
 
 ```go
-func (s *GRPCServer) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.CheckResponse, error) {
+// Envoy ext_authz v3 的 Check()
+func (s *GRPCServer) Check(ctx context.Context,
+	req *authv3.CheckRequest) (*authv3.CheckResponse, error) {
 	decision := s.engine.Evaluate(s.store, reqFromGRPC(req))
 	if decision.Allow {
 		return &authv3.CheckResponse{
 			Status: &status.Status{Code: int32(codes.OK)},
 			HttpResponse: &authv3.CheckResponse_OkResponse{
-				OkResponse: &authv3.OkHttpResponse{Headers: headerOptions(decision.Headers)},
-			},
+				OkResponse: &authv3.OkHttpResponse{
+					Headers: headerOptions(decision.Headers)}},
 		}, nil
 	}
 	return &authv3.CheckResponse{
-		Status: &status.Status{Code: int32(codes.PermissionDenied), Message: decision.Reason},
+		Status: &status.Status{Code: int32(codes.PermissionDenied)},
 		HttpResponse: &authv3.CheckResponse_DeniedResponse{
 			DeniedResponse: &authv3.DeniedHttpResponse{
-				Status:  &typev3.HttpStatus{Code: typev3.StatusCode(decision.HTTPStatus)},
-				Headers: headerOptions(decision.Headers),
-			},
-		},
+				Status:  &typev3.StatusCode(decision.HTTPStatus),
+				Headers: headerOptions(decision.Headers)}},
 	}, nil
 }
 ```
 
-gRPC 门面同时注册了 gRPC health 与 reflection，方便探活与调试。`grpc.contextExtensions` 会作为 `context_extensions` 传给鉴权服务，适合传租户/环境这类静态上下文。
+契约一句话：**`OK` 即放行**，注入头走 `OkHttpResponse`；`Denied` + `DeniedHttpResponse` 拒绝，可指定 HTTP 状态码 / body / headers。租户、环境这类静态上下文用 `grpc.contextExtensions` 传入。gRPC 门面同时注册了 health 与 reflection，方便探活与调试；HTTP 门面另挂 `/admin/clients`、`/admin/jwt`、`/admin/session` 管理端点（见七章）。
 
-### 4.4 选型建议
-
-新建鉴权服务选 HTTP（简单、可观测、调试成本最低）；存量 Envoy 体系或追求连接复用选 gRPC。两者切换只改 `extAuth` 下的 `http:` / `grpc:` 块和端口，业务侧无感。
+两个门面跑在同一个 `extauth` 进程里（`:9001` + `:9002`，`EXTAUTH_MODE=both`），共用同一引擎与存储，所以对同一 key 的结果必然一致。选型上新服务选 HTTP（简单、可观测、调试成本低），存量 Envoy 体系选 gRPC（HTTP/2 长连接复用、契约强类型）；开销同量级，同集群内都在 1–2ms；切换只改 `extAuth` 下的 `http:` / `grpc:` 块和端口，业务侧无感。
 
 ## 五、安装部署
 
