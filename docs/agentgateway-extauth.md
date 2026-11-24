@@ -287,7 +287,7 @@ func (s *GRPCServer) Check(ctx context.Context,
 }
 ```
 
-契约一句话：**`OK` 即放行**，注入头走 `OkHttpResponse`；`Denied` + `DeniedHttpResponse` 拒绝，可指定 HTTP 状态码 / body / headers。租户、环境这类静态上下文用 `grpc.contextExtensions` 传入。gRPC 门面同时注册了 health 与 reflection，方便探活与调试；HTTP 门面另挂 `/admin/clients`、`/admin/jwt`、`/admin/session` 管理端点（见七章）。
+契约一句话：**`OK` 即放行**，要注入的头放在 `OkHttpResponse` 里随请求带下去；拒绝时返回 `Denied`，回给客户端的状态码、body 和响应头都可以在 `DeniedHttpResponse` 里指定。租户、环境这类不随请求变化的上下文，用 `grpc.contextExtensions` 传给鉴权服务。gRPC 门面同时注册了 health 与 reflection，方便探活与调试；HTTP 门面另挂 `/admin/clients`、`/admin/jwt`、`/admin/session` 管理端点（见七章）。
 
 两个门面跑在同一个 `extauth` 进程里（`:9001` + `:9002`，`EXTAUTH_MODE=both`），共用同一引擎与存储，所以对同一 key 的结果必然一致。选型上新服务选 HTTP（简单、可观测、调试成本低），存量 Envoy 体系选 gRPC（HTTP/2 长连接复用、契约强类型）；开销同量级，同集群内都在 1–2ms；切换只改 `extAuth` 下的 `http:` / `grpc:` 块和端口，业务侧无感。
 
