@@ -46,11 +46,9 @@
                    上游后端（收到注入的 X-Client-Id 等头）
 ```
 
-### 2.2 对照 YAML 逐步讲解
+### 2.2 完整策略 YAML
 
-每步先给清单片段，紧跟要点解释（Notion 版为左 YAML / 右解释两栏对照，本页为顺序版）；①②④⑤ 各一段 YAML，③ 在引擎里、无清单（见三章）。
-
-**第①步 挂载策略**。`targetRefs` 决定挂在哪一级（HTTPRoute / Gateway / Backend），`backendRef` 指向鉴权服务：
+一个清单就能讲清楚整个契约；注释即字段语义，下方补充行为约定（gRPC 差异见四章）：
 
 ```yaml
 apiVersion: agentgateway.dev/v1alpha1
@@ -59,83 +57,49 @@ metadata:
   name: echo-ext-auth
   namespace: agentgateway-demo
 spec:
+  # 挂到 /echo 这条 HTTPRoute；也可挂 Gateway / Backend 级
   targetRefs:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: echo
   traffic:
     extAuth:
+      # 鉴权服务地址：HTTP 门面 9001，gRPC 门面 9002
       backendRef:
         name: extauth
-        port: 9001        # HTTP 门面；gRPC 门面用 9002
-```
-
-- `targetRefs` 挂到 `/echo` 这条 HTTPRoute，策略只作用于该路由；挂 Gateway 级则整网关生效，挂 Backend 级只对该后端生效
-- `backendRef` 指向 `extauth` 服务的 `9001` 端口（HTTP 门面）；gRPC 门面用 `9002`
-- `spec.traffic.extAuth` 是整个外挂鉴权的入口字段
-
-**第②步 头转发**。网关只把 `allowedRequestHeaders` 列出的头透传给鉴权服务，其余一律不给：
-
-```yaml
+        port: 9001
       http:
+        # 检查端点；CEL 字符串，内层引号不能省
         path: '"/check"'
+        # 网关默认不转发凭证头，不列 = 鉴权服务永远看不到凭证
         allowedRequestHeaders:
         - authorization
         - x-api-key
         - x-session-token
-        - cookie
+        - cookie          # 审计/排错，可按需增删
         - x-forwarded-for
         - x-request-id
-```
-
-- `path` 指向鉴权服务的检查端点，是 CEL 字符串、内层引号不能省
-- 网关默认不转发凭证头，三个凭证头必须在此显式列出
-- `cookie` / `x-forwarded-for` / `x-request-id` 用于审计与排错，可按需增删
-
-<callout icon="⚠️" color="yellow_bg">
-`allowedRequestHeaders` 是这个功能最大的坑：必须显式列出 `authorization` / `x-api-key` / `x-session-token`。不写的话鉴权服务永远看到"没有凭证"，表现为 100% `missing_credential`，而且不报错。
-</callout>
-
-**第③步 决策**。鉴权服务内部执行 `Evaluate()`，按「凭据提取 → 查找 → 状态 → 预算」得出结论；这一步与协议无关（见三章）。
-
-**第④步 放行与注入**。放行时鉴权服务返回的响应头中，被 `allowedResponseHeaders` 列出的头由网关复制到上游请求：
-
-```yaml
+        # 放行响应中被列出的头，复制到上游请求（identity 注入通道）
         allowedResponseHeaders:
-        - x-client-id
-        - x-tenant-id
-        - x-plan
-        - x-auth-source
-        - x-budget-remaining-cents
-        - x-auth-denial-reason
+        - x-client-id               # 身份：限流与计费的归属
+        - x-tenant-id               # 租户
+        - x-plan                    # 套餐
+        - x-auth-source             # api_key / jwt / session
+        - x-budget-remaining-cents  # 剩余预算，软降级用
+        - x-auth-denial-reason      # 仅拒绝响应
+      # 鉴权服务不可用时宁可拒绝，不放未鉴权流量
       failureMode: FailClosed
 ```
 
-- 五个 identity header 注入上游请求：身份 / 租户 / 套餐 / 凭证来源 / 剩余预算，后续限流与计费都依赖它们
-- `x-auth-denial-reason` 仅出现在拒绝时的响应头
-- `failureMode: FailClosed`：鉴权服务不可用时宁可拒绝，不放未鉴权流量
+**请求契约**：网关 `POST` `path`，只透传 `allowedRequestHeaders` 列出的头；鉴权服务返回 **2xx 即放行**，其他状态码与响应体原样回给调用方（`401` / `403` / `429` + 拒绝原因）。
 
-| 注入 header | 用途 |
-| --- | --- |
-| `X-Client-Id` | 调用方身份，后续限流与计费的归属 |
-| `X-Tenant-Id` | 租户归属 |
-| `X-Plan` | 套餐（决定可用模型/额度） |
-| `X-Auth-Source` | `api_key` / `jwt` / `session`，审计用 |
-| `X-Budget-Remaining-Cents` | 剩余预算，业务侧可做软降级 |
-| `X-Auth-Denial-Reason` | 仅响应头，拒绝原因 |
+**放行**：2xx 响应中被 `allowedResponseHeaders` 列出的头复制到上游请求——这就是 identity 注入通道，后续限流与计费都依赖 `X-Client-Id`。
 
-**第⑤步 拒绝透传**。拒绝时网关把鉴权服务的状态码（`401` / `403` / `429`）与响应体**原样**回给调用方，所以拒绝原因可以直接给到客户端；gRPC 门面用 `DeniedHttpResponse` 表达同样语义，`X-Auth-Denial-Reason` 仅出现在响应头。
+**拒绝**：`X-Auth-Denial-Reason` 仅出现在拒绝响应头；gRPC 门面用 `DeniedHttpResponse` 表达同样语义。
 
-### 2.3 spec 关键字段速查
+**可用性**：`FailClosed` + 鉴权服务多副本 + PDB；每请求多一次 RPC，同集群内通常 1–2ms。
 
-| 字段 | 作用 | 备注 |
-| --- | --- | --- |
-| `backendRef.name/port` | 鉴权服务地址 | `9001` = HTTP，`9002` = gRPC |
-| `http.path` | HTTP 门面的检查路径（CEL 字符串） | 实测 `'"`/check`"'` |
-| `http.allowedRequestHeaders` | 透传给鉴权服务的请求头 | 不列凭证头 = 全部 `missing_credential` |
-| `http.allowedResponseHeaders` | 从放行响应复制到上游的头 | identity header 注入的通道 |
-| `grpc.contextExtensions` | 传给鉴权服务的静态键值上下文 | 适合租户/环境 |
-| `failureMode` | 鉴权服务不可用时的行为 | 建议 `FailClosed` |
+**调用方凭证处理**：放行后建议用 `headerModifiers.request.remove` 删掉 `authorization` / `x-api-key`，别让调用方凭证流向模型供应商。
 
 ## 三、核心实现：一套决策引擎
 
