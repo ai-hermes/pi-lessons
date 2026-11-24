@@ -233,7 +233,7 @@ func (c *Config) evaluate(store Store, req Request) Decision {
 - **三条查找路径对应三种拒绝码**：API key 未命中 → `401 unknown_api_key`；session 过期 → `401 session_expired`；JWT 验签失败/过期 → `401 invalid_jwt` / `401 jwt_expired`
 - **凭据永不落明文**：`HashKey()` 先做 SHA-256，网关与鉴权服务都只存摘要
 - **预算是整数运算**：`BudgetCents`（分）× `10000` 换算成 micro-USD 与 `SpentMicros` 比较，无浮点误差
-- **拒绝也带信息**：`deny()` 附 `X-Auth-Denial-Reason` 头；预算耗尽/停用的拒绝还带 identity，便于调用方定位
+- **拒绝时说明原因**：拒绝响应头带 `X-Auth-Denial-Reason`，值是固定枚举（`missing_credential`、`budget_exhausted` 等）；能定位到客户端的拒绝（预算耗尽、账号停用）还会带上身份头，调用方可以直接自查是哪个账号出了什么问题
 - **审计在入口统一发出**：`Evaluate()` 每次决策写一条 `auth_audit`（client_id / source / allowed / status / reason），拒绝原因是稳定字符串，看板可直接消费；两个门面共用，结论一致
 
 ## 四、协议门面：HTTP 与 gRPC
