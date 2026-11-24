@@ -412,6 +412,27 @@ spec:
 
 `07-extauth-grpc.yaml` 里还包含 `grpc-echo` 路由本身（`/grpc` 前缀 → echo 后端），与策略同文件一起 apply。
 
+**路由部分：**
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grpc-echo
+  namespace: agentgateway-demo
+spec:
+  parentRefs:
+  - name: agentgateway-demo
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /grpc
+    backendRefs:
+    - name: echo-backend
+      port: 8080
+```
+
 为什么要为验证专门加一条路由：gRPC 门面必须有一条"走 gRPC 鉴权"的流量入口才能被测到，而 `/echo` 已经被 HTTP 策略占用了——同一路由不能同时挂两种 extAuth。所以 07 复制了一条与 `/echo` 完全对称的路由：同一个 echo 后端，只把路径换成 `/grpc`，再挂上 gRPC 策略。后端相同、凭证相同，唯一的变量就是鉴权协议，两边的结果才能直接对比——冒烟脚本里 `grpc ext_authz route` 与 HTTP 用例逐行对照，依据就在这里。apply 顺序上 07 排在 03 之后，此时 extauth 已在 `:9002` 监听，apply 完 gRPC 链路立即生效。
 
 ```bash
