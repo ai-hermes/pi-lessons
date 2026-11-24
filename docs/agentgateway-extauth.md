@@ -445,8 +445,6 @@ kubectl apply -f apps/agentgateway-lab/deploy/k8s/07-extauth-grpc.yaml
 
 ## 六、使用验证
 
-### 6.1 鉴权矩阵
-
 预期结果如下表，与 `deploy/smoke.sh` 的 15 项检查一致：
 
 ```bash
@@ -466,7 +464,7 @@ bash apps/agentgateway-lab/deploy/smoke.sh
 
 **通过标准：** 上表全部用例的实际状态码与拒绝原因逐项一致。
 
-### 6.2 FailClosed 行为
+矩阵之外，两个关键行为单独验证：
 
 ```bash
 kubectl -n agentgateway-demo scale deploy extauth --replicas=0
@@ -476,7 +474,7 @@ kubectl -n agentgateway-demo scale deploy extauth --replicas=1
 
 **通过标准：** 副本为 0 时请求被拒（`403`），副本恢复后同一 key 返回 `200`。
 
-### 6.3 公网链路
+本集群验证通过后，再走公网域名复测一遍：
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' https://<lab-ingress-domain>/echo -H 'x-api-key: <alice-key>'
@@ -484,7 +482,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<lab-ingress-domain>/echo -H 'x
 
 **通过标准：** `/echo` 对同一 key 依次复现 `401` / `200` / `429` / `403`，`/ui/` 返回 `200`。
 
-### 6.4 当前边界与风险
+**当前边界与风险：**
 
 - 每个请求多一次 RPC（同集群内通常 1–2ms），鉴权服务要设多副本 + PDB。
 - 建议 `FailClosed`：鉴权服务不可用时宁可拒绝，也不要放过未鉴权流量。
@@ -494,7 +492,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<lab-ingress-domain>/echo -H 'x
 
 ## 七、日常运维
 
-### 7.1 查看鉴权状态
+日常先看决策日志：
 
 ```bash
 kubectl -n agentgateway-demo logs deploy/extauth --tail=50
@@ -502,7 +500,7 @@ kubectl -n agentgateway-demo logs deploy/extauth --tail=50
 
 **通过标准：** 能看到每条决策的 `client_id` / `allowed` / `reason`，无 panic。
 
-### 7.2 客户端生命周期（增改、停用、预算）
+客户端的增改、停用、调预算都走 admin 端点：
 
 ```bash
 curl -X POST http://localhost:9001/admin/clients -H 'X-Admin-Token: <token>' \
@@ -513,7 +511,7 @@ curl -X POST http://localhost:9001/admin/clients -H 'X-Admin-Token: <token>' \
 
 **通过标准：** 停用后该 key 下一次请求立即返回 `403 client_inactive`；预算写小后耗尽的 key 返回 `429 budget_exhausted`。
 
-### 7.3 修改鉴权服务配置
+改 Deployment 配置（镜像、环境变量）时：
 
 修改前先备份清单（`kubectl get deploy extauth -o yaml > extauth.bak.yaml`）；`EXTAUTH_JWT_SECRET` 轮转会使已签发 JWT 全部失效，需在低峰执行。改完先 `kubectl apply --dry-run=client` 校验再 apply。
 
