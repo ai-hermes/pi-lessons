@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Smoke test for the extAuth + telemetry lab. Run on <lab-host-ip>.
+# Smoke test for the extAuth + telemetry lab. Run on the lab host (<lab-host-ip>).
 #   BASE=http://127.0.0.1:14001 ./deploy/smoke.sh
 set -uo pipefail
 
 BASE=${BASE:-http://127.0.0.1:14001}
-export PATH=${PATH}:<lab-workdir>/k8s/bin
 PASS=0
 FAIL=0
 
