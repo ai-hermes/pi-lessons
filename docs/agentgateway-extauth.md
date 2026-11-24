@@ -287,7 +287,7 @@ func (s *GRPCServer) Check(ctx context.Context,
 }
 ```
 
-契约一句话：**`OK` 即放行**，要注入的头放在 `OkHttpResponse` 里随请求带下去；拒绝时返回 `Denied`，回给客户端的状态码、body 和响应头都可以在 `DeniedHttpResponse` 里指定。租户、环境这类不随请求变化的上下文，用 `grpc.contextExtensions` 传给鉴权服务。怎么理解：`x-api-key` 是调用方的**身份证**（每请求不同，要校验），`contextExtensions` 是路由的**门牌号**（管理员写死在策略 YAML 里，天然可信）。它就配置在策略的 `grpc:` 块下：
+契约一句话：**`OK` 即放行**，要注入的头放在 `OkHttpResponse` 里随请求带下去；拒绝时返回 `Denied`，回给客户端的状态码、body 和响应头都可以在 `DeniedHttpResponse` 里指定。租户、环境这类不随请求变化的上下文，用 `grpc.contextExtensions` 传给鉴权服务。怎么理解：调用方出示的凭证——`x-api-key` / `Authorization: Bearer` / `x-session-token`（对应 API key / JWT / session 三种形态）——都是**身份证**（每请求不同，要校验），`contextExtensions` 是路由的**门牌号**（管理员写死在策略 YAML 里，天然可信）。它就配置在策略的 `grpc:` 块下：
 
 ```yaml
 traffic:
