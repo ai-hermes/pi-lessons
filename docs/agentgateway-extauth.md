@@ -319,6 +319,15 @@ kubectl apply -f apps/agentgateway-lab/deploy/k8s/02-postgres.yaml
 kubectl apply -f apps/agentgateway-lab/deploy/k8s/03-extauth.yaml
 ```
 
+四个清单各管一段，顺序不能乱：
+
+- `00-platform`：命名空间、echo 后端、Gateway（含 `modelCatalog` 价格目录）和 `/echo` 路由
+- `01-lab-secrets`：PG 连接串、admin token、JWT secret，全走 Secret 不落明文
+- `02-postgres`：PostgreSQL + 建表脚本（`clients` / `sessions` / `auth_audit` / `usage_events` 等）和 alice / bob / carol 三个演示客户端
+- `03-extauth`：鉴权服务本体（2.3 节的 Deployment + Service）
+
+Secret 和数据库必须先于 extauth 就绪，否则它的 readiness 探针起不来，副本永远 `0/1`。
+
 ```bash
 kubectl -n agentgateway-demo get deploy extauth
 ```
@@ -369,6 +378,8 @@ kubectl apply -f apps/agentgateway-lab/deploy/k8s/05-policies.yaml
 curl -s http://localhost:8080/echo -H 'x-api-key: anything'
 ```
 
+这一步把第二章的策略真正挂到 `/echo` 路由上：apply 后 controller 转成数据面配置热下发，不需要重启网关。curl 故意带一个不存在的 key，预期收到 `401`——这恰好证明请求经过了 extauth 并被正确拒绝；如果返回 `200`，说明策略没挂上（先查 `targetRefs` 的路由名是否对得上），而不是鉴权放行了。
+
 **通过标准：** 返回 HTTP `401`，响应体含 `"reason":"missing_credential"` 或 `"unknown_api_key"`。
 
 ### 5.3 挂 gRPC extAuth（对应 4.3）
@@ -389,6 +400,8 @@ spec:
           lab-tenant-tier: pro
       failureMode: FailClosed
 ```
+
+gRPC 策略与 5.2 只有两处不同：`port: 9002` 走 gRPC 门面；`grpc.contextExtensions` 把 `lab-tenant-tier: pro` 这个门牌号传给鉴权服务（见第四章）。这条路由挂在 `grpc-echo` 上，验证目的只有一个：确认 Envoy `ext_authz` 协议与 HTTP 版行为完全一致——同一把 key，两边都得是同一个结果。
 
 **通过标准：** gRPC 路由与 HTTP 路由对同一 key 给出一致的放行/拒绝结果（`07-extauth-grpc.yaml`）。
 
