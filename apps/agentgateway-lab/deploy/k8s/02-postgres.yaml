@@ -1,0 +1,142 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lab-postgres-init
+  namespace: agentgateway-demo
+data:
+  01-schema.sql: |
+    -- Identity + quota tables read by the ext-auth service.
+    CREATE TABLE clients (
+      client_id      text PRIMARY KEY,
+      tenant         text NOT NULL DEFAULT 'default',
+      plan           text NOT NULL DEFAULT 'free',
+      status         text NOT NULL DEFAULT 'active',
+      budget_cents   bigint NOT NULL DEFAULT 0,
+      spent_micros   bigint NOT NULL DEFAULT 0,
+      api_key_hash   text UNIQUE,
+      created_at     timestamptz NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE sessions (
+      token_hash  text PRIMARY KEY,
+      client_id   text NOT NULL REFERENCES clients (client_id) ON DELETE CASCADE,
+      expires_at  timestamptz NOT NULL
+    );
+
+    CREATE TABLE auth_audit (
+      time        timestamptz NOT NULL,
+      client_id   text,
+      source      text,
+      allowed     boolean NOT NULL,
+      status      integer NOT NULL,
+      reason      text,
+      method      text,
+      path        text,
+      remote_addr text
+    );
+    CREATE INDEX auth_audit_time_idx ON auth_audit (time DESC);
+
+    -- FinOps tables: catalog + realized usage.
+    CREATE TABLE price_catalog (
+      model                       text PRIMARY KEY,
+      input_micros_per_token      bigint NOT NULL,
+      output_micros_per_token     bigint NOT NULL,
+      cache_read_micros_per_token bigint NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE usage_events (
+      time                 timestamptz NOT NULL,
+      request_id           text,
+      client_id            text,
+      tenant               text,
+      model                text,
+      provider             text,
+      input_tokens         bigint DEFAULT 0,
+      output_tokens        bigint DEFAULT 0,
+      cached_tokens        bigint DEFAULT 0,
+      realized_cost_micros bigint DEFAULT 0,
+      source               text
+    );
+    CREATE INDEX usage_events_time_idx ON usage_events (time DESC);
+
+    -- Demo catalog: micro-USD per token (3 micros = $0.003 per 1K input tokens).
+    INSERT INTO price_catalog (model, input_micros_per_token, output_micros_per_token, cache_read_micros_per_token) VALUES
+      ('lab-model', 3, 12, 1),
+      ('doubao-seed-1.6', 1, 2, 0);
+
+    -- Demo clients. Hashes are sha256 of the literal demo keys in the README.
+    INSERT INTO clients (client_id, tenant, plan, budget_cents, spent_micros, api_key_hash) VALUES
+      ('alice', 'tenant-a', 'pro',  500, 0,       '4f43fd0de1a9007ad2013bb74b44f73b8238b61815a7306c536f63b9c30ed74d'),
+      ('bob',   'tenant-b', 'free', 100, 2000000, 'c2beadfbab81dee300adc8f291cb2f9403ea112ff0ed08d4a62d11f86fce830f'),
+      ('carol', 'tenant-a', 'pro',  500, 0,       '093c4c55b95ca6ebf540bdf642bc64273e8c7ec7254a03230b45201234a35fed');
+    UPDATE clients SET status = 'disabled' WHERE client_id = 'carol';
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lab-postgres
+  namespace: agentgateway-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lab-postgres
+  template:
+    metadata:
+      labels:
+        app: lab-postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: POSTGRES_DB
+          value: agw_lab
+        - name: POSTGRES_USER
+          value: agw
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: lab-secrets
+              key: postgres-password
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        ports:
+        - name: pg
+          containerPort: 5432
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "agw", "-d", "agw_lab"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+        - name: init
+          mountPath: /docker-entrypoint-initdb.d
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+      volumes:
+      # emptyDir keeps the lab disposable: `kubectl delete pod` re-runs the
+      # schema. Swap for a PVC (kind's local-path StorageClass) to persist.
+      - name: data
+        emptyDir: {}
+      - name: init
+        configMap:
+          name: lab-postgres-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lab-postgres
+  namespace: agentgateway-demo
+spec:
+  selector:
+    app: lab-postgres
+  ports:
+  - name: pg
+    port: 5432
+    targetPort: 5432
