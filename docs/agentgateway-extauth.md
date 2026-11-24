@@ -182,63 +182,59 @@ spec:
 
 ## 三、核心实现：一套决策引擎
 
-核心逻辑只有一套，HTTP 与 gRPC 两个门面共用同一个 `Evaluate()`，因此两个协议永远不会对同一请求给出不同结论。
-
-### 3.1 单引擎入口
+核心逻辑只有一套，HTTP 与 gRPC 两个门面共用同一个 `Evaluate()`，因此两个协议永远不会对同一请求给出不同结论。整个决策就是下面这一段主干（精简自 `internal/extauth/decide.go`，凭证提取到构造决策一气呵成）：
 
 ```go
-func (c *Config) Evaluate(store Store, req Request) Decision {
-	decision := c.evaluate(store, req)
-	if store != nil {
-		store.Audit(AuditEvent{ /* client_id / source / allowed / reason … */ })
+func (c *Config) evaluate(store Store, req Request) Decision {
+	// 1. 凭据提取：Bearer / x-api-key / x-session-token
+	_, raw := Credential(req.Headers)
+	if raw == "" {
+		return deny(401, ReasonMissingCredential, "none")
 	}
-	return decision
+
+	// 2. 按凭证形态走三条查找路径
+	switch {
+	case strings.HasPrefix(raw, "sess_"):
+		// session：查 sessions 表，含过期时间
+		cli, ok := store.LookupSession(HashKey(raw), c.now())
+		if !ok { return deny(401, ReasonExpiredSession, "session") }
+		client = cli
+	case looksLikeJWT(raw):
+		// JWT：HS256 验签 + exp 校验
+		claims, err := c.verifyHS256(raw)
+		if err == errJWTExpired {
+			return deny(401, ReasonExpiredJWT, "jwt") }
+		if err != nil {
+			return deny(401, ReasonInvalidJWT, "jwt") }
+		// IdP 签发的合法 token 足以识别调用方，
+		// 不在配额表里按 active 处理
+		client = lookupOrCreate(claims)
+	default:
+		// API key：SHA-256 摘要后查 clients 表
+		cli, ok := store.LookupKey(HashKey(raw))
+		if !ok { return deny(401, ReasonUnknownKey, "api_key") }
+		client = cli
+	}
+
+	// 3. 状态与预算检查
+	if client.Status != "" && client.Status != "active" {
+		return deny(403, ReasonInactiveClient, source)
+	}
+	if client.BudgetCents > 0 &&
+		client.SpentMicros >= client.BudgetCents*10000 {
+		return deny(429, ReasonBudgetExhausted, source)
+	}
+
+	// 4. 放行：构造 identity headers
+	return allow(identityOf(client, source))
 }
 ```
 
-`evaluate()` 的主干是四段：凭据提取、凭据查找、状态与预算检查、构造决策。审计在入口统一发出，写入 `auth_audit` 表。
-
-### 3.2 凭据提取
-
-```go
-func Credential(headers map[string]string) (kind, value string) {
-	// Authorization: Bearer …  → "bearer"
-	// x-api-key: …            → "api_key"
-	// x-session-token: …      → "session"
-}
-```
-
-三种凭证决定三条查找路径：
-
-- `x-api-key` / `Authorization: Bearer`（非 JWT 形态）→ 按 SHA-256 摘要查 `clients` 表，未命中返回 `401 unknown_api_key`；
-- 形如 `sess_` 的 token → 查 `sessions` 表，过期返回 `401 session_expired`；
-- 两段点的 JWT → HS256 验签 + `exp` 校验，`401 invalid_jwt` / `401 jwt_expired`。
-
-```go
-func HashKey(raw string) string {
-	sum := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(sum[:])
-}
-```
-
-**凭据永不落库明文**：网关与鉴权服务都只保存 SHA-256 摘要。
-
-### 3.3 状态与预算检查
-
-```go
-if client.Status != "" && client.Status != "active" {
-	return withIdentity(deny(403, ReasonInactiveClient, source), client, source)
-}
-if client.BudgetCents > 0 && client.SpentMicros >= client.BudgetCents*10000 {
-	return withIdentity(deny(429, ReasonBudgetExhausted, source), client, source)
-}
-```
-
-预算换算是整数运算：`BudgetCents`（分）× `10000` 换算成 micro-USD 与 `SpentMicros` 比较，无浮点误差。`deny()` 返回的决策附 `X-Auth-Denial-Reason` 响应头；预算耗尽/停用的拒绝还带上 identity，便于调用方定位。JWT 客户端不在配额表时，签发的合法 token 足以识别调用方（IdP 侧身份），默认按 active 处理。
-
-### 3.4 审计
-
-每次决策（无论放行与否）在 `Evaluate()` 入口写一条 `auth_audit`，字段为 `client_id / source / allowed / status / reason`，拒绝原因是稳定字符串（`missing_credential` 等），可直接用于看板，无需解析文本。
+- **三条查找路径对应三种拒绝码**：API key 未命中 → `401 unknown_api_key`；session 过期 → `401 session_expired`；JWT 验签失败/过期 → `401 invalid_jwt` / `401 jwt_expired`
+- **凭据永不落明文**：`HashKey()` 先做 SHA-256，网关与鉴权服务都只存摘要
+- **预算是整数运算**：`BudgetCents`（分）× `10000` 换算成 micro-USD 与 `SpentMicros` 比较，无浮点误差
+- **拒绝也带信息**：`deny()` 附 `X-Auth-Denial-Reason` 头；预算耗尽/停用的拒绝还带 identity，便于调用方定位
+- **审计在入口统一发出**：`Evaluate()` 每次决策写一条 `auth_audit`（client_id / source / allowed / status / reason），拒绝原因是稳定字符串，看板可直接消费；两个门面共用，结论一致
 
 ## 四、协议门面：HTTP 与 gRPC
 
