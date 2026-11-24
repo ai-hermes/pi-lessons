@@ -389,6 +389,11 @@ curl -s http://localhost:8080/echo -H 'x-api-key: anything'
 **gRPC（`:9002`，挂 `grpc-echo`）**
 
 ```yaml
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: grpc-ext-auth
+  namespace: agentgateway-demo
 spec:
   targetRefs:
   - group: gateway.networking.k8s.io
@@ -404,6 +409,8 @@ spec:
           lab-tenant-tier: pro
       failureMode: FailClosed
 ```
+
+`07-extauth-grpc.yaml` 里还包含 `grpc-echo` 路由本身（`/grpc` 前缀 → echo 后端），与策略同文件一起 apply。
 
 ```bash
 kubectl apply -f apps/agentgateway-lab/deploy/k8s/07-extauth-grpc.yaml
