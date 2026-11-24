@@ -48,8 +48,6 @@
 
 ### 2.2 完整策略 YAML
 
-一个清单就能讲清楚整个契约；注释即字段语义，下方补充行为约定（gRPC 差异见四章）：
-
 ```yaml
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
@@ -57,39 +55,42 @@ metadata:
   name: echo-ext-auth
   namespace: agentgateway-demo
 spec:
-  # 挂到 /echo 这条 HTTPRoute；也可挂 Gateway / Backend 级
   targetRefs:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: echo
   traffic:
     extAuth:
-      # 鉴权服务地址：HTTP 门面 9001，gRPC 门面 9002
       backendRef:
         name: extauth
         port: 9001
       http:
-        # 检查端点；CEL 字符串，内层引号不能省
         path: '"/check"'
-        # 网关默认不转发凭证头，不列 = 鉴权服务永远看不到凭证
         allowedRequestHeaders:
         - authorization
         - x-api-key
         - x-session-token
-        - cookie          # 审计/排错，可按需增删
+        - cookie
         - x-forwarded-for
         - x-request-id
-        # 放行响应中被列出的头，复制到上游请求（identity 注入通道）
         allowedResponseHeaders:
-        - x-client-id               # 身份：限流与计费的归属
-        - x-tenant-id               # 租户
-        - x-plan                    # 套餐
-        - x-auth-source             # api_key / jwt / session
-        - x-budget-remaining-cents  # 剩余预算，软降级用
-        - x-auth-denial-reason      # 仅拒绝响应
-      # 鉴权服务不可用时宁可拒绝，不放未鉴权流量
+        - x-client-id
+        - x-tenant-id
+        - x-plan
+        - x-auth-source
+        - x-budget-remaining-cents
+        - x-auth-denial-reason
       failureMode: FailClosed
 ```
+
+逐字段解释：
+
+- `targetRefs`：挂到 `/echo` 这条 HTTPRoute；也可挂 Gateway / Backend 级
+- `backendRef`：鉴权服务地址，`9001` = HTTP 门面，`9002` = gRPC 门面
+- `http.path`：检查端点；CEL 字符串，内层引号不能省
+- `allowedRequestHeaders`：网关默认不转发凭证头，不列 = 鉴权服务永远看不到凭证（100% `missing_credential` 且不报错）；`cookie` / `x-forwarded-for` / `x-request-id` 用于审计排错，可按需增删
+- `allowedResponseHeaders`：放行响应中被列出的头复制到上游请求（identity 注入通道）；`x-auth-denial-reason` 仅拒绝响应
+- `failureMode: FailClosed`：鉴权服务不可用时宁可拒绝，不放未鉴权流量
 
 **请求契约**：网关 `POST` `path`，只透传 `allowedRequestHeaders` 列出的头；鉴权服务返回 **2xx 即放行**，其他状态码与响应体原样回给调用方（`401` / `403` / `429` + 拒绝原因）。
 
