@@ -102,6 +102,84 @@ spec:
 
 **调用方凭证处理**：放行后建议用 `headerModifiers.request.remove` 删掉 `authorization` / `x-api-key`，别让调用方凭证流向模型供应商。
 
+### 2.3 extAuth 服务自身的资源（`backendRef` 背后）
+
+策略里的 `backendRef: extauth` 指向下面这套 Deployment + Service（`deploy/k8s/03-extauth.yaml`）：
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: extauth
+  namespace: agentgateway-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: extauth
+  template:
+    metadata:
+      labels:
+        app: extauth
+    spec:
+      containers:
+      - name: extauth
+        image: agentgateway-lab/extauth:v0.1.0
+        env:
+        - name: EXTAUTH_MODE
+          value: both
+        - name: EXTAUTH_HTTP_ADDR
+          value: :9001
+        - name: EXTAUTH_GRPC_ADDR
+          value: :9002
+        - name: EXTAUTH_PG_DSN
+          valueFrom:
+            secretKeyRef:
+              name: lab-secrets
+              key: extauth-dsn
+        - name: EXTAUTH_ADMIN_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: lab-secrets
+              key: admin-token
+        - name: EXTAUTH_JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: lab-secrets
+              key: jwt-secret
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 9001
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: extauth
+  namespace: agentgateway-demo
+spec:
+  selector:
+    app: extauth
+  ports:
+  - name: http
+    port: 9001
+    targetPort: 9001
+  - name: grpc
+    port: 9002
+    targetPort: 9002
+```
+
+- **单进程双协议**：`EXTAUTH_MODE=both` 同时监听 `:9001`（`/check`、`/admin/*`、`/healthz`）与 `:9002`（Envoy `ext_authz` v3），一套决策引擎保证两个门面结果一致
+- **敏感配置全走 Secret**：PG DSN、admin token、JWT secret 均来自 `lab-secrets`，不落明文
+- **Service 两个端口与策略对应**：策略里 `port: 9001` 走 `http` 口、`port: 9002` 走 `grpc` 口
+- **探针**：readiness / liveness 都打 `/healthz:9001`；配合 `FailClosed`，副本不可用时网关拒绝而不是放行
+- **生产基线**：多副本 + PDB；资源请求 `100m`/`128Mi`、内存上限 `256Mi`
+- 客户端 / 预算数据在 PostgreSQL（`clients` / `sessions` / `auth_audit`），由 `02-postgres.yaml` 提供
+
 ## 三、核心实现：一套决策引擎
 
 核心逻辑只有一套，HTTP 与 gRPC 两个门面共用同一个 `Evaluate()`，因此两个协议永远不会对同一请求给出不同结论。
