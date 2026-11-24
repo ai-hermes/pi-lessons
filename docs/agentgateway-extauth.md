@@ -336,7 +336,11 @@ kubectl -n agentgateway-demo get deploy extauth
 
 如果副本起不来，先不要改镜像，优先检查：`01-lab-secrets.yaml` 里的 `extauth-dsn` 是否指向 `02-postgres.yaml` 创建的库。
 
-### 5.2 挂 HTTP extAuth（对应 4.2）
+### 5.2 挂鉴权策略（HTTP / gRPC 对照）
+
+服务就绪后，把策略挂到路由上。HTTP 与 gRPC 两个策略几乎相同，对照着看——差异只有 `port` 和 `grpc.contextExtensions` 两处。
+
+**HTTP（`:9001`，挂 `/echo`）**
 
 ```yaml
 apiVersion: agentgateway.dev/v1alpha1
@@ -382,7 +386,7 @@ curl -s http://localhost:8080/echo -H 'x-api-key: anything'
 
 **通过标准：** 返回 HTTP `401`，响应体含 `"reason":"missing_credential"` 或 `"unknown_api_key"`。
 
-### 5.3 挂 gRPC extAuth（对应 4.3）
+**gRPC（`:9002`，挂 `grpc-echo`）**
 
 ```yaml
 spec:
@@ -401,7 +405,11 @@ spec:
       failureMode: FailClosed
 ```
 
-gRPC 策略与 5.2 只有两处不同：`port: 9002` 走 gRPC 门面；`grpc.contextExtensions` 把 `lab-tenant-tier: pro` 这个门牌号传给鉴权服务（见第四章）。这条路由挂在 `grpc-echo` 上，验证目的只有一个：确认 Envoy `ext_authz` 协议与 HTTP 版行为完全一致——同一把 key，两边都得是同一个结果。
+```bash
+kubectl apply -f apps/agentgateway-lab/deploy/k8s/07-extauth-grpc.yaml
+```
+
+与 HTTP 版只差两处：`port: 9002` 走 gRPC 门面；`grpc.contextExtensions` 把 `lab-tenant-tier: pro` 这个门牌号传给鉴权服务（见第四章）。这条路由挂在 `grpc-echo` 上，验证目的只有一个：确认 Envoy `ext_authz` 协议与 HTTP 版行为完全一致——同一把 key，两边都得是同一个结果。
 
 **通过标准：** gRPC 路由与 HTTP 路由对同一 key 给出一致的放行/拒绝结果（`07-extauth-grpc.yaml`）。
 
