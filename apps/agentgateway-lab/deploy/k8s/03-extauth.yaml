@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: extauth
+  namespace: agentgateway-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: extauth
+  template:
+    metadata:
+      labels:
+        app: extauth
+    spec:
+      containers:
+      - name: extauth
+        image: agentgateway-lab/extauth:v0.1.0
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: EXTAUTH_MODE
+          value: both
+        - name: EXTAUTH_HTTP_ADDR
+          value: :9001
+        - name: EXTAUTH_GRPC_ADDR
+          value: :9002
+        - name: EXTAUTH_PG_DSN
+          valueFrom:
+            secretKeyRef:
+              name: lab-secrets
+              key: extauth-dsn
+        - name: EXTAUTH_ADMIN_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: lab-secrets
+              key: admin-token
+        - name: EXTAUTH_JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: lab-secrets
+              key: jwt-secret
+        ports:
+        - name: http
+          containerPort: 9001
+        - name: grpc
+          containerPort: 9002
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 9001
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9001
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: extauth
+  namespace: agentgateway-demo
+spec:
+  selector:
+    app: extauth
+  ports:
+  - name: http
+    port: 9001
+    targetPort: 9001
+  - name: grpc
+    port: 9002
+    targetPort: 9002

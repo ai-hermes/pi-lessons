@@ -1,0 +1,63 @@
+# Feature #2: BYO external authorization attached at Route level.
+# agentgateway calls POST /check; 200 = allow, anything else = deny, and the
+# listed response headers are copied onto the upstream request.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: echo-ext-auth
+  namespace: agentgateway-demo
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: echo
+  traffic:
+    extAuth:
+      backendRef:
+        name: extauth
+        port: 9001
+      http:
+        path: '"/check"'
+        # Without this the authorization service would only see the headers
+        # agentgateway forwards by default, and every credential would look
+        # missing.
+        allowedRequestHeaders:
+        - authorization
+        - x-api-key
+        - x-session-token
+        - cookie
+        - x-forwarded-for
+        - x-request-id
+        allowedResponseHeaders:
+        - x-client-id
+        - x-tenant-id
+        - x-plan
+        - x-auth-source
+        - x-budget-remaining-cents
+        - x-auth-denial-reason
+      failureMode: FailClosed
+---
+# Feature #3: OTLP access logs pushed straight into the billing service.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: gateway-access-log
+  namespace: agentgateway-demo
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: agentgateway-demo
+  frontend:
+    accessLog:
+      attributes:
+        add:
+        # Identity comes from the extAuth-injected header, so billing can
+        # attribute spend to a client without any extra upstream call.
+        - name: lab.client.id
+          expression: 'request.headers["x-client-id"]'
+      otlp:
+        backendRef:
+          name: finops
+          port: 9101
+        protocol: GRPC
