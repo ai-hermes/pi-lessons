@@ -1,0 +1,59 @@
+# Gateway 级遥测：access log 经 OTLP/gRPC 直发 loom:9101，附带 extAuth 注入的 loom.* 头作为属性，
+# 计费侧据此找到预扣记录并结算；tracing 与 metrics 只做取证与看板。
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: gateway-access-log
+  namespace: loom
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: loom-gateway
+  frontend:
+    accessLog:
+      attributes:
+        add:
+        - {name: loom.client.id, expression: 'request.headers["x-loom-client-id"]'}
+        - {name: loom.key.id, expression: 'request.headers["x-loom-key-id"]'}
+        - {name: loom.request.id, expression: 'request.headers["x-loom-request-id"]'}
+        - {name: loom.model, expression: 'request.headers["x-loom-model"]'}
+      otlp:
+        backendRef: {name: loom, port: 9101}
+        protocol: GRPC
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: gateway-tracing
+  namespace: loom
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: loom-gateway
+  frontend:
+    tracing:
+      protocol: GRPC
+      backendRef: {name: loom, port: 9101}
+      randomSampling: "1"
+      attributes:
+        add:
+        - {name: loom.client.id, expression: 'request.headers["x-loom-client-id"]'}
+        - {name: loom.request.id, expression: 'request.headers["x-loom-request-id"]'}
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: gateway-metrics-labels
+  namespace: loom
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: loom-gateway
+  frontend:
+    metrics:
+      attributes:
+        add:
+        - {name: client_id, expression: 'request.headers["x-loom-client-id"]'}

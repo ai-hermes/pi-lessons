@@ -1,0 +1,99 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: llm
+  namespace: loom
+spec:
+  parentRefs:
+  - name: loom-gateway
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /v1/chat/completions}
+    backendRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: lab-chat
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: pg-chat
+  namespace: loom
+spec:
+  parentRefs:
+  - name: loom-gateway
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /pg/v1/chat/completions}
+    backendRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: lab-pg-chat
+---
+# 图片：普通 HTTP 透传到 loom-mock；按次计费不依赖 usage，靠 access log 的 loom.* 属性结算
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: media
+  namespace: loom
+spec:
+  parentRefs:
+  - name: loom-gateway
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /v1/images/generations}
+    backendRefs:
+    - name: loom-mock
+      port: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: embeddings
+  namespace: loom
+spec:
+  parentRefs:
+  - name: loom-gateway
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /v1/embeddings}
+    backendRefs:
+    - name: loom-mock
+      port: 8080
+---
+# /echo 与 /grpc：回显请求头，用于验证 HTTP / gRPC 两个 extAuth 门面与凭据头清理
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: echo
+  namespace: loom
+spec:
+  parentRefs:
+  - name: loom-gateway
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /echo}
+    backendRefs:
+    - name: loom-mock
+      port: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grpc-echo
+  namespace: loom
+spec:
+  parentRefs:
+  - name: loom-gateway
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /grpc}
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /echo
+    backendRefs:
+    - name: loom-mock
+      port: 8080

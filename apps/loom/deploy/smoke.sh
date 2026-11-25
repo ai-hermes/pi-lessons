@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# 在 st2-aii 宿主机上执行 loom 验收矩阵（通过 ssh 把脚本送到远端运行，curl 打 127.0.0.1:14001，DB 断言用 kubectl exec psql）。
+# 用法：deploy/smoke.sh [--host HOST] [--skip-failclosed] [--skip-reload]
+set -euo pipefail
+HOST="${DEPLOY_HOST:-192.168.16.62}"
+SKIP_FAILCLOSED=0; SKIP_RELOAD=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --host) HOST="$2"; shift ;;
+    --skip-failclosed) SKIP_FAILCLOSED=1 ;;
+    --skip-reload) SKIP_RELOAD=1 ;;
+  esac
+  shift
+done
+ssh "${HOST}" 'bash -s' -- <<'REMOTE'
+set -u
+SKIP_FAILCLOSED=0; SKIP_RELOAD=0
+export PATH=/opt/agentgateway/k8s/bin:$PATH
+BASE=http://127.0.0.1:14001
+ADMIN_TOKEN=loom-admin-token-change-me
+PASS=0; FAIL=0
+ok()   { PASS=$((PASS+1)); printf 'PASS\t%s\t%s\n' "$1" "$2"; }
+bad()  { FAIL=$((FAIL+1)); printf 'FAIL\t%s\t%s\n' "$1" "$2"; }
+check() { # name expected actual
+  if [ "$2" = "$3" ]; then ok "$1" "$3"; else bad "$1" "expected $2 got $3"; fi
+}
+code()   { curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$@"; }
+reason() { curl -s -D - -o /dev/null --max-time 30 "$@" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-loom-deny-reason"{print $2}'; }
+q()      { kubectl -n loom exec deploy/loom-postgres -- psql -U loom -d loom -Atc "$1"; }
+admin()  { kubectl -n loom exec deploy/loom -- wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:9100$1"; }
+chat()   { curl -s --max-time 60 -H "Authorization: Bearer $1" -H 'content-type: application/json' -d "{\"model\":\"$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" "$BASE$3"; }
+key() { case "$1" in
+  alice) echo loom-demo-alice-0000000000000001;; bob) echo loom-demo-bob-000000000000000002;;
+  carol) echo loom-demo-carol-000000000000000003;; dave) echo loom-demo-dave-000000000000000004;;
+  dave-images) echo loom-demo-dave-images-only-0005;; erin) echo loom-demo-erin-000000000000000006;;
+  vera) echo loom-demo-vera-000000000000000007;; frank) echo loom-demo-frank-000000000000000008;; esac; }
+admin_post() { kubectl -n loom exec deploy/loom -- wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN" --header='Content-Type: application/json' --post-data="$2" "http://127.0.0.1:9100$1"; }
+wait_ready() { kubectl -n loom rollout status deploy/loom --timeout=120s >/dev/null; for i in $(seq 1 30); do [ "$(code $BASE/echo -H 'x-api-key: $(key dave)')" = 200 ] && break; sleep 2; done; }
+# reset <account> <key-name> <limit>：把账户与 Key 的额度上限/已用量复位，保证矩阵可重复执行
+reset() {
+  aid=$(admin /v1/accounts | grep -o "\"id\":\"[^\"]*\",\"name\":\"$1\"" | cut -d'"' -f4)
+  kid=$(admin "/v1/accounts/$aid/keys" | grep -o "\"id\":\"[^\"]*\",\"key_preview\":\"[^\"]*\",\"last_used_at\":[^,]*,\"model_allowlist\":[^,]*,\"name\":\"$2\"" | cut -d'"' -f4)
+  admin_post "/v1/accounts/$aid/quota" "{\"quota_limit_nanos\":$3,\"quota_used_nanos\":0}" >/dev/null
+  admin_post "/v1/keys/$kid/quota" "{\"quota_limit_nanos\":$3,\"quota_used_nanos\":0}" >/dev/null
+}
+wait_ready
+reset alice default 5000000
+reset erin default 15360000
+
+echo "### 1. 鉴权拒绝矩阵"
+check "no credential → 401" 401 "$(code -X POST -H 'content-type: application/json' -d '{"model":"lab-model"}' $BASE/v1/chat/completions)"
+check "no credential reason" missing_credential "$(reason -X POST -H 'content-type: application/json' -d '{"model":"lab-model"}' $BASE/v1/chat/completions)"
+check "unknown key → 401" 401 "$(code -X POST -H 'x-api-key: loom-nope' -H 'content-type: application/json' -d '{"model":"lab-model"}' $BASE/v1/chat/completions)"
+check "unknown key reason" unknown_api_key "$(reason -X POST -H 'x-api-key: loom-nope' -H 'content-type: application/json' -d '{"model":"lab-model"}' $BASE/v1/chat/completions)"
+check "carol disabled → 403" 403 "$(code -X POST -H "x-api-key: $(key carol)" -H 'content-type: application/json' -d '{"model":"lab-model"}' $BASE/v1/chat/completions)"
+check "carol reason" client_inactive "$(reason -X POST -H "x-api-key: $(key carol)" -H 'content-type: application/json' -d '{"model":"lab-model"}' $BASE/v1/chat/completions)"
+check "frank expired → 401" 401 "$(code -X POST -H "x-api-key: $(key frank)" -H 'content-type: application/json' -d '{"model":"lab-model"}' $BASE/v1/chat/completions)"
+check "frank reason" expired_api_key "$(reason -X POST -H "x-api-key: $(key frank)" -H 'content-type: application/json' -d '{"model":"lab-model"}' $BASE/v1/chat/completions)"
+check "bob account quota → 403" 403 "$(code -X POST -H "x-api-key: $(key bob)" -H 'content-type: application/json' -d '{"model":"lab-model"}' $BASE/v1/chat/completions)"
+check "bob reason" insufficient_quota "$(reason -X POST -H "x-api-key: $(key bob)" -H 'content-type: application/json' -d '{"model":"lab-model"}' $BASE/v1/chat/completions)"
+check "dave unpriced model → 403" 403 "$(code -X POST -H "x-api-key: $(key dave)" -H 'content-type: application/json' -d '{"model":"no-such-model"}' $BASE/v1/chat/completions)"
+check "unpriced reason" model_not_priced "$(reason -X POST -H "x-api-key: $(key dave)" -H 'content-type: application/json' -d '{"model":"no-such-model"}' $BASE/v1/chat/completions)"
+check "images-only key on lab-model → 403" 403 "$(code -X POST -H "x-api-key: $(key dave-images)" -H 'content-type: application/json' -d '{"model":"lab-model"}' $BASE/v1/chat/completions)"
+check "allowlist reason" model_not_allowed "$(reason -X POST -H "x-api-key: $(key dave-images)" -H 'content-type: application/json' -d '{"model":"lab-model"}' $BASE/v1/chat/completions)"
+
+echo "### 2. 按量计费：alice 额度 5,000,000，预扣 3,072,000 → 两次 200 后 403"
+BEFORE=$(q "select count(*) from usage_events where model='lab-model'")
+check "alice #1 → 200" 200 "$(code -X POST -H "x-api-key: $(key alice)" -H 'content-type: application/json' -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' $BASE/v1/chat/completions)"
+sleep 4   # 等待 #1 的预扣经遥测结算（flush 2s），否则 #2 会因预扣未释放被拒
+RESP=$(chat "$(key alice)" lab-model /v1/chat/completions)
+check "alice #2 → 200 + usage" "1000/500/200" "$(echo "$RESP" | sed -n 's/.*"prompt_tokens":\([0-9]*\).*"completion_tokens":\([0-9]*\).*"cached_tokens":\([0-9]*\).*/\1\/\2\/\3/p')"
+check "alice #3 → 403" 403 "$(code -X POST -H "x-api-key: $(key alice)" -H 'content-type: application/json' -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' $BASE/v1/chat/completions)"
+check "alice #3 reason" insufficient_quota "$(reason -X POST -H "x-api-key: $(key alice)" -H 'content-type: application/json' -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' $BASE/v1/chat/completions)"
+sleep 4
+check "alice key quota_used = 2 × 1,820,000" 3640000 "$(q "select quota_used from api_keys where name='default' and account_id=(select id from accounts where name='alice')")"
+check "alice key reserved back to 0" 0 "$(q "select reserved from api_keys where name='default' and account_id=(select id from accounts where name='alice')")"
+check "alice account quota_used" 3640000 "$(q "select quota_used from accounts where name='alice'")"
+check "usage_events.cost_nanos (loom)" 1820000 "$(q "select cost_nanos from usage_events where model='lab-model' and account_id=(select id from accounts where name='alice') order by id desc limit 1")"
+check "usage_events.gateway_cost_nanos (对账)" 1820000 "$(q "select gateway_cost_nanos from usage_events where model='lab-model' and account_id=(select id from accounts where name='alice') order by id desc limit 1")"
+check "usage_events tokens" "1000|500|200" "$(q "select input_tokens||'|'||output_tokens||'|'||cached_tokens from usage_events where model='lab-model' and account_id=(select id from accounts where name='alice') order by id desc limit 1")"
+check "usage_events.pricing_source" configmap "$(q "select pricing_source from usage_events where model='lab-model' and account_id=(select id from accounts where name='alice') order by id desc limit 1")"
+check "reservations settled (0 left for alice)" 0 "$(q "select count(*) from reservations where account_id=(select id from accounts where name='alice')")"
+
+echo "### 3. 分组倍率：vera(vip 0.9) → 1,638,000"
+chat "$(key vera)" lab-model /v1/chat/completions >/dev/null
+sleep 4
+check "vera cost_nanos = 1,638,000" 1638000 "$(q "select cost_nanos from usage_events where account_id=(select id from accounts where name='vera') order by id desc limit 1")"
+check "vera gateway cost = 1,820,000 (catalog 无分组倍率，对账跳过)" 1820000 "$(q "select gateway_cost_nanos from usage_events where account_id=(select id from accounts where name='vera') order by id desc limit 1")"
+
+echo "### 4. 按次计费：图片模型 lab-image = \$0.04"
+check "dave images-only key lab-image → 200" 200 "$(code -X POST -H "x-api-key: $(key dave-images)" -H 'content-type: application/json' -d '{"model":"lab-image","prompt":"cat"}' $BASE/v1/images/generations)"
+sleep 4
+check "lab-image cost_nanos = 40,000,000" 40000000 "$(q "select cost_nanos from usage_events where model='lab-image' order by id desc limit 1")"
+check "lab-image attributed to dave" "$(q "select name from accounts where name='dave'")" "$(q "select a.name from usage_events u join accounts a on a.id=u.account_id where u.model='lab-image' order by u.id desc limit 1")"
+
+echo "### 5. PG 兜底定价：lab-pg-only 只在 model_pricing 表"
+check "dave lab-pg-only → 200" 200 "$(code -X POST -H "x-api-key: $(key dave)" -H 'content-type: application/json' -d '{"model":"lab-pg-only","messages":[{"role":"user","content":"hi"}]}' $BASE/pg/v1/chat/completions)"
+sleep 4
+check "lab-pg-only pricing_source = pg" pg "$(q "select pricing_source from usage_events where model='lab-pg-only' order by id desc limit 1")"
+check "lab-pg-only cost = 1000×500+... ratio 0.25 → 800×500+200×50+500×1000 = 910,000" 910000 "$(q "select cost_nanos from usage_events where model='lab-pg-only' order by id desc limit 1")"
+
+echo "### 6. embeddings 路由"
+check "dave embeddings → 200" 200 "$(code -X POST -H "x-api-key: $(key dave)" -H 'content-type: application/json' -d '{"model":"lab-model","input":["a"]}' $BASE/v1/embeddings)"
+check "dave images → 200" 200 "$(code -X POST -H "x-api-key: $(key dave)" -H 'content-type: application/json' -d '{"model":"lab-image","prompt":"cat"}' $BASE/v1/images/generations)"
+
+echo "### 7. 并发预扣：erin 额度 15,360,000 = 5 × 3,072,000，并发 20 次恰好 5 次 200"
+cat > /tmp/loom-req.sh <<'REQ'
+curl -s -o /dev/null -w '%{http_code}\n' --max-time 60 -X POST -H 'x-api-key: loom-demo-erin-000000000000000006' -H 'content-type: application/json' -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' http://127.0.0.1:14001/v1/chat/completions
+REQ
+RESULT=$(seq 1 20 | xargs -P 20 -I{} sh /tmp/loom-req.sh | sort | uniq -c | awk '{print $2"="$1}' | tr '\n' ' ')
+check "erin concurrent → 5×200 15×403" "200=5 403=15 " "$RESULT"
+sleep 4
+check "erin reserved back to 0" 0 "$(q "select reserved from api_keys where account_id=(select id from accounts where name='erin')")"
+
+echo "### 8. 凭据头清理与 identity 注入（/echo 回显上游收到的请求头）"
+check "echo GET no credential → 401" 401 "$(code $BASE/echo)"
+check "echo POST no credential → 401" 401 "$(code -X POST $BASE/echo)"
+E=$(curl -s -H "Authorization: Bearer $(key dave)" -H "x-api-key: $(key dave)" $BASE/echo)
+check "upstream has no authorization" "" "$(echo "$E" | sed -n 's/.*"authorization":\("[^"]*"\).*/\1/p')"
+check "upstream has no x-api-key" "" "$(echo "$E" | sed -n 's/.*"x-api-key":\("[^"]*"\).*/\1/p')"
+check "upstream has x-loom-client-id=dave" dave "$(echo "$E" | sed -n 's/.*"x-loom-client-id":"\([^"]*\)".*/\1/p')"
+check "upstream has x-loom-request-id (uuid)" uuid "$(echo "$E" | sed -n 's/.*"x-loom-request-id":"\([0-9a-f-]\{36\}\)".*/\1/p' | sed 's/[0-9a-f-]//g; s/^$/uuid/')"
+
+echo "### 9. gRPC ext_authz 门面（/grpc）"
+check "grpc route no credential → 401" 401 "$(code $BASE/grpc)"
+check "grpc route dave → 200" 200 "$(code -H "x-api-key: $(key dave)" $BASE/grpc)"
+check "grpc route bogus → 401" 401 "$(code -H 'x-api-key: loom-bogus' $BASE/grpc)"
+
+echo "### 10. 管理 API 与指标"
+check "admin list accounts" 7 "$(admin /v1/accounts | sed 's/"id":/\n&id=/g' | grep -c '"name"')"
+check "admin usage summary has rows" yes "$(admin '/v1/usage/summary' | grep -q '"total"' && echo yes)"
+check "admin pricing view has pg row" 1 "$(admin /v1/pricing | grep -o '"model":"lab-pg-only"' | wc -l | tr -d ' ')"
+check "admin catalog has lab-model rate 1" '"input":"1"' "$(admin /v1/catalog | grep -o '"input":"1"' | head -1)"
+M=$(kubectl -n loom exec deploy/loom -- wget -qO- http://127.0.0.1:9102/metrics)
+for mname in loom_auth_decisions_total loom_auth_duration_seconds loom_pricing_lookups_total loom_quota_reserved_nanos_total loom_quota_settled_nanos_total loom_quota_remaining_nanos loom_reservations_open loom_reservations_expired_total loom_usage_events_ingested_total loom_ingest_queue_depth loom_pg_pool_acquires_total loom_build_info; do
+  check "metric $mname" yes "$(echo "$M" | grep -q "^$mname" && echo yes)"
+done
+# 带标签的 counter 在首次自增前不会出现：只要求没有 mismatch 计数（下一行）
+check "no cost mismatch between loom and gateway" "" "$(echo "$M" | grep '^loom_cost_mismatch_total' | grep -v ' 0$' | sed 's/^/MISMATCH: /')"
+check "auth audit rows > 0" yes "$(q "select case when count(*)>0 then 'yes' end from auth_audit")"
+
+if [ "$SKIP_RELOAD" = 0 ]; then
+echo "### 11. ConfigMap 热加载：lab-image 价格 0.04 → 0.05，30s 内生效，无需重启"
+  kubectl -n loom get configmap loom-pricing -o jsonpath='{.data.pricing\.yaml}' | sed 's/lab-image:  {model_price: 0.04}/lab-image:  {model_price: 0.05}/' > /tmp/pricing.yaml
+  grep -q 'model_price: 0.05' /tmp/pricing.yaml
+  kubectl -n loom create configmap loom-pricing --from-file=pricing.yaml=/tmp/pricing.yaml --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  # kubelet 同步 ConfigMap 卷（最长 ~1min）+ loom 30s 轮询：逐个副本轮询管理 API，直到所有副本都看到新价
+  all_pods_new_price() {
+    for pod in $(kubectl -n loom get pods -l app=loom -o name); do
+      kubectl -n loom exec "$pod" -- wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:9100/v1/pricing 2>/dev/null | grep -q '"model_price":0.05' || return 1
+    done
+    return 0
+  }
+  for i in $(seq 1 36); do all_pods_new_price && break; sleep 5; done
+  check "hot reload visible on every replica via admin API within 180s" yes "$(all_pods_new_price && echo yes)"
+  curl -s -o /dev/null -X POST -H "x-api-key: $(key dave)" -H 'content-type: application/json' -d '{"model":"lab-image","prompt":"cat"}' $BASE/v1/images/generations
+  sleep 4
+  check "lab-image after reload = 50,000,000" 50000000 "$(q "select cost_nanos from usage_events where model='lab-image' order by id desc limit 1")"
+  kubectl -n loom create configmap loom-pricing --from-file=pricing.yaml=/opt/agentgateway/loom/configs/pricing.yaml --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  RELOADS=$(kubectl -n loom exec deploy/loom -- wget -qO- http://127.0.0.1:9102/metrics | awk -F' ' '/^loom_pricing_reload_total\{result="ok"\}/{s+=$2} END{print int(s)}')
+  check "pricing reload counter ≥ 2" yes "$([ "${RELOADS:-0}" -ge 2 ] && echo yes || echo no:$RELOADS)"
+fi
+
+if [ "$SKIP_FAILCLOSED" = 0 ]; then
+echo "### 12. FailClosed：loom 副本缩到 0 → 拒绝；恢复 → 放行"
+  kubectl -n loom scale deploy/loom --replicas=0 >/dev/null
+  sleep 8
+  C=$(code -H "x-api-key: $(key dave)" $BASE/echo)
+  case "$C" in 403|503) ok "fail closed while loom is down" "$C";; *) bad "fail closed while loom is down" "expected 403/503 got $C";; esac
+  kubectl -n loom scale deploy/loom --replicas=2 >/dev/null
+  wait_ready
+  check "recovered → 200" 200 "$(code -H "x-api-key: $(key dave)" $BASE/echo)"
+fi
+
+echo
+echo "RESULT: PASS=$PASS FAIL=$FAIL"
+[ "$FAIL" = 0 ]
+REMOTE

@@ -1,0 +1,46 @@
+# loom 计价表（one-api 口径）。K8s 中通过 ConfigMap loom-pricing 挂载 /etc/loom/pricing.yaml，30s 热加载。
+#
+#   model_ratio       倍率，1 == $2 / 1M input tokens
+#   completion_ratio  输出 token 相对输入的倍率
+#   cache_ratio       命中缓存的输入 token 倍率
+#   model_price       按次计费（USD/次），设置后优先于倍率（图片、视频）
+#   groups.<g>.ratio  分组倍率，账户 group 字段决定
+#
+# 下面除 lab-* 外均为示例数值，上线前替换为真实价格。
+
+defaults:
+  model_ratio: 1
+  completion_ratio: 1
+  cache_ratio: 1
+  unknown_model: deny            # deny | default：未定价模型拒绝，还是按 defaults 计价
+
+groups:
+  default: {ratio: 1}
+  vip: {ratio: 0.9}
+
+catalog:
+  provider: openai               # 渲染 agentgateway modelCatalog 时的 provider 名
+
+models:
+  # ---- 验证用伪模型（loom-mock） ----
+  lab-model:  {model_ratio: 0.5, completion_ratio: 2, cache_ratio: 0.1}   # 1000/500/200 tokens → 1,820,000 nano-USD
+  lab-image:  {model_price: 0.04}                                           # 按次 → 40,000,000 nano-USD
+
+  # ---- 豆包 / 字节（示例） ----
+  doubao-seed-2.1-lite:    {model_ratio: 0.15, completion_ratio: 2,   cache_ratio: 0.1}
+  doubao-seed-2.1-pro:     {model_ratio: 1.2,  completion_ratio: 3,   cache_ratio: 0.1}
+  doubao-seed-2.0-mini:    {model_ratio: 0.075, completion_ratio: 1.5, cache_ratio: 0.1}
+  doubao-seed-evolving:    {model_ratio: 1.0,  completion_ratio: 2,   cache_ratio: 0.1}
+  doubao-embedding-vision: {model_ratio: 0.05}
+  doubao-seedream-5.0-flash: {model_price: 0.014}
+  doubao-seedream-5.0-pro:   {model_price: 0.04}
+  doubao-seedance-2.0-fast:  {model_price: 0.2}
+  doubao-seedance-2.5:       {model_price: 0.5}
+
+  # ---- DeepSeek / 智谱 / Kimi（示例） ----
+  deepseek-v4-flash: {model_ratio: 0.14, completion_ratio: 2.8, cache_ratio: 0.1}
+  deepseek-v4-pro:   {model_ratio: 0.55, completion_ratio: 3,   cache_ratio: 0.1}
+  glm-5.3-flash:     {model_ratio: 0.05, completion_ratio: 2}
+  glm-5.3:           {model_ratio: 0.4,  completion_ratio: 3}
+  kimi-k3:           {model_ratio: 0.2,  completion_ratio: 2.5}
+  kimi-k3.1-pro:     {model_ratio: 0.6,  completion_ratio: 2.5}
