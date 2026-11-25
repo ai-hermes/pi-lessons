@@ -474,13 +474,18 @@ kubectl -n agentgateway-demo scale deploy extauth --replicas=1
 
 **通过标准：** 副本为 0 时请求被拒（`403`），副本恢复后同一 key 返回 `200`。
 
-本集群验证通过后，再走公网域名复测一遍：
+上面的矩阵是在集群内（`127.0.0.1:14001`）打的，验证的是「网关 → extauth」这一段；集群内通过后，再换公网域名打同样的四个请求，验证的是「nginx 反代 → 网关」整条入口链路——这一层最常见的故障是反代把 `x-api-key` 丢掉或改写，表现为集群内全部正常、公网却全 `401`。用矩阵里的四把 key 各打一次：
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' https://<lab-ingress-domain>/echo -H 'x-api-key: <alice-key>'
+H=https://<lab-ingress-domain>
+curl -s -o /dev/null -w '无凭证  %{http_code}\n' $H/echo
+curl -s -o /dev/null -w 'alice   %{http_code}\n' -H 'x-api-key: sk-lab-alice' $H/echo
+curl -s -o /dev/null -w 'bob     %{http_code}\n' -H 'x-api-key: sk-lab-bob' $H/echo
+curl -s -o /dev/null -w 'carol   %{http_code}\n' -H 'x-api-key: sk-lab-carol' $H/echo
+curl -s -o /dev/null -w 'UI      %{http_code}\n' $H/ui/
 ```
 
-**通过标准：** `/echo` 对同一 key 依次复现 `401` / `200` / `429` / `403`，`/ui/` 返回 `200`。
+**通过标准：** 五行输出依次为 `401` / `200` / `429` / `403` / `200`，与上面矩阵逐项一致；特别是公网结果与集群内完全相同，说明反代没有动过凭证头。
 
 **当前边界与风险：**
 
