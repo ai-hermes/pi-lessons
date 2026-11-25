@@ -46,11 +46,14 @@
                    上游后端（收到注入的 X-Client-Id 等头）
 ```
 
-### 2.2 逐步对应 spec 字段
-
-**第①步 挂载策略**。`targetRefs` 决定挂在哪一级（HTTPRoute / Gateway / Backend），`backendRef` 指向鉴权服务：
+### 2.2 完整策略 YAML
 
 ```yaml
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: echo-ext-auth
+  namespace: agentgateway-demo
 spec:
   targetRefs:
   - group: gateway.networking.k8s.io
@@ -60,116 +63,187 @@ spec:
     extAuth:
       backendRef:
         name: extauth
-        port: 9001        # HTTP 门面；gRPC 门面用 9002
+        port: 9001
+      http:
+        path: '"/check"'
+        allowedRequestHeaders:
+        - authorization
+        - x-api-key
+        - x-session-token
+        - cookie
+        - x-forwarded-for
+        - x-request-id
+        allowedResponseHeaders:
+        - x-client-id
+        - x-tenant-id
+        - x-plan
+        - x-auth-source
+        - x-budget-remaining-cents
+        - x-auth-denial-reason
+      failureMode: FailClosed
 ```
 
-**第②步 头转发**。网关只把 `allowedRequestHeaders` 列出的头透传给鉴权服务，其余一律不给：
+逐字段解释：
 
-<callout icon="⚠️" color="yellow_bg">
-`allowedRequestHeaders` 是这个功能最大的坑：必须显式列出 `authorization` / `x-api-key` / `x-session-token`。不写的话鉴权服务永远看到"没有凭证"，表现为 100% `missing_credential`，而且不报错。
-</callout>
+- `targetRefs`：挂到 `/echo` 这条 HTTPRoute；也可挂 Gateway / Backend 级
+- `backendRef`：鉴权服务地址，`9001` = HTTP 门面，`9002` = gRPC 门面
+- `http.path`：检查端点；CEL 字符串，内层引号不能省
+- `allowedRequestHeaders`：网关默认不转发凭证头，不列 = 鉴权服务永远看不到凭证（100% `missing_credential` 且不报错）；`cookie` / `x-forwarded-for` / `x-request-id` 用于审计排错，可按需增删
+- `allowedResponseHeaders`：采用白名单机制，仅放行响应中被列出的头复制到上游请求，把 auth 服务识别出的调用方身份随请求带给后端；`x-auth-denial-reason` 只在拒绝时出现，随拒绝响应回给调用方
+- `failureMode: FailClosed`：鉴权服务不可用时宁可拒绝，不放未鉴权流量
 
-**第③步 决策**。鉴权服务内部执行 `Evaluate()`（见三章），这一步与协议无关。
+**请求契约**：网关 `POST` `path`，只透传 `allowedRequestHeaders` 列出的头；鉴权服务返回 **2xx 即放行**，其他状态码与响应体原样回给调用方（`401` / `403` / `429` + 拒绝原因）。
 
-**第④步 放行与注入**。放行时鉴权服务返回的响应头中，被 `allowedResponseHeaders` 列出的头由网关复制到上游请求：
+**放行**：2xx 响应中被 `allowedResponseHeaders` 列出的头复制到上游请求——auth 服务识别出的调用方身份就是靠这一步随请求带给后端的，后续限流与计费都依赖 `X-Client-Id`。
 
-| 注入 header | 用途 |
-| --- | --- |
-| `X-Client-Id` | 调用方身份，后续限流与计费的归属 |
-| `X-Tenant-Id` | 租户归属 |
-| `X-Plan` | 套餐（决定可用模型/额度） |
-| `X-Auth-Source` | `api_key` / `jwt` / `session`，审计用 |
-| `X-Budget-Remaining-Cents` | 剩余预算，业务侧可做软降级 |
+**拒绝**：`X-Auth-Denial-Reason` 仅出现在拒绝响应头；gRPC 门面用 `DeniedHttpResponse` 表达同样语义。
 
-**第⑤步 拒绝透传**。拒绝时网关把鉴权服务的状态码（`401` / `403` / `429`）与响应体**原样**回给调用方，所以拒绝原因可以直接给到客户端；`X-Auth-Denial-Reason` 仅出现在响应头。
+**可用性**：`FailClosed` + 鉴权服务多副本 + PDB；每请求多一次 RPC，同集群内通常 1–2ms。
 
-### 2.3 spec 关键字段速查
+**调用方凭证处理**：放行后建议用 `headerModifiers.request.remove` 删掉 `authorization` / `x-api-key`，别让调用方凭证流向模型供应商。
 
-| 字段 | 作用 | 备注 |
-| --- | --- | --- |
-| `backendRef.name/port` | 鉴权服务地址 | `9001` = HTTP，`9002` = gRPC |
-| `http.path` | HTTP 门面的检查路径（CEL 字符串） | 实测 `'"`/check`"'` |
-| `http.allowedRequestHeaders` | 透传给鉴权服务的请求头 | 不列凭证头 = 全部 `missing_credential` |
-| `http.allowedResponseHeaders` | 从放行响应复制到上游的头 | identity header 注入的通道 |
-| `grpc.contextExtensions` | 传给鉴权服务的静态键值上下文 | 适合租户/环境 |
-| `failureMode` | 鉴权服务不可用时的行为 | 建议 `FailClosed` |
+### 2.3 extAuth 服务自身的资源（`backendRef` 背后）
+
+策略里的 `backendRef: extauth` 指向下面这套 Deployment + Service（`deploy/k8s/03-extauth.yaml`）：
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: extauth
+  namespace: agentgateway-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: extauth
+  template:
+    metadata:
+      labels:
+        app: extauth
+    spec:
+      containers:
+      - name: extauth
+        image: agentgateway-lab/extauth:v0.1.0
+        env:
+        - name: EXTAUTH_MODE
+          value: both
+        - name: EXTAUTH_HTTP_ADDR
+          value: :9001
+        - name: EXTAUTH_GRPC_ADDR
+          value: :9002
+        - name: EXTAUTH_PG_DSN
+          valueFrom:
+            secretKeyRef:
+              name: lab-secrets
+              key: extauth-dsn
+        - name: EXTAUTH_ADMIN_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: lab-secrets
+              key: admin-token
+        - name: EXTAUTH_JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: lab-secrets
+              key: jwt-secret
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 9001
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: extauth
+  namespace: agentgateway-demo
+spec:
+  selector:
+    app: extauth
+  ports:
+  - name: http
+    port: 9001
+    targetPort: 9001
+  - name: grpc
+    port: 9002
+    targetPort: 9002
+```
+
+- **单进程双协议**：`EXTAUTH_MODE=both` 同时监听 `:9001`（`/check`、`/admin/*`、`/healthz`）与 `:9002`（Envoy `ext_authz` v3），一套决策引擎保证两个门面结果一致
+- **敏感配置全走 Secret**：PG DSN、admin token、JWT secret 均来自 `lab-secrets`，不落明文
+- **Service 两个端口与策略对应**：策略里 `port: 9001` 走 `http` 口、`port: 9002` 走 `grpc` 口
+- **探针**：readiness / liveness 都打 `/healthz:9001`；配合 `FailClosed`，副本不可用时网关拒绝而不是放行
+- **生产基线**：多副本 + PDB；资源请求 `100m`/`128Mi`、内存上限 `256Mi`
+- 客户端 / 预算数据在 PostgreSQL（`clients` / `sessions` / `auth_audit`），由 `02-postgres.yaml` 提供
 
 ## 三、核心实现：一套决策引擎
 
-核心逻辑只有一套，HTTP 与 gRPC 两个门面共用同一个 `Evaluate()`，因此两个协议永远不会对同一请求给出不同结论。
-
-### 3.1 单引擎入口
+核心逻辑只有一套，HTTP 与 gRPC 两个门面共用同一个 `Evaluate()`，因此两个协议永远不会对同一请求给出不同结论。整个决策就是下面这一段主干（精简自 `internal/extauth/decide.go`，凭证提取到构造决策一气呵成）：
 
 ```go
-func (c *Config) Evaluate(store Store, req Request) Decision {
-	decision := c.evaluate(store, req)
-	if store != nil {
-		store.Audit(AuditEvent{ /* client_id / source / allowed / reason … */ })
+func (c *Config) evaluate(store Store, req Request) Decision {
+	// 1. 凭据提取：Bearer / x-api-key / x-session-token
+	_, raw := Credential(req.Headers)
+	if raw == "" {
+		return deny(401, ReasonMissingCredential, "none")
 	}
-	return decision
+
+	// 2. 按凭证形态走三条查找路径
+	switch {
+	case strings.HasPrefix(raw, "sess_"):
+		// session：查 sessions 表，含过期时间
+		cli, ok := store.LookupSession(HashKey(raw), c.now())
+		if !ok { return deny(401, ReasonExpiredSession, "session") }
+		client = cli
+	case looksLikeJWT(raw):
+		// JWT：HS256 验签 + exp 校验
+		claims, err := c.verifyHS256(raw)
+		if err == errJWTExpired {
+			return deny(401, ReasonExpiredJWT, "jwt") }
+		if err != nil {
+			return deny(401, ReasonInvalidJWT, "jwt") }
+		// IdP 签发的合法 token 足以识别调用方，
+		// 不在配额表里按 active 处理
+		client = lookupOrCreate(claims)
+	default:
+		// API key：SHA-256 摘要后查 clients 表
+		cli, ok := store.LookupKey(HashKey(raw))
+		if !ok { return deny(401, ReasonUnknownKey, "api_key") }
+		client = cli
+	}
+
+	// 3. 状态与预算检查
+	if client.Status != "" && client.Status != "active" {
+		return deny(403, ReasonInactiveClient, source)
+	}
+	if client.BudgetCents > 0 &&
+		client.SpentMicros >= client.BudgetCents*10000 {
+		return deny(429, ReasonBudgetExhausted, source)
+	}
+
+	// 4. 放行：构造 identity headers
+	return allow(identityOf(client, source))
 }
 ```
 
-`evaluate()` 的主干是四段：凭据提取、凭据查找、状态与预算检查、构造决策。审计在入口统一发出，写入 `auth_audit` 表。
-
-### 3.2 凭据提取
-
-```go
-func Credential(headers map[string]string) (kind, value string) {
-	// Authorization: Bearer …  → "bearer"
-	// x-api-key: …            → "api_key"
-	// x-session-token: …      → "session"
-}
-```
-
-三种凭证决定三条查找路径：
-
-- `x-api-key` / `Authorization: Bearer`（非 JWT 形态）→ 按 SHA-256 摘要查 `clients` 表，未命中返回 `401 unknown_api_key`；
-- 形如 `sess_` 的 token → 查 `sessions` 表，过期返回 `401 session_expired`；
-- 两段点的 JWT → HS256 验签 + `exp` 校验，`401 invalid_jwt` / `401 jwt_expired`。
-
-```go
-func HashKey(raw string) string {
-	sum := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(sum[:])
-}
-```
-
-**凭据永不落库明文**：网关与鉴权服务都只保存 SHA-256 摘要。
-
-### 3.3 状态与预算检查
-
-```go
-if client.Status != "" && client.Status != "active" {
-	return withIdentity(deny(403, ReasonInactiveClient, source), client, source)
-}
-if client.BudgetCents > 0 && client.SpentMicros >= client.BudgetCents*10000 {
-	return withIdentity(deny(429, ReasonBudgetExhausted, source), client, source)
-}
-```
-
-预算换算是整数运算：`BudgetCents`（分）× `10000` 换算成 micro-USD 与 `SpentMicros` 比较，无浮点误差。`deny()` 返回的决策附 `X-Auth-Denial-Reason` 响应头；预算耗尽/停用的拒绝还带上 identity，便于调用方定位。JWT 客户端不在配额表时，签发的合法 token 足以识别调用方（IdP 侧身份），默认按 active 处理。
-
-### 3.4 审计
-
-每次决策（无论放行与否）在 `Evaluate()` 入口写一条 `auth_audit`，字段为 `client_id / source / allowed / status / reason`，拒绝原因是稳定字符串（`missing_credential` 等），可直接用于看板，无需解析文本。
+- **三条查找路径对应三种拒绝码**：API key 未命中 → `401 unknown_api_key`；session 过期 → `401 session_expired`；JWT 验签失败/过期 → `401 invalid_jwt` / `401 jwt_expired`
+- **凭据永不落明文**：`HashKey()` 先做 SHA-256，网关与鉴权服务都只存摘要
+- **预算是整数运算**：`BudgetCents`（分）× `10000` 换算成 micro-USD 与 `SpentMicros` 比较，无浮点误差
+- **拒绝时说明原因**：拒绝响应头带 `X-Auth-Denial-Reason`，值是固定枚举（`missing_credential`、`budget_exhausted` 等）；能定位到客户端的拒绝（预算耗尽、账号停用）还会带上身份头，调用方可以直接自查是哪个账号出了什么问题
+- **审计在入口统一发出**：`Evaluate()` 每次决策写一条 `auth_audit`（client_id / source / allowed / status / reason），拒绝原因是稳定字符串，看板可直接消费；两个门面共用，结论一致
 
 ## 四、协议门面：HTTP 与 gRPC
 
-### 4.1 对照表
+第三章的 `Evaluate()` 是协议无关的，两个门面的差异只在「请求怎么递过来、决策怎么送回去」。下面把两种协议的请求处理并排对照，先 HTTP 后 gRPC。
 
-| 维度 | HTTP（`:9001`） | gRPC（`:9002`） |
-| --- | --- | --- |
-| 协议契约 | 网关 `POST` 到 `http.path`，透传 `allowedRequestHeaders` | Envoy `ext_authz` v3 的 `CheckRequest`（结构化 `AttributeContext`） |
-| 允许信号 | 鉴权服务返回 **2xx** | `CheckResponse` 返回 `OK` + `OkHttpResponse` |
-| 拒绝信号 | 非 2xx 即拒绝，状态码与响应体**原样透传**给客户端 | `Denied` + `DeniedHttpResponse`（自定义 HTTP status / body / headers） |
-| 静态上下文 | 靠请求头 | `grpc.contextExtensions` 键值对 |
-| 典型场景 | 自研鉴权服务、复用现有 REST、`curl` 可调试 | 已有 Envoy 体系 `ext_authz` 服务，不改协议直接接入 |
-| 开销 | 每请求一次 HTTP 调用 | HTTP/2 长连接 + protobuf，连接复用；同集群内两者都在 1–2ms |
-
-### 4.2 HTTP 门面
+**HTTP（`:9001`）——自研鉴权服务、复用现有 REST，`curl` 可直接调试**
 
 ```go
+// 网关 POST /check，只透传 allowedRequestHeaders 列的头
 func (h *HTTPAuth) check(w http.ResponseWriter, r *http.Request) {
 	dec := h.Engine.Evaluate(h.Store, reqFrom(r))
 	if !dec.Allow {
@@ -177,7 +251,8 @@ func (h *HTTPAuth) check(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(dec.HTTPStatus)
 		return
 	}
-	// 2xx：identity headers 写入响应头，由网关按 allowedResponseHeaders 复制
+	// 2xx：identity headers 写入响应头，
+	// 网关按 allowedResponseHeaders 复制到上游
 	for k, v := range dec.Headers {
 		w.Header().Set(k, v)
 	}
@@ -185,38 +260,49 @@ func (h *HTTPAuth) check(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-HTTP 门面跑在 `:9001`，另有 `/admin/clients`、`/admin/jwt`、`/admin/session` 管理端点（见七章）。
+契约一句话：**2xx 即放行**；其他状态码与响应体原样透传，拒绝原因调用方直接可见。
 
-### 4.3 gRPC 门面
+**gRPC（`:9002`）——存量 Envoy `ext_authz` 服务，不改协议直接接入**
 
 ```go
-func (s *GRPCServer) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.CheckResponse, error) {
+// Envoy ext_authz v3 的 Check()
+func (s *GRPCServer) Check(ctx context.Context,
+	req *authv3.CheckRequest) (*authv3.CheckResponse, error) {
 	decision := s.engine.Evaluate(s.store, reqFromGRPC(req))
 	if decision.Allow {
 		return &authv3.CheckResponse{
 			Status: &status.Status{Code: int32(codes.OK)},
 			HttpResponse: &authv3.CheckResponse_OkResponse{
-				OkResponse: &authv3.OkHttpResponse{Headers: headerOptions(decision.Headers)},
-			},
+				OkResponse: &authv3.OkHttpResponse{
+					Headers: headerOptions(decision.Headers)}},
 		}, nil
 	}
 	return &authv3.CheckResponse{
-		Status: &status.Status{Code: int32(codes.PermissionDenied), Message: decision.Reason},
+		Status: &status.Status{Code: int32(codes.PermissionDenied)},
 		HttpResponse: &authv3.CheckResponse_DeniedResponse{
 			DeniedResponse: &authv3.DeniedHttpResponse{
-				Status:  &typev3.HttpStatus{Code: typev3.StatusCode(decision.HTTPStatus)},
-				Headers: headerOptions(decision.Headers),
-			},
-		},
+				Status:  &typev3.StatusCode(decision.HTTPStatus),
+				Headers: headerOptions(decision.Headers)}},
 	}, nil
 }
 ```
 
-gRPC 门面同时注册了 gRPC health 与 reflection，方便探活与调试。`grpc.contextExtensions` 会作为 `context_extensions` 传给鉴权服务，适合传租户/环境这类静态上下文。
+契约一句话：**`OK` 即放行**，要注入的头放在 `OkHttpResponse` 里随请求带下去；拒绝时返回 `Denied`，回给客户端的状态码、body 和响应头都可以在 `DeniedHttpResponse` 里指定。租户、环境这类不随请求变化的上下文，用 `grpc.contextExtensions` 传给鉴权服务。怎么理解：调用方出示的凭证——`x-api-key` / `Authorization: Bearer` / `x-session-token`（对应 API key / JWT / session 三种形态）——都是**身份证**（每请求不同，要校验），`contextExtensions` 是路由的**门牌号**（管理员写死在策略 YAML 里，天然可信）。它就配置在策略的 `grpc:` 块下：
 
-### 4.4 选型建议
+```yaml
+traffic:
+  extAuth:
+    backendRef:
+      name: extauth
+      port: 9002
+    grpc:
+      contextExtensions:
+        lab-tenant-tier: pro   # 门牌号：管理员写死，不来自调用方
+```
 
-新建鉴权服务选 HTTP（简单、可观测、调试成本最低）；存量 Envoy 体系或追求连接复用选 gRPC。两者切换只改 `extAuth` 下的 `http:` / `grpc:` 块和端口，业务侧无感。
+网关每次 `Check` 都把这个键值对放进 `context_extensions` 送鉴权服务，鉴权服务按“这条路由是 pro 专线”选规则。为什么不能靠调用方自己说？调用方传的头是不可信输入，谁都可以谎称“我是 pro”；而门牌号改不了——它只存在于策略 YAML 里，改它需要改配置。顺带一提：HTTP 门面没有这个字段，同类需求只能让鉴权服务按 `path` 自行区分路由。gRPC 门面同时注册了 health 与 reflection，方便探活与调试；HTTP 门面另挂 `/admin/clients`、`/admin/jwt`、`/admin/session` 管理端点（见七章）。
+
+两个门面跑在同一个 `extauth` 进程里（`:9001` + `:9002`，`EXTAUTH_MODE=both`），共用同一引擎与存储，所以对同一 key 的结果必然一致。选型上新服务选 HTTP（简单、可观测、调试成本低），存量 Envoy 体系选 gRPC（HTTP/2 长连接复用、契约强类型）；开销同量级，同集群内都在 1–2ms；切换只改 `extAuth` 下的 `http:` / `grpc:` 块和端口，业务侧无感。
 
 ## 五、安装部署
 
@@ -233,6 +319,15 @@ kubectl apply -f apps/agentgateway-lab/deploy/k8s/02-postgres.yaml
 kubectl apply -f apps/agentgateway-lab/deploy/k8s/03-extauth.yaml
 ```
 
+四个清单各管一段，顺序不能乱：
+
+- `00-platform`：命名空间、echo 后端、Gateway（含 `modelCatalog` 价格目录）和 `/echo` 路由
+- `01-lab-secrets`：PG 连接串、admin token、JWT secret，全走 Secret 不落明文
+- `02-postgres`：PostgreSQL + 建表脚本（`clients` / `sessions` / `auth_audit` / `usage_events` 等）和 alice / bob / carol 三个演示客户端
+- `03-extauth`：鉴权服务本体（2.3 节的 Deployment + Service）
+
+Secret 和数据库必须先于 extauth 就绪，否则它的 readiness 探针起不来，副本永远 `0/1`。
+
 ```bash
 kubectl -n agentgateway-demo get deploy extauth
 ```
@@ -241,7 +336,11 @@ kubectl -n agentgateway-demo get deploy extauth
 
 如果副本起不来，先不要改镜像，优先检查：`01-lab-secrets.yaml` 里的 `extauth-dsn` 是否指向 `02-postgres.yaml` 创建的库。
 
-### 5.2 挂 HTTP extAuth（对应 4.2）
+### 5.2 挂鉴权策略（HTTP / gRPC 对照）
+
+服务就绪后，把策略挂到路由上。HTTP 与 gRPC 两个策略几乎相同，对照着看——差异只有 `port` 和 `grpc.contextExtensions` 两处。
+
+**HTTP（`:9001`，挂 `/echo`）**
 
 ```yaml
 apiVersion: agentgateway.dev/v1alpha1
@@ -283,11 +382,18 @@ kubectl apply -f apps/agentgateway-lab/deploy/k8s/05-policies.yaml
 curl -s http://localhost:8080/echo -H 'x-api-key: anything'
 ```
 
+这一步把第二章的策略真正挂到 `/echo` 路由上：apply 后 controller 转成数据面配置热下发，不需要重启网关。curl 故意带一个不存在的 key，预期收到 `401`——这恰好证明请求经过了 extauth 并被正确拒绝；如果返回 `200`，说明策略没挂上（先查 `targetRefs` 的路由名是否对得上），而不是鉴权放行了。
+
 **通过标准：** 返回 HTTP `401`，响应体含 `"reason":"missing_credential"` 或 `"unknown_api_key"`。
 
-### 5.3 挂 gRPC extAuth（对应 4.3）
+**gRPC（`:9002`，挂 `grpc-echo`）**
 
 ```yaml
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: grpc-ext-auth
+  namespace: agentgateway-demo
 spec:
   targetRefs:
   - group: gateway.networking.k8s.io
@@ -304,11 +410,40 @@ spec:
       failureMode: FailClosed
 ```
 
+`07-extauth-grpc.yaml` 里还包含 `grpc-echo` 路由本身（`/grpc` 前缀 → echo 后端），与策略同文件一起 apply。
+
+**路由部分：**
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grpc-echo
+  namespace: agentgateway-demo
+spec:
+  parentRefs:
+  - name: agentgateway-demo
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /grpc
+    backendRefs:
+    - name: echo-backend
+      port: 8080
+```
+
+为什么要为验证专门加一条路由：gRPC 门面必须有一条"走 gRPC 鉴权"的流量入口才能被测到，而 `/echo` 已经被 HTTP 策略占用了——同一路由不能同时挂两种 extAuth。所以 07 复制了一条与 `/echo` 完全对称的路由：同一个 echo 后端，只把路径换成 `/grpc`，再挂上 gRPC 策略。后端相同、凭证相同，唯一的变量就是鉴权协议，两边的结果才能直接对比——冒烟脚本里 `grpc ext_authz route` 与 HTTP 用例逐行对照，依据就在这里。apply 顺序上 07 排在 03 之后，此时 extauth 已在 `:9002` 监听，apply 完 gRPC 链路立即生效。
+
+```bash
+kubectl apply -f apps/agentgateway-lab/deploy/k8s/07-extauth-grpc.yaml
+```
+
+与 HTTP 版只差两处：`port: 9002` 走 gRPC 门面；`grpc.contextExtensions` 把 `lab-tenant-tier: pro` 这个门牌号传给鉴权服务（见第四章）。这条路由挂在 `grpc-echo` 上，验证目的只有一个：确认 Envoy `ext_authz` 协议与 HTTP 版行为完全一致——同一把 key，两边都得是同一个结果。
+
 **通过标准：** gRPC 路由与 HTTP 路由对同一 key 给出一致的放行/拒绝结果（`07-extauth-grpc.yaml`）。
 
 ## 六、使用验证
-
-### 6.1 鉴权矩阵
 
 预期结果如下表，与 `deploy/smoke.sh` 的 15 项检查一致：
 
@@ -329,7 +464,7 @@ bash apps/agentgateway-lab/deploy/smoke.sh
 
 **通过标准：** 上表全部用例的实际状态码与拒绝原因逐项一致。
 
-### 6.2 FailClosed 行为
+矩阵之外，两个关键行为单独验证：
 
 ```bash
 kubectl -n agentgateway-demo scale deploy extauth --replicas=0
@@ -339,15 +474,20 @@ kubectl -n agentgateway-demo scale deploy extauth --replicas=1
 
 **通过标准：** 副本为 0 时请求被拒（`403`），副本恢复后同一 key 返回 `200`。
 
-### 6.3 公网链路
+上面的矩阵是在集群内（`127.0.0.1:14001`）打的，验证的是「网关 → extauth」这一段；集群内通过后，再换公网域名打同样的四个请求，验证的是「nginx 反代 → 网关」整条入口链路——这一层最常见的故障是反代把 `x-api-key` 丢掉或改写，表现为集群内全部正常、公网却全 `401`。用矩阵里的四把 key 各打一次：
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' https://<lab-ingress-domain>/echo -H 'x-api-key: <alice-key>'
+H=https://<lab-ingress-domain>
+curl -s -o /dev/null -w '无凭证  %{http_code}\n' $H/echo
+curl -s -o /dev/null -w 'alice   %{http_code}\n' -H 'x-api-key: sk-lab-alice' $H/echo
+curl -s -o /dev/null -w 'bob     %{http_code}\n' -H 'x-api-key: sk-lab-bob' $H/echo
+curl -s -o /dev/null -w 'carol   %{http_code}\n' -H 'x-api-key: sk-lab-carol' $H/echo
+curl -s -o /dev/null -w 'UI      %{http_code}\n' $H/ui/
 ```
 
-**通过标准：** `/echo` 对同一 key 依次复现 `401` / `200` / `429` / `403`，`/ui/` 返回 `200`。
+**通过标准：** 五行输出依次为 `401` / `200` / `429` / `403` / `200`，与上面矩阵逐项一致；特别是公网结果与集群内完全相同，说明反代没有动过凭证头。
 
-### 6.4 当前边界与风险
+**当前边界与风险：**
 
 - 每个请求多一次 RPC（同集群内通常 1–2ms），鉴权服务要设多副本 + PDB。
 - 建议 `FailClosed`：鉴权服务不可用时宁可拒绝，也不要放过未鉴权流量。
@@ -357,7 +497,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<lab-ingress-domain>/echo -H 'x
 
 ## 七、日常运维
 
-### 7.1 查看鉴权状态
+日常先看决策日志：
 
 ```bash
 kubectl -n agentgateway-demo logs deploy/extauth --tail=50
@@ -365,7 +505,7 @@ kubectl -n agentgateway-demo logs deploy/extauth --tail=50
 
 **通过标准：** 能看到每条决策的 `client_id` / `allowed` / `reason`，无 panic。
 
-### 7.2 客户端生命周期（增改、停用、预算）
+客户端的增改、停用、调预算都走 admin 端点：
 
 ```bash
 curl -X POST http://localhost:9001/admin/clients -H 'X-Admin-Token: <token>' \
@@ -376,7 +516,7 @@ curl -X POST http://localhost:9001/admin/clients -H 'X-Admin-Token: <token>' \
 
 **通过标准：** 停用后该 key 下一次请求立即返回 `403 client_inactive`；预算写小后耗尽的 key 返回 `429 budget_exhausted`。
 
-### 7.3 修改鉴权服务配置
+改 Deployment 配置（镜像、环境变量）时：
 
 修改前先备份清单（`kubectl get deploy extauth -o yaml > extauth.bak.yaml`）；`EXTAUTH_JWT_SECRET` 轮转会使已签发 JWT 全部失效，需在低峰执行。改完先 `kubectl apply --dry-run=client` 校验再 apply。
 
