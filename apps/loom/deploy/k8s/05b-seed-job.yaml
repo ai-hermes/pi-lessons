@@ -1,0 +1,32 @@
+# 一次性 seed：幂等写入演示账户 / Key / PG 兜底定价
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: loom-seed
+  namespace: loom
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: loom
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+      - name: seed
+        image: loom/loom:IMAGE_TAG
+        imagePullPolicy: IfNotPresent
+        args: ["seed", "--config", "/etc/loom/config.yaml", "--file", "/etc/loom/seed.yaml"]
+        volumeMounts:
+        - name: config
+          mountPath: /etc/loom
+          readOnly: true
+      volumes:
+      - name: config
+        projected:
+          sources:
+          - configMap: {name: loom-config}
+          - configMap: {name: loom-pricing}
+          - secret: {name: loom-secrets}
+          - configMap: {name: loom-seed}

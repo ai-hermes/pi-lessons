@@ -1,0 +1,85 @@
+# loom 运行配置（K8s 中通过 ConfigMap loom-config 挂载 /etc/loom/config.yaml）
+# 所有键可用环境变量覆盖：LOOM_<节>_<键>，例如 LOOM_LOG_LEVEL=debug；LOOM_POSTGRES_DSN、LOOM_ADMIN_TOKEN 为便捷别名。
+
+server:
+  extauth_http_addr: ":9001"     # extAuth HTTP 门面 POST /check + 探针
+  extauth_grpc_addr: ":9002"    # Envoy ext_authz.v3 门面
+  admin_addr: ":9100"           # 管理 API（需 admin token）
+  otlp_grpc_addr: ":9101"       # OTLP Logs/Traces ingest
+  metrics_addr: ":9102"         # Prometheus /metrics + pprof
+  shutdown_timeout: 15s
+
+log:
+  level: info
+  format: json
+
+postgres:
+  dsn_file: /etc/loom/pg-dsn
+  min_conns: 2
+  max_conns: 20
+  max_conn_lifetime: 30m
+  statement_timeout: 5s
+
+migrations:
+  auto: true
+
+auth:
+  header_sources: [authorization, x-api-key]   # Bearer <key> 或裸 key
+  cache:
+    enabled: true
+    ttl: 5s                 # Key 元数据缓存；停用 Key 最迟 ttl 后生效
+    negative_ttl: 5s
+    size: 10000
+  identity_headers:
+    client_id: x-loom-client-id
+    key_id: x-loom-key-id
+    request_id: x-loom-request-id
+    quota_remaining: x-loom-quota-remaining
+    deny_reason: x-loom-deny-reason
+  deny_status:
+    unknown_key: 401
+    inactive: 403
+    quota: 403
+    not_priced: 403
+    not_allowed: 403
+    internal_error: 500
+  audit_queue: 4096
+  body_limit: 1048576
+
+pricing:
+  configmap_path: /etc/loom/pricing.yaml
+  reload_interval: 30s
+  pg_fallback: true
+
+quota:
+  reserve_tokens:
+    input: 1024
+    output: 1024
+  reservation_ttl: 15m
+  reaper_interval: 1m
+  reaper_batch: 200
+
+billing:
+  cost_source: loom           # loom 为准；gateway_prefer 则优先网关算出的 agw.ai.usage.cost.total
+  queue_size: 4096
+  batch_size: 200
+  flush_interval: 2s
+  protocols: []               # 空 = 不过滤；只计 LLM 流量可填 [llm]
+  attributes:
+    input_tokens: gen_ai.usage.input_tokens
+    output_tokens: gen_ai.usage.output_tokens
+    cached_tokens: gen_ai.usage.cache_read.input_tokens
+    gateway_cost: agw.ai.usage.cost.total
+    model: gen_ai.request.model
+    provider: gen_ai.provider.name
+    request_id: loom.request.id
+    client_id: loom.client.id
+    key_id: loom.key.id
+
+telemetry:
+  metrics:
+    enabled: true
+
+admin:
+  token_file: /etc/loom/admin-token
+  default_key_prefix: loom-

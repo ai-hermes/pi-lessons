@@ -1,0 +1,69 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loom-postgres
+  namespace: loom
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loom-postgres
+  namespace: loom
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: loom-postgres
+  template:
+    metadata:
+      labels:
+        app: loom-postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        imagePullPolicy: IfNotPresent
+        args: ["-c", "max_connections=200"]
+        env:
+        - name: POSTGRES_USER
+          value: loom
+        - name: POSTGRES_PASSWORD
+          value: loom
+        - name: POSTGRES_DB
+          value: loom
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        ports:
+        - name: pg
+          containerPort: 5432
+        readinessProbe:
+          exec:
+            command: ["sh", "-c", "pg_isready -U loom -d loom"]
+          periodSeconds: 5
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: loom-postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loom-postgres
+  namespace: loom
+spec:
+  selector:
+    app: loom-postgres
+  ports:
+  - name: pg
+    port: 5432
+    targetPort: 5432
