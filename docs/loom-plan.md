@@ -530,3 +530,13 @@ OTLP access log 是遥测链路（批量、可丢），不适合做账本的数�
 - OTLP 保留为补账：同一 `request_id` 先到先结算；后到者只补写 `gateway_cost_nanos` 用于对账（`loom_usage_settled_total{channel,inserted}`）。
 - 源码确认的边界：amend 由 `tokio::spawn` 发出且忽略结果，无重试；流式响应由 `AmendOnDrop` 保证客户端断连也会上报。纯 HTTP 路由（按次计费）没有 `llm.*`，仍只走 OTLP。
 - 验收：`deploy/smoke.sh` 83 项全绿，新增 RLS 同步入库（≤1s）、单通道独立性、双通道幂等与网关金额补写。并发预扣用例因同步结算释放预扣更快，断言改为「不超额且每笔金额正确」。
+
+## 十七、实施结果：按能力分包与端口收敛（2026-11-26）
+
+- 包结构：`auth / quota / billing / admin / server / cache / pkg/loom` 重组为 `admission`（准入）、`ledger`（预扣 / 结算 / 过期释放）、`pricing`、`account`（管理操作）、`transport/{extauth,ratelimit,otlp,adminapi}`（协议适配）、`app`（装配与生命周期）；业务包只依赖自己声明的窄接口。术语见 `apps/loom/GLOSSARY.md`。
+- 端口：6 个收敛为 2 个——`8080` 数据面（h2c，gRPC 与 HTTP 按 Content-Type 分流，仅供网关）、`9090` 运维面（管理 API、指标、探针、pprof）。网关策略的 `backendRef` 全部指向 `loom:8080`。
+- 修复的问题：管理 API 参数错误返回 500（改为 400/404/409）；memstore 账户重名返回 NotFound；`loom_pg_pool_acquires_total` 从未递增（改为读取 pgxpool 实时统计）；环境变量映射无法覆盖带下划线的键；`SetAccountQuota` / `SetKeyQuota` 清预扣与改额度不在同一事务。
+- 数据库：迁移 `0002` 删除 `auth_audit.status`（可由 reason 推出）、`source` 改名 `protocol`。
+- 指标统一按能力命名：`loom_admission_*`、`loom_ledger_*`、`loom_pricing_*`、`loom_ratelimit_*`、`loom_otlp_*`、`loom_store_*`。
+- 质量门：`make test`（`-race`）、`make lint`（golangci-lint v2，0 issues）、staticcheck、deadcode 清零；非生成代码行宽 ≤ 120。
+- 验收：滚动升级与 `--fresh` 清库重建两条路径，`deploy/smoke.sh` 均为 `PASS=82 FAIL=0`（指标清单合并掉重复的 `loom_usage_events_ingested_total`，其余 70 项检查不变）。

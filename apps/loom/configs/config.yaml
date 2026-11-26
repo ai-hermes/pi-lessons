@@ -1,13 +1,10 @@
-# loom 运行配置（K8s 中通过 ConfigMap loom-config 挂载 /etc/loom/config.yaml）
-# 所有键可用环境变量覆盖：LOOM_<节>_<键>，例如 LOOM_LOG_LEVEL=debug；LOOM_POSTGRES_DSN、LOOM_ADMIN_TOKEN 为便捷别名。
+# loom 运行配置（K8s 中由 ConfigMap loom-config 挂载为 /etc/loom/config.yaml）。
+# 环境变量覆盖：LOOM_<节>_<键>，例如 LOOM_LOG_LEVEL=debug；更深层级用双下划线：
+# LOOM_LEDGER__RESERVE_TOKENS__INPUT=512。敏感项只用 *_file 或环境变量，不写在这里。
 
 server:
-  extauth_http_addr: ":9001"     # extAuth HTTP 门面 POST /check + 探针
-  extauth_grpc_addr: ":9002"    # Envoy ext_authz.v3 门面
-  admin_addr: ":9100"           # 管理 API（需 admin token）
-  otlp_grpc_addr: ":9101"       # OTLP Logs/Traces ingest（补账）
-  rls_addr: ":9004"             # Envoy RateLimitService.v3：网关响应完成后的 amend 同步结算
-  metrics_addr: ":9102"         # Prometheus /metrics + pprof
+  listen: ":8080"        # 数据面（h2c）：extauth HTTP /check + gRPC ext_authz、ratelimit、OTLP，仅供网关调用
+  ops_listen: ":9090"    # 运维面：管理 API /v1、/metrics、/healthz、/readyz、/debug/pprof
   shutdown_timeout: 15s
 
 log:
@@ -24,64 +21,73 @@ postgres:
 migrations:
   auto: true
 
-auth:
-  header_sources: [authorization, x-api-key]   # Bearer <key> 或裸 key
-  cache:
+admission:
+  key_cache:
     enabled: true
-    ttl: 5s                 # Key 元数据缓存；停用 Key 最迟 ttl 后生效
-    negative_ttl: 5s
     size: 10000
-  identity_headers:
-    client_id: x-loom-client-id
+    ttl: 5s              # 停用 Key 最迟 ttl 后在所有副本生效（管理 API 只会清当前副本的缓存）
+    negative_ttl: 5s
+  audit_queue: 4096
+
+extauth:
+  credential_headers: [authorization, x-api-key]   # Bearer <key> 或裸 key，按顺序取第一个
+  headers:                                          # 对外契约：需与网关策略的 allowed*Headers 一致
+    client_request_id: x-request-id
+    model: x-loom-model
+    account: x-loom-client-id
     key_id: x-loom-key-id
     request_id: x-loom-request-id
     quota_remaining: x-loom-quota-remaining
     deny_reason: x-loom-deny-reason
   deny_status:
-    unknown_key: 401
-    inactive: 403
-    quota: 403
-    not_priced: 403
-    not_allowed: 403
+    missing_credential: 401
+    unknown_api_key: 401
+    expired_api_key: 401
+    client_inactive: 403
+    model_not_allowed: 403
+    model_not_priced: 403
+    insufficient_quota: 403
     internal_error: 500
-  audit_queue: 4096
   body_limit: 1048576
 
 pricing:
-  configmap_path: /etc/loom/pricing.yaml
+  file: /etc/loom/pricing.yaml
   reload_interval: 30s
-  pg_fallback: true
+  store_fallback: true          # pricing.yaml 没有的模型查 PG model_pricing
 
-quota:
-  reserve_tokens:
+ledger:
+  reserve_tokens:               # 准入预扣估值：input × 输入单价 + output × 输出单价
     input: 1024
     output: 1024
-  reservation_ttl: 15m
+  reservation_ttl: 15m          # 两条用量通道都没送达时，预扣在此之后释放
   reaper_interval: 1m
   reaper_batch: 200
+  cost_source: loom             # loom：以计价表为准；gateway_prefer：优先网关 agw.ai.usage.cost.total
+  owner_cache_ttl: 60s
 
-billing:
-  cost_source: loom           # loom 为准；gateway_prefer 则优先网关算出的 agw.ai.usage.cost.total
-  rls_domain: loom-billing    # 只处理该 domain 的 RateLimit 调用；需与策略 rateLimit.global.domain 一致
+ratelimit:
+  domain: loom-billing          # 需与网关策略 rateLimit.global.domain 一致
+
+otlp:
+  protocols: []                 # 空 = 不过滤；只结算 LLM 流量可填 [llm]
   queue_size: 4096
   batch_size: 200
   flush_interval: 2s
-  protocols: []               # 空 = 不过滤；只计 LLM 流量可填 [llm]
   attributes:
     input_tokens: gen_ai.usage.input_tokens
     output_tokens: gen_ai.usage.output_tokens
     cached_tokens: gen_ai.usage.cache_read.input_tokens
     gateway_cost: agw.ai.usage.cost.total
     model: gen_ai.request.model
+    loom_model: loom.model
     provider: gen_ai.provider.name
+    protocol: protocol
+    route: route
+    gateway: gateway
     request_id: loom.request.id
-    client_id: loom.client.id
     key_id: loom.key.id
-
-telemetry:
-  metrics:
-    enabled: true
+    account: loom.client.id
 
 admin:
   token_file: /etc/loom/admin-token
-  default_key_prefix: loom-
+  key_prefix: loom-

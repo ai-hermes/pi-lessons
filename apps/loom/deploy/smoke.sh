@@ -27,19 +27,19 @@ check() { # name expected actual
 code()   { curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$@"; }
 reason() { curl -s -D - -o /dev/null --max-time 30 "$@" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-loom-deny-reason"{print $2}'; }
 q()      { kubectl -n loom exec deploy/loom-postgres -- psql -U loom -d loom -Atc "$1"; }
-admin()  { kubectl -n loom exec deploy/loom -- wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:9100$1"; }
+admin()  { kubectl -n loom exec deploy/loom -- wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:9090$1"; }
 chat()   { curl -s --max-time 60 -H "Authorization: Bearer $1" -H 'content-type: application/json' -d "{\"model\":\"$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" "$BASE$3"; }
 key() { case "$1" in
   alice) echo loom-demo-alice-0000000000000001;; bob) echo loom-demo-bob-000000000000000002;;
   carol) echo loom-demo-carol-000000000000000003;; dave) echo loom-demo-dave-000000000000000004;;
   dave-images) echo loom-demo-dave-images-only-0005;; erin) echo loom-demo-erin-000000000000000006;;
   vera) echo loom-demo-vera-000000000000000007;; frank) echo loom-demo-frank-000000000000000008;; esac; }
-admin_post() { kubectl -n loom exec deploy/loom -- wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN" --header='Content-Type: application/json' --post-data="$2" "http://127.0.0.1:9100$1"; }
+admin_post() { kubectl -n loom exec deploy/loom -- wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN" --header='Content-Type: application/json' --post-data="$2" "http://127.0.0.1:9090$1"; }
 wait_ready() { kubectl -n loom rollout status deploy/loom --timeout=120s >/dev/null; for i in $(seq 1 30); do [ "$(code $BASE/echo -H 'x-api-key: $(key dave)')" = 200 ] && break; sleep 2; done; }
 # reset <account> <key-name> <limit>：把账户与 Key 的额度上限/已用量复位，保证矩阵可重复执行
 reset() {
-  aid=$(admin /v1/accounts | grep -o "\"id\":\"[^\"]*\",\"name\":\"$1\"" | cut -d'"' -f4)
-  kid=$(admin "/v1/accounts/$aid/keys" | grep -o "\"id\":\"[^\"]*\",\"key_preview\":\"[^\"]*\",\"last_used_at\":[^,]*,\"model_allowlist\":[^,]*,\"name\":\"$2\"" | cut -d'"' -f4)
+  aid=$(admin /v1/accounts | python3 -c "import json,sys; print(next(a['id'] for a in json.load(sys.stdin)['accounts'] if a['name']=='$1'))")
+  kid=$(admin "/v1/accounts/$aid/keys" | python3 -c "import json,sys; print(next(k['id'] for k in json.load(sys.stdin)['keys'] if k['name']=='$2'))")
   admin_post "/v1/accounts/$aid/quota" "{\"quota_limit_nanos\":$3,\"quota_used_nanos\":0}" >/dev/null
   admin_post "/v1/keys/$kid/quota" "{\"quota_limit_nanos\":$3,\"quota_used_nanos\":0}" >/dev/null
 }
@@ -134,12 +134,12 @@ check "admin list accounts" 7 "$(admin /v1/accounts | sed 's/"id":/\n&id=/g' | g
 check "admin usage summary has rows" yes "$(admin '/v1/usage/summary' | grep -q '"total"' && echo yes)"
 check "admin pricing view has pg row" 1 "$(admin /v1/pricing | grep -o '"model":"lab-pg-only"' | wc -l | tr -d ' ')"
 check "admin catalog has lab-model rate 1" '"input":"1"' "$(admin /v1/catalog | grep -o '"input":"1"' | head -1)"
-M=$(kubectl -n loom exec deploy/loom -- wget -qO- http://127.0.0.1:9102/metrics)
-for mname in loom_auth_decisions_total loom_auth_duration_seconds loom_pricing_lookups_total loom_quota_reserved_nanos_total loom_quota_settled_nanos_total loom_quota_remaining_nanos loom_reservations_open loom_reservations_expired_total loom_usage_events_ingested_total loom_ingest_queue_depth loom_rls_calls_total loom_usage_settled_total loom_pg_pool_acquires_total loom_build_info; do
+M=$(kubectl -n loom exec deploy/loom -- wget -qO- http://127.0.0.1:9090/metrics)
+for mname in loom_admission_decisions_total loom_admission_duration_seconds loom_pricing_lookups_total loom_ledger_reserved_nanos_total loom_ledger_settled_nanos_total loom_ledger_remaining_nanos loom_ledger_reservations_open loom_ledger_reservations_expired_total loom_ledger_settlements_total loom_otlp_queue_depth loom_ratelimit_calls_total loom_store_pool_acquires_total loom_build_info; do
   check "metric $mname" yes "$(echo "$M" | grep -q "^$mname" && echo yes)"
 done
 # 带标签的 counter 在首次自增前不会出现：只要求没有 mismatch 计数（下一行）
-check "no cost mismatch between loom and gateway" "" "$(echo "$M" | grep '^loom_cost_mismatch_total' | grep -v ' 0$' | sed 's/^/MISMATCH: /')"
+check "no cost mismatch between loom and gateway" "" "$(echo "$M" | grep '^loom_ledger_cost_mismatch_total' | grep -v ' 0$' | sed 's/^/MISMATCH: /')"
 check "auth audit rows > 0" yes "$(q "select case when count(*)>0 then 'yes' end from auth_audit")"
 
 if [ "$SKIP_RELOAD" = 0 ]; then
@@ -150,7 +150,7 @@ echo "### 11. ConfigMap 热加载：lab-image 价格 0.04 → 0.05，30s 内生�
   # kubelet 同步 ConfigMap 卷（最长 ~1min）+ loom 30s 轮询：逐个副本轮询管理 API，直到所有副本都看到新价
   all_pods_new_price() {
     for pod in $(kubectl -n loom get pods -l app=loom -o name); do
-      kubectl -n loom exec "$pod" -- wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:9100/v1/pricing 2>/dev/null | grep -q '"model_price":0.05' || return 1
+      kubectl -n loom exec "$pod" -- wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:9090/v1/pricing 2>/dev/null | grep -q '"model_price":0.05' || return 1
     done
     return 0
   }
@@ -160,11 +160,11 @@ echo "### 11. ConfigMap 热加载：lab-image 价格 0.04 → 0.05，30s 内生�
   sleep 4
   check "lab-image after reload = 50,000,000" 50000000 "$(q "select cost_nanos from usage_events where model='lab-image' order by id desc limit 1")"
   kubectl -n loom create configmap loom-pricing --from-file=pricing.yaml=/opt/agentgateway/loom/configs/pricing.yaml --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-  RELOADS=$(kubectl -n loom exec deploy/loom -- wget -qO- http://127.0.0.1:9102/metrics | awk -F' ' '/^loom_pricing_reload_total\{result="ok"\}/{s+=$2} END{print int(s)}')
+  RELOADS=$(kubectl -n loom exec deploy/loom -- wget -qO- http://127.0.0.1:9090/metrics | awk -F' ' '/^loom_pricing_reloads_total\{result="ok"\}/{s+=$2} END{print int(s)}')
   check "pricing reload counter ≥ 2" yes "$([ "${RELOADS:-0}" -ge 2 ] && echo yes || echo no:$RELOADS)"
 fi
 
-echo "### 13. RLS 同步结算通道：响应完成后网关 amend → loom :9004，先于 OTLP 入库"
+echo "### 13. RLS 同步结算通道：响应完成后网关 amend → loom data 端口，先于 OTLP 入库"
 dave_rows() { q "select count(*) from usage_events where model='lab-model' and account_id=(select id from accounts where name='dave')"; }
 BEFORE=$(dave_rows)
 curl -s -o /dev/null -m 60 -X POST -H "x-api-key: $(key dave)" -H 'content-type: application/json' -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' $BASE/v1/chat/completions
@@ -174,10 +174,10 @@ STREAM_USAGE=$(curl -s -N -m 60 -X POST -H "x-api-key: $(key dave)" -H 'content-
 check "stream response carries usage" 1000 "$STREAM_USAGE"
 sleep 1
 check "stream settled by rls within 1s" $((BEFORE+2)) "$(dave_rows)"
-M2=$(for pod in $(kubectl -n loom get pods -l app=loom -o name); do kubectl -n loom exec "$pod" -- wget -qO- http://127.0.0.1:9102/metrics 2>/dev/null; done)
-check "rls amend calls observed" yes "$(echo "$M2" | grep -q '^loom_rls_calls_total{type="amend"}' && echo yes)"
-check "rls channel inserted rows" yes "$(echo "$M2" | grep -E '^loom_usage_settled_total\{channel="rls",inserted="true"\} [1-9]' | grep -q . && echo yes)"
-check "otlp duplicates blocked by idempotency key" yes "$(echo "$M2" | grep -E '^loom_usage_settled_total\{channel="otlp",inserted="false"\} [1-9]' | grep -q . && echo yes)"
+M2=$(for pod in $(kubectl -n loom get pods -l app=loom -o name); do kubectl -n loom exec "$pod" -- wget -qO- http://127.0.0.1:9090/metrics 2>/dev/null; done)
+check "rls amend calls observed" yes "$(echo "$M2" | grep -q '^loom_ratelimit_calls_total{phase="amend"}' && echo yes)"
+check "rls channel inserted rows" yes "$(echo "$M2" | grep -E '^loom_ledger_settlements_total\{channel="rls",inserted="true"\} [1-9]' | grep -q . && echo yes)"
+check "otlp duplicates blocked by idempotency key" yes "$(echo "$M2" | grep -E '^loom_ledger_settlements_total\{channel="otlp",inserted="false"\} [1-9]' | grep -q . && echo yes)"
 echo "### 14. 单通道独立性：移除 OTLP access log 策略，仅靠 RLS 也能结算；恢复后两通道并存"
 kubectl -n loom delete agentgatewaypolicy gateway-access-log >/dev/null; sleep 3
 BEFORE=$(dave_rows)

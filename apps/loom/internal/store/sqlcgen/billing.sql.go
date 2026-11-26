@@ -128,7 +128,7 @@ func (q *Queries) GetReservation(ctx context.Context, requestID string) (Reserva
 }
 
 const listAudit = `-- name: ListAudit :many
-SELECT id, time, request_id, client_request_id, key_id, account_id, source, model, allowed, status, reason FROM auth_audit
+SELECT id, time, request_id, client_request_id, key_id, account_id, protocol, model, allowed, reason FROM auth_audit
 WHERE ($1::uuid IS NULL OR key_id = $1)
 ORDER BY time DESC
 LIMIT $2
@@ -155,10 +155,9 @@ func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]AuthAud
 			&i.ClientRequestID,
 			&i.KeyID,
 			&i.AccountID,
-			&i.Source,
+			&i.Protocol,
 			&i.Model,
 			&i.Allowed,
-			&i.Status,
 			&i.Reason,
 		); err != nil {
 			return nil, err

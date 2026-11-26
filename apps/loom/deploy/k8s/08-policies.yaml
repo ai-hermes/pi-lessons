@@ -1,4 +1,4 @@
-# extAuth 策略：网关 POST loom:9001/check，2xx 放行并把 allowedResponseHeaders 复制到上游请求；
+# extAuth 策略：网关 POST loom:8080/check，2xx 放行并把 allowedResponseHeaders 复制到上游请求；
 # 其他状态码 + 响应体原样回给调用方。forwardBody 让 loom 能读到请求体里的 model 做定价与预扣。
 # 同一策略里的 headerModifiers 在放行后删除调用方凭据，避免流向模型供应商。
 apiVersion: agentgateway.dev/v1alpha1
@@ -15,7 +15,7 @@ spec:
     extAuth:
       backendRef:
         name: loom
-        port: 9001
+        port: 8080
       forwardBody:
         maxSize: 1Mi
       http:
@@ -26,13 +26,13 @@ spec:
     headerModifiers:
       request:
         remove: [authorization, x-api-key]
-    # 同步结算通道：响应完成后网关按 cost CEL（已归一化的 token 数）回调 loom :9004（amend），与 OTLP 补账共用 request_id 幂等。
+    # 同步结算通道：响应完成后网关按 cost CEL（已归一化的 token 数）回调 loom :8080（RateLimitService amend），与 OTLP 补账共用 request_id 幂等。
     # 请求阶段的 check 调用 hits_addend=0，loom 恒返回 OK；额度门禁由 extAuth 负责，所以这里 FailOpen。
     rateLimit:
       global:
         domain: loom-billing
         failureMode: FailOpen
-        backendRef: {name: loom, port: 9004}
+        backendRef: {name: loom, port: 8080}
         descriptors:
         - unit: Tokens
           entries:
@@ -73,7 +73,7 @@ spec:
     name: pg-chat
   traffic:
     extAuth:
-      backendRef: {name: loom, port: 9001}
+      backendRef: {name: loom, port: 8080}
       forwardBody: {maxSize: 1Mi}
       http:
         path: '"/check"'
@@ -83,13 +83,13 @@ spec:
     headerModifiers:
       request:
         remove: [authorization, x-api-key]
-    # 同步结算通道：响应完成后网关按 cost CEL（已归一化的 token 数）回调 loom :9004（amend），与 OTLP 补账共用 request_id 幂等。
+    # 同步结算通道：响应完成后网关按 cost CEL（已归一化的 token 数）回调 loom :8080（RateLimitService amend），与 OTLP 补账共用 request_id 幂等。
     # 请求阶段的 check 调用 hits_addend=0，loom 恒返回 OK；额度门禁由 extAuth 负责，所以这里 FailOpen。
     rateLimit:
       global:
         domain: loom-billing
         failureMode: FailOpen
-        backendRef: {name: loom, port: 9004}
+        backendRef: {name: loom, port: 8080}
         descriptors:
         - unit: Tokens
           entries:
@@ -126,7 +126,7 @@ spec:
     name: media
   traffic:
     extAuth:
-      backendRef: {name: loom, port: 9001}
+      backendRef: {name: loom, port: 8080}
       forwardBody: {maxSize: 1Mi}
       http:
         path: '"/check"'
@@ -155,7 +155,7 @@ spec:
     name: embeddings
   traffic:
     extAuth:
-      backendRef: {name: loom, port: 9001}
+      backendRef: {name: loom, port: 8080}
       forwardBody: {maxSize: 1Mi}
       http:
         path: '"/check"'
@@ -179,7 +179,7 @@ spec:
     name: echo
   traffic:
     extAuth:
-      backendRef: {name: loom, port: 9001}
+      backendRef: {name: loom, port: 8080}
       http:
         path: '"/check"'
         allowedRequestHeaders: [authorization, x-api-key, x-request-id]
@@ -202,7 +202,7 @@ spec:
     name: grpc-echo
   traffic:
     extAuth:
-      backendRef: {name: loom, port: 9002}
+      backendRef: {name: loom, port: 8080}
       grpc:
         contextExtensions:
           loom.route: grpc-echo

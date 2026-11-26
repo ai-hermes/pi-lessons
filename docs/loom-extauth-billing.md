@@ -11,7 +11,7 @@
 | 集群 | `st2-aii`（kind），集群名 `agentgateway`，宿主机 `192.168.16.62` |
 | 命名空间 | `loom`（数据面 Gateway、loom、loom-mock、PostgreSQL）；controller 在 `agentgateway` |
 | 数据面入口 | NodePort `30080` → 宿主机 `http://127.0.0.1:14001` |
-| loom 端口 | `9001` extAuth HTTP、`9002` extAuth gRPC、`9004` RLS 结算（`envoy.service.ratelimit.v3`）、`9100` 管理 API、`9101` OTLP ingest、`9102` `/metrics` |
+| loom 端口 | `8080` 数据面（h2c，仅供网关）：extAuth HTTP `/check` 与 gRPC `ext_authz`、RLS 结算、OTLP 补账；`9090` 运维面：管理 API `/v1`、`/metrics`、`/healthz`、`/readyz`、pprof |
 | 宿主机工具 | `/opt/agentgateway/k8s/bin/{kind,kubectl,helm}`、`docker`；无 go |
 | 部署目录 | 宿主机 `/opt/agentgateway/loom/{build,k8s,configs}` |
 | 本机入口 | `apps/loom`，`deploy/deploy.sh` 一键交叉编译 + 部署，`deploy/smoke.sh` 执行验收矩阵 |
@@ -32,14 +32,14 @@
 
 ```txt
 调用方 ──Authorization/x-api-key + JSON body──► Gateway loom-gateway
-   │  extAuth(forwardBody) ──► loom :9001 /check（或 :9002 ext_authz）
+   │  extAuth(forwardBody) ──► loom :8080 /check（或 gRPC ext_authz，同一端口）
    │                              ① sha256 查 Key ② 状态 ③ 请求体 model 定价 ④ 白名单 ⑤ 两级额度原子预扣
    │                              ⑥ 放行：注入 x-loom-client-id / key-id / request-id / quota-remaining / model
    │  headerModifiers 删除 authorization / x-api-key
    ▼
-AgentgatewayBackend(protocol=llm) → loom-mock ── usage ──┬─► rateLimit.global(unit=Tokens, cost=llm.*) amend ──► loom :9004 ──► 同步结算（主通道）
-                                                           └─► access log(OTLP/gRPC) ──► loom :9101 ──► 补账（同一 request_id，先到先结算）
-:9102 /metrics ──► Prometheus
+AgentgatewayBackend(protocol=llm) → loom-mock ── usage ──┬─► rateLimit.global(unit=Tokens, cost=llm.*) amend ──► loom :8080 ──► 同步结算（主通道）
+                                                           └─► access log(OTLP/gRPC) ──► loom :8080 ──► 补账（同一 request_id，先到先结算）
+:9090 /metrics ──► Prometheus
 ```
 
 端口与路径：`/v1/chat/completions` → `lab-chat`（LLM 后端）、`/pg/v1/chat/completions` → `lab-pg-chat`、`/v1/images/generations` 与 `/v1/embeddings` → `loom-mock:8080`、`/echo` 与 `/grpc` → `loom-mock:8080`。
@@ -108,9 +108,9 @@ cd apps/loom
 deploy/smoke.sh
 ```
 
-矩阵共 83 项检查，覆盖：鉴权拒绝矩阵、按量计费与预扣、分组倍率、按次计费、PG 兜底定价、embeddings、并发预扣、凭据头清理、gRPC 门面、管理 API 与指标、ConfigMap 热加载、RLS 同步结算与单通道独立性、FailClosed。脚本开头会通过管理 API 复位 `alice`、`erin` 的额度，可重复执行。
+矩阵共 82 项检查，覆盖：鉴权拒绝矩阵、按量计费与预扣、分组倍率、按次计费、PG 兜底定价、embeddings、并发预扣、凭据头清理、gRPC 门面、管理 API 与指标、ConfigMap 热加载、RLS 同步结算与单通道独立性、FailClosed。脚本开头会通过管理 API 复位 `alice`、`erin` 的额度，可重复执行。
 
-**通过标准：** 末行输出 `RESULT: PASS=83 FAIL=0`。
+**通过标准：** 末行输出 `RESULT: PASS=82 FAIL=0`。
 
 ### 3.2 关键结果实测
 
@@ -128,7 +128,7 @@ deploy/smoke.sh
 | 单通道独立性 | ✅，移除 OTLP access log 策略后仅靠 RLS 仍能结算；恢复后两通道并存 |
 | `/echo` 上游请求头 | ✅，无 `authorization` / `x-api-key`，有 `x-loom-client-id=dave` 与 `x-loom-request-id` |
 | `/grpc` gRPC 门面 | ✅，与 HTTP 门面结论一致 |
-| ConfigMap 热加载 | ✅，所有副本 ≤ 3min 生效，无需重启，`loom_pricing_reload_total` 增长 |
+| ConfigMap 热加载 | ✅，所有副本 ≤ 3min 生效，无需重启，`loom_pricing_reloads_total` 增长 |
 | loom 副本缩到 0 | ✅，`403`（FailClosed），恢复后 `200` |
 
 ### 3.3 手工发起一次计费请求
@@ -149,12 +149,12 @@ kubectl -n loom exec deploy/loom-postgres -- psql -U loom -d loom \
 ### 3.4 当前边界与风险
 
 - **结算双通道，先到先结算**：主通道是网关响应完成后的 RLS amend（同步，每请求一次 gRPC），OTLP access log 为补账。两者共用 `request_id` 幂等键，后到者不重复扣费、只补写网关金额用于对账。
-- **RLS amend 的返回值网关不看**：loom 在 amend 结算失败时返回 `RateLimitResponse.Code = ERROR(3)` 并计 `loom_ingest_errors_total{reason="rls_settle"}`，只为在网关 trace 里留下痕迹，不影响请求（响应已完成）。
+- **RLS amend 的返回值网关不看**：loom 在 amend 结算失败时返回 `RateLimitResponse.Code = ERROR(3)` 并计 `loom_ledger_settle_errors_total{channel="rls"}`，只为在网关 trace 里留下痕迹，不影响请求（响应已完成）。
 - **RLS amend 不重试**：网关源码里 amend 以 `tokio::spawn` 发出并忽略结果（`crates/agentgateway/src/http/remoteratelimit.rs`），loom 不可用期间该次结算会丢，此时依赖 OTLP 补账；两条通道都丢才会落到预扣过期释放（`loom_reservations_expired_total` 增长即为信号）。策略 `failureMode: FailOpen`，结算通道故障不影响转发。
 - `extAuth.cache` 不能开启：命中缓存的请求不会预扣。
-- 网关 `modelCatalog` 不表达分组倍率：非 `default` 分组的账户，loom 金额 ≠ 网关金额是设计内行为，`loom_cost_mismatch_total` 对这类账户跳过。
+- 网关 `modelCatalog` 不表达分组倍率：非 `default` 分组的账户，loom 金额 ≠ 网关金额是设计内行为，`loom_ledger_cost_mismatch_total` 对这类账户跳过。
 - 只按 token 计费的模型必须经 `AgentgatewayBackend(protocol=llm)` 转发才有 usage；普通 HTTP 透传的路由（如当前 `/v1/embeddings`）token 为 0、费用为 0。
-- OTLP 补账通道可丢：ingest 队列满即丢弃并计 `loom_ingest_dropped_total`；按次计费的纯 HTTP 路由（如 `/v1/images/generations`）没有 `llm.*` 用量，仍只走 OTLP。
+- OTLP 补账通道可丢：ingest 队列满即丢弃并计 `loom_otlp_dropped_total`；按次计费的纯 HTTP 路由（如 `/v1/images/generations`）没有 `llm.*` 用量，仍只走 OTLP。
 - 以 loom 计价表为准扣费（`billing.cost_source: loom`）；网关金额只做对账。
 
 ## 四、日常运维
@@ -164,22 +164,22 @@ kubectl -n loom exec deploy/loom-postgres -- psql -U loom -d loom \
 ```bash
 kubectl -n loom get pods
 kubectl -n loom logs deploy/loom --tail=100
-kubectl -n loom port-forward svc/loom 9102:9102 && curl localhost:9102/metrics | grep ^loom_
+kubectl -n loom port-forward svc/loom 9090:9090 && curl localhost:9090/metrics | grep ^loom_
 ```
 
-**通过标准：** 日志中每条决策有 `request_id` / `key_id` / `reason` / `model`；`/metrics` 有 `loom_auth_decisions_total`、`loom_quota_remaining_nanos`、`loom_reservations_open`。
+**通过标准：** 日志中每条结论有 `request_id` / `key_id` / `reason` / `model`；`/metrics` 有 `loom_admission_decisions_total`、`loom_ledger_remaining_nanos`、`loom_ledger_reservations_open`。
 
 ### 4.2 管理 API
 
 ```bash
-kubectl -n loom port-forward svc/loom 9100:9100
+kubectl -n loom port-forward svc/loom 9090:9090
 T=loom-admin-token-change-me
 H="Authorization: Bearer $T"
-curl -s -H "$H" localhost:9100/v1/accounts | jq
-curl -s -H "$H" localhost:9100/v1/usage/summary | jq
-curl -s -X POST -H "$H" -H 'content-type: application/json' localhost:9100/v1/accounts \
+curl -s -H "$H" localhost:9090/v1/accounts | jq
+curl -s -H "$H" localhost:9090/v1/usage/summary | jq
+curl -s -X POST -H "$H" -H 'content-type: application/json' localhost:9090/v1/accounts \
   -d '{"name":"acme","tenant":"t1","group":"vip","quota_limit_nanos":50000000000}'
-curl -s -X POST -H "$H" -H 'content-type: application/json' localhost:9100/v1/keys \
+curl -s -X POST -H "$H" -H 'content-type: application/json' localhost:9090/v1/keys \
   -d '{"account_id":"<uuid>","name":"prod","quota_limit_nanos":10000000000,"model_allowlist":["lab-model"]}'
 ```
 
@@ -191,7 +191,7 @@ ConfigMap 为主、PG 表兜底，两条路径都不需要重启：
 
 ```bash
 kubectl -n loom create configmap loom-pricing --from-file=pricing.yaml=apps/loom/configs/pricing.yaml --dry-run=client -o yaml | kubectl apply -f -
-curl -X PUT -H "$H" -H 'content-type: application/json' localhost:9100/v1/pricing/<model> -d '{"model_ratio":0.3,"completion_ratio":2,"cache_ratio":0.1}'
+curl -X PUT -H "$H" -H 'content-type: application/json' localhost:9090/v1/pricing/<model> -d '{"model_ratio":0.3,"completion_ratio":2,"cache_ratio":0.1}'
 ```
 
 修改前先备份：`kubectl -n loom get configmap loom-pricing -o yaml > pricing.bak.yaml`。生效需 kubelet 同步 ConfigMap 卷（≤ 1 min）+ `pricing.reload_interval`（30s）。
@@ -211,9 +211,9 @@ kubectl -n loom scale deploy/loom --replicas=0
 - 现象：所有请求 `401 missing_credential`。先查策略 `allowedRequestHeaders` 是否包含 `authorization` / `x-api-key`；常见原因是只配了 `path` 没配转发头。
 - 现象：请求体里的 `model` 定价总是 `model_not_priced`。先查策略是否有 `forwardBody.maxSize`；没有它 loom 看不到请求体，`x-loom-model` 头也为空。
 - 现象：`GET /echo` 返回 `405`。loom 的 `/check` 不限方法；若自建鉴权服务只注册 `POST /check`，网关对 GET 请求会以 GET 发起校验并被原样透传 `405`。
-- 现象：同一 Key 连续请求第二次就 `403 insufficient_quota`，额度明明够。先查上一次的预扣是否已结算（`loom_reservations_open`、`reservations` 表）；常见原因是结算延迟未到就发了下一次，或 access log 没送到 `:9101`（看 `loom_usage_events_ingested_total`）。
-- 现象：RLS 没有结算、`loom_rls_calls_total{type="amend"}` 不增长。先查策略 `rateLimit.global.domain` 与 `billing.rls_domain` 是否一致（不一致 loom 直接返回 OK 不处理）；再查 `cost` CEL 是否引用了 `llm.inputTokens / cachedInputTokens / outputTokens`，以及请求头里是否有 extAuth 注入的 `x-loom-request-id`（extAuth 在限流之前执行）。
-- 现象：`usage_events.gateway_cost_nanos` 为空。说明该行由 RLS 先结算且 OTLP 尚未到达或已丢；等 `flush_interval` 后仍为空即为补账通道丢失，看 `loom_usage_settled_total{channel="otlp",inserted="false"}` 是否增长。
+- 现象：同一 Key 连续请求第二次就 `403 insufficient_quota`，额度明明够。先查上一次的预扣是否已结算（`loom_ledger_reservations_open`、`reservations` 表）；常见原因是结算延迟未到就发了下一次，或 RLS 与 OTLP 都没送到 `:8080`（看 `loom_usage_events_ingested_total`）。
+- 现象：RLS 没有结算、`loom_ratelimit_calls_total{phase="amend"}` 不增长。先查策略 `rateLimit.global.domain` 与 `ratelimit.domain` 是否一致（不一致 loom 直接返回 OK 不处理）；再查 `cost` CEL 是否引用了 `llm.inputTokens / cachedInputTokens / outputTokens`，以及请求头里是否有 extAuth 注入的 `x-loom-request-id`（extAuth 在限流之前执行）。
+- 现象：`usage_events.gateway_cost_nanos` 为空。说明该行由 RLS 先结算且 OTLP 尚未到达或已丢；等 `flush_interval` 后仍为空即为补账通道丢失，看 `loom_ledger_settlements_total{channel="otlp",inserted="false"}` 是否增长。
 - 现象：loom 金额与网关 `agw.ai.usage.cost.total` 不一致。先查账户分组倍率是否为 `1`；`vip` 等分组下网关 catalog 不表达倍率，属设计内；再查 ConfigMap 与 `loom-catalog` 是否同源（`make catalog` 重新渲染）。
 - 现象：Controller 报 Gateway `Programmed=False` 或 Deployment 冲突。Gateway 不能命名为 `loom`：controller 会以 Gateway 名创建同名 Deployment，与服务 Deployment 冲突；本环境用 `loom-gateway`。
 - 现象：某模型只改了 PG `model_pricing` 表但价格没变。先查 `GET /v1/pricing` 的 `pg` 段；PG 兜底有 `pricing_ttl`（30s）正缓存，管理 API 写入会主动清缓存，直接改库需等缓存过期。

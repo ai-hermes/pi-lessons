@@ -2,16 +2,19 @@
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 TAG      ?= $(VERSION)-$(shell date +%Y%m%d%H%M%S)
 
-.PHONY: build test vet fmt sqlc cross image deploy deploy-fresh smoke run mock tidy clean
+.PHONY: build test vet lint fmt sqlc cross catalog check deploy deploy-fresh smoke run mock tidy clean
 
 build:            ## 本机构建
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/loom ./cmd/loom && go build -o bin/loom-mock ./cmd/loom-mock
 
-test:             ## 单元测试（PG 集成测试需 LOOM_TEST_DSN）
-	go test ./... $(if $(LOOM_TEST_DSN),,-short)
+test:             ## 单元测试（含 race 检测）
+	go test -race ./...
 
 vet:
 	go vet ./...
+
+lint:             ## golangci-lint（规则见 .golangci.yml）
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run ./...
 
 fmt:
 	gofmt -w cmd internal pkg
@@ -33,7 +36,7 @@ catalog:          ## 从 pricing.yaml 渲染网关 catalog.json
 check:            ## 校验配置并打印生效价目表
 	go run ./cmd/loom check-config --config configs/config.yaml
 
-run:              ## 本地运行（需要 PG；LOOM_POSTGRES_DSN / LOOM_ADMIN_TOKEN）
+run:              ## 本地运行：数据面 :8080、运维面 :9090（需要 PG；LOOM_POSTGRES_DSN / LOOM_ADMIN_TOKEN）
 	go run ./cmd/loom serve --config configs/config.yaml
 
 mock:             ## 本地伪 OpenAI 后端 :8080

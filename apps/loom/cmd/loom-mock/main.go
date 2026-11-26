@@ -15,10 +15,10 @@ import (
 )
 
 type usage struct {
-	PromptTokens        int64                  `json:"prompt_tokens"`
-	CompletionTokens    int64                  `json:"completion_tokens"`
-	TotalTokens         int64                  `json:"total_tokens"`
-	PromptTokensDetails map[string]interface{} `json:"prompt_tokens_details"`
+	PromptTokens        int64          `json:"prompt_tokens"`
+	CompletionTokens    int64          `json:"completion_tokens"`
+	TotalTokens         int64          `json:"total_tokens"`
+	PromptTokensDetails map[string]any `json:"prompt_tokens_details"`
 }
 
 var (
@@ -39,7 +39,7 @@ func main() {
 		mux.HandleFunc("POST "+prefix+"/contents/generations/tasks", images)
 	}
 	mux.HandleFunc("/echo", echo)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	log.Printf("loom-mock listening on %s (in=%d cached=%d out=%d)", addr, inTokens, cachedToks, outTokens)
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
@@ -60,7 +60,7 @@ func (r chatReq) usage() usage {
 		in, out, cached = r.MockUsage.Input, r.MockUsage.Output, r.MockUsage.Cached
 	}
 	return usage{PromptTokens: in, CompletionTokens: out, TotalTokens: in + out,
-		PromptTokensDetails: map[string]interface{}{"cached_tokens": int(cached)}}
+		PromptTokensDetails: map[string]any{"cached_tokens": int(cached)}}
 }
 
 func chat(w http.ResponseWriter, r *http.Request) {
@@ -80,40 +80,44 @@ func chat(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
 		flusher, _ := w.(http.Flusher)
 		chunk := func(delta string, finish string) string {
-			c := map[string]interface{}{
+			c := map[string]any{
 				"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": req.Model,
-				"choices": []map[string]interface{}{{"index": 0, "delta": map[string]string{"content": delta}, "finish_reason": finish}},
+				"choices": []map[string]any{
+					{"index": 0, "delta": map[string]string{"content": delta}, "finish_reason": finish},
+				},
 			}
 			b, _ := json.Marshal(c)
 			return "data: " + string(b) + "\n\n"
 		}
-		fmt.Fprint(w, chunk("OK", ""))
+		_, _ = fmt.Fprint(w, chunk("OK", ""))
 		if flusher != nil {
 			flusher.Flush()
 		}
-		final := map[string]interface{}{
+		final := map[string]any{
 			"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": req.Model,
-			"choices": []map[string]interface{}{{"index": 0, "delta": map[string]string{}, "finish_reason": "stop"}},
+			"choices": []map[string]any{{"index": 0, "delta": map[string]string{}, "finish_reason": "stop"}},
 			"usage":   u,
 		}
 		b, _ := json.Marshal(final)
-		fmt.Fprint(w, "data: "+string(b)+"\n\n")
-		fmt.Fprint(w, "data: [DONE]\n\n")
+		_, _ = fmt.Fprint(w, "data: "+string(b)+"\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 		return
 	}
-	resp := map[string]interface{}{
+	resp := map[string]any{
 		"id": id, "object": "chat.completion", "created": time.Now().Unix(), "model": req.Model,
-		"choices": []map[string]interface{}{{"index": 0, "message": map[string]string{"role": "assistant", "content": "OK"}, "finish_reason": "stop"}},
-		"usage":   u,
+		"choices": []map[string]any{
+			{"index": 0, "message": map[string]string{"role": "assistant", "content": "OK"}, "finish_reason": "stop"},
+		},
+		"usage": u,
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func embeddings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Model string        `json:"model"`
-		Input []interface{} `json:"input"`
+		Model string `json:"model"`
+		Input []any  `json:"input"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Model == "" {
 		httpError(w, 400, "MissingParameter", "model is required")
@@ -123,29 +127,29 @@ func embeddings(w http.ResponseWriter, r *http.Request) {
 	if n == 0 {
 		n = 1
 	}
-	data := make([]map[string]interface{}, 0, n)
+	data := make([]map[string]any, 0, n)
 	for i := 0; i < n; i++ {
 		vec := make([]float64, 8)
 		for j := range vec {
 			vec[j] = 0.1
 		}
-		data = append(data, map[string]interface{}{"object": "embedding", "index": i, "embedding": vec})
+		data = append(data, map[string]any{"object": "embedding", "index": i, "embedding": vec})
 	}
 	u := chatReq{}.usage()
 	u.PromptTokens, u.CompletionTokens, u.TotalTokens = int64(n)*10, 0, int64(n)*10
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"object": "list", "data": data, "model": req.Model, "usage": u})
+	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data, "model": req.Model, "usage": u})
 }
 
 func images(w http.ResponseWriter, r *http.Request) {
-	var req map[string]interface{}
+	var req map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req["model"] == nil {
 		httpError(w, 400, "MissingParameter", "model is required")
 		return
 	}
 	model, _ := req["model"].(string)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"created": time.Now().Unix(),
 		"data":    []map[string]string{{"url": "https://example.invalid/mock.png"}},
 		"model":   model,
@@ -158,13 +162,14 @@ func echo(w http.ResponseWriter, r *http.Request) {
 		headers[strings.ToLower(k)] = strings.Join(v, ",")
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"method": r.Method, "path": r.URL.Path, "headers": headers})
+	_ = json.NewEncoder(w).Encode(map[string]any{"method": r.Method, "path": r.URL.Path, "headers": headers})
 }
 
 func httpError(w http.ResponseWriter, status int, code, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]interface{}{"error": map[string]interface{}{"code": code, "message": msg, "type": "invalid_request_error"}})
+	body := map[string]any{"error": map[string]any{"code": code, "message": msg, "type": "invalid_request_error"}}
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 func envInt(k string, def int64) int64 {
