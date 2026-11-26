@@ -500,3 +500,23 @@ kubectl -n agentgateway get deploy           # 预期 controller 仍 1/1
 - [ ] `deploy/smoke.sh` 增加一项：对比 `kubectl get configmap loom-pricing` 的 sha256 与 `loom-pricing` 注解，以及 `loom-catalog` 与本地 `render-catalog` 输出是否一致。
 - [ ] PrometheusRule：`loom_catalog_drift > 0` 持续 5 分钟告警；`loom_cost_mismatch_total` 增长率 > 0 告警（当前指标只在 `group_ratio = 1` 的账户上比较，告警文案需说明）。
 - [ ] 为 `loom_cost_mismatch_total` 增加按 `pricing_source` 的拆分，区分「ConfigMap 漂移」与「PG 兜底模型本来就不在 catalog 里」两类情况。
+
+## 十五、TODO：记账单位从 USD 改为 credit
+
+背景：loom 账本里的「USD」只是记账刻度，不涉及结算或汇率。计划改为 credit，定义为 **1 credit = 1M 个基准 token**（`model_ratio = 1`、`group_ratio = 1` 的模型）。倍率体系、整数运算、预扣/结算/幂等逻辑全部不变，只换基准常数与命名。
+
+| | 现在（USD 口径） | 改后（credit 口径） |
+| --- | --- | --- |
+| 基准价 | `ratio 1 = $2 / 1M tokens` | `ratio 1 = 1 credit / 1M tokens` |
+| 内部单位 | nano-USD，`1 USD = 1e9 nano` | nano-credit，`1 credit = 1e9 nano` |
+| 每 token 单价 | `model_ratio × group_ratio × 2000` | `model_ratio × group_ratio × 1000` |
+| lab-model（0.5 / 2 / 0.1）1000/500/200 | `1,820,000 nano = 0.00182 USD` | `910,000 nano = 0.00091 credit` |
+| 预扣 1024/1024 | `3,072,000` | `1,536,000` |
+| 按次 `model_price` | USD / 次 | credit / 次 |
+
+- [ ] `pkg/loom`：`NanoUSDPerUSD` → `NanoPerCredit`（仍为 `1e9`），`RatioBaseNanoPerToken` `2000` → `1000`；全仓库文案与字段注释从 USD 改为 credit（`*_nanos` 字段名可保留）。
+- [ ] 管理 API 响应增加 `credits`（`nanos / 1e9`）便于阅读；`x-loom-quota-remaining` 头仍用 nano 整数。
+- [ ] `render-catalog`（若保留网关 `modelCatalog`）需要 `credit_usd_price` 配置把 credit 换算成网关认的 `$/1M`；若按 14.1 方案 A 去掉 `modelCatalog`，此项作废。
+- [ ] `configs/seed.yaml`、`deploy/smoke.sh` 的期望值按上表重算（alice 额度、erin 并发、vera 分组、lab-image 按次）。
+- [ ] 按次计费模型在 credit 口径下的正式定价规则（如 `doubao-seedream-5.0-pro: {model_price: 20}` = 20 credit/次）由业务确定后更新 `pricing.yaml`。
+- [ ] 文档：README、运维手册、`pricing.yaml` 头部注释统一改为 credit，并向用户说明「1 credit = 1M 基准 token」及各模型的倍率。
