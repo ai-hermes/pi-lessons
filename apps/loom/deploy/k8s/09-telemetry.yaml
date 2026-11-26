@@ -1,4 +1,4 @@
-# Gateway 级遥测：access log 经 OTLP/gRPC 直发 loom:9101，附带 extAuth 注入的 loom.* 头作为属性，
+# Gateway 级遥测：access log 经 OTLP/gRPC 直发 loom:8080，附带 extAuth 注入的 loom.* 头作为属性，
 # 计费侧据此找到预扣记录并结算；tracing 与 metrics 只做取证与看板。
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
@@ -19,7 +19,7 @@ spec:
         - {name: loom.request.id, expression: 'request.headers["x-loom-request-id"]'}
         - {name: loom.model, expression: 'request.headers["x-loom-model"]'}
       otlp:
-        backendRef: {name: loom, port: 9101}
+        backendRef: {name: loom, port: 8080}
         protocol: GRPC
 ---
 apiVersion: agentgateway.dev/v1alpha1
@@ -35,7 +35,7 @@ spec:
   frontend:
     tracing:
       protocol: GRPC
-      backendRef: {name: loom, port: 9101}
+      backendRef: {name: loom, port: 8080}
       randomSampling: "1"
       attributes:
         add:

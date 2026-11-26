@@ -3,9 +3,30 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+)
+
+// ErrNotFound 记录不存在。
+var ErrNotFound = errors.New("store: not found")
+
+// ErrConflict 唯一约束冲突（账户名、Key 摘要等已存在）。
+var ErrConflict = errors.New("store: already exists")
+
+// ErrInsufficientQuota 条件预扣失败：剩余额度不足，或 Key / 账户已停用、已过期。
+var ErrInsufficientQuota = errors.New("store: insufficient quota")
+
+// Status 账户与 Key 的启用状态。
+type Status string
+
+// 账户与 Key 的状态取值。
+const (
+	StatusActive   Status = "active"
+	StatusDisabled Status = "disabled"
 )
 
 // Account 额度第一级。
@@ -14,7 +35,7 @@ type Account struct {
 	Name       string
 	Tenant     string
 	Group      string
-	Status     string
+	Status     Status
 	QuotaLimit *int64 // nil = 不限
 	QuotaUsed  int64
 	Reserved   int64
@@ -37,7 +58,7 @@ type Key struct {
 	Name           string
 	KeyHash        string
 	KeyPreview     string
-	Status         string
+	Status         Status
 	ModelAllowlist []string // nil = 全部模型
 	QuotaLimit     *int64   // nil = 跟随账户
 	QuotaUsed      int64
@@ -117,10 +138,9 @@ type Audit struct {
 	ClientRequestID string     `json:"client_request_id"`
 	KeyID           *uuid.UUID `json:"key_id"`
 	AccountID       *uuid.UUID `json:"account_id"`
-	Source          string     `json:"source"`
+	Protocol        string     `json:"protocol"` // 门面协议：http | grpc
 	Model           string     `json:"model"`
 	Allowed         bool       `json:"allowed"`
-	Status          int        `json:"status"`
 	Reason          string     `json:"reason"`
 }
 
@@ -157,14 +177,24 @@ type UsageFilter struct {
 	Since     *time.Time
 }
 
-// Store 持久化接口。
+// HashAPIKey 返回 API Key 明文的存储形式（sha256 十六进制）；数据库只保存摘要。
+func HashAPIKey(plaintext string) string {
+	sum := sha256.Sum256([]byte(plaintext))
+	return hex.EncodeToString(sum[:])
+}
+
+// IsActive 判断状态是否为启用。
+func (s Status) IsActive() bool { return s == StatusActive }
+
+// Store 持久化接口，由 postgres（生产）与 memstore（单测）实现。
+// 业务包不直接依赖它的全部方法，而是在各自包内声明所需的窄接口。
 type Store interface {
 	// accounts
 	GetAccount(ctx context.Context, id uuid.UUID) (Account, error)
 	GetAccountByName(ctx context.Context, name string) (Account, error)
 	ListAccounts(ctx context.Context, limit int) ([]Account, error)
 	CreateAccount(ctx context.Context, a Account) (Account, error)
-	UpdateAccount(ctx context.Context, id uuid.UUID, status string, quotaLimit *int64, group string) (Account, error)
+	UpdateAccount(ctx context.Context, id uuid.UUID, status Status, quotaLimit *int64, group string) (Account, error)
 	AddAccountQuotaLimit(ctx context.Context, id uuid.UUID, delta int64) (Account, error)
 	// SetAccountQuota 管理用：直接设置额度上限与已用量，清空预扣。
 	SetAccountQuota(ctx context.Context, id uuid.UUID, limit *int64, used int64) error
@@ -174,7 +204,15 @@ type Store interface {
 	GetKey(ctx context.Context, id uuid.UUID) (Key, error)
 	ListKeys(ctx context.Context, accountID *uuid.UUID, limit int) ([]Key, error)
 	CreateKey(ctx context.Context, k Key, allowlist []string) (Key, error)
-	UpdateKey(ctx context.Context, id uuid.UUID, status string, allowlist []string, quotaLimit *int64, expiresAt *time.Time, name string) (Key, error)
+	UpdateKey(
+		ctx context.Context,
+		id uuid.UUID,
+		status Status,
+		allowlist []string,
+		quotaLimit *int64,
+		expiresAt *time.Time,
+		name string,
+	) (Key, error)
 	// SetKeyQuota 管理用：直接设置额度上限与已用量，清空预扣。
 	SetKeyQuota(ctx context.Context, id uuid.UUID, limit *int64, used int64) error
 
@@ -210,5 +248,5 @@ type Store interface {
 	UpsertModelPricing(ctx context.Context, p ModelPrice) error
 	DeleteModelPricing(ctx context.Context, model string) error
 
-	Close() error
+	Close()
 }

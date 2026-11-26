@@ -8,11 +8,13 @@
 | `01-gateway.yaml` | Gateway `loom-gateway` + `AgentgatewayParameters`（NodePort `30080`、`modelCatalog`） |
 | `03-secret.yaml` | PG DSN、admin token（演示占位） |
 | `04-postgres.yaml` | PostgreSQL 15 + PVC |
-| `05-loom.yaml` | loom Deployment（2 副本 + PDB）+ Service + SA |
+| `05-loom.yaml` | loom Deployment（2 副本 + PDB）+ Service（`data` 8080 / `ops` 9090）+ SA |
 | `05b-seed-job.yaml` | 幂等 seed Job |
 | `06-backends.yaml` | loom-mock + `AgentgatewayBackend` × 2 |
 | `07-routes.yaml` | HTTPRoute × 6 |
-| `08-policies.yaml` | extAuth（HTTP/gRPC）、凭据头清理、媒体限流、重试、RLS 同步结算（`rateLimit.global` + `cost: llm.*`） |
-| `09-telemetry.yaml` | Gateway 级 access log / tracing / metrics 标签 |
+| `08-policies.yaml` | extAuth（HTTP/gRPC）、凭据头清理、媒体限流、重试、RLS 同步结算（`rateLimit.global` + `cost: llm.*`）；`backendRef` 均指向 `loom:8080` |
+| `09-telemetry.yaml` | Gateway 级 access log / tracing（OTLP → `loom:8080`）/ metrics 标签 |
 
 注意：Gateway 不能命名为 `loom`，controller 会以 Gateway 名创建同名 Deployment。
+
+网关调用的所有能力（extAuth HTTP 与 gRPC、RateLimitService、OTLP）都在 `loom:8080` 一个 h2c 端口上；`9090` 是运维端口，不要配进网关策略。

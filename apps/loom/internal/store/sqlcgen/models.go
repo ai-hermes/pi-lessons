@@ -48,10 +48,9 @@ type AuthAudit struct {
 	ClientRequestID string
 	KeyID           *uuid.UUID
 	AccountID       *uuid.UUID
-	Source          string
+	Protocol        string
 	Model           string
 	Allowed         bool
-	Status          int32
 	Reason          string
 }
 
