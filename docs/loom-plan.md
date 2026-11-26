@@ -482,3 +482,21 @@ kubectl -n agentgateway get deploy           # 预期 controller 仍 1/1
   - 网关 `modelCatalog` 不表达分组倍率，非 `default` 分组账户跳过对账指标。
   - 结算异步（`flush_interval 2s`），同一 Key 连续请求存在预扣未释放的短窗口；已记录在运维手册「当前边界与风险」。
 - 运维手册：[docs/loom-extauth-billing.md](./loom-extauth-billing.md)。
+
+## 十四、TODO：防止定价配置漂移
+
+背景：`pricing.yaml`（loom 计价）与 `catalog.json`（网关 `modelCatalog`）目前是「一个源 + 一个构建产物」，但集群里同时存在 `loom-pricing` 与 `loom-catalog` 两个 ConfigMap，任何一侧被手工 `kubectl edit` 都会产生漂移，表现为看板金额与账单不一致。两条线并行推进，先做流程再做校验；在此之前账单以 loom 为准，网关金额只做对账。
+
+### 14.1 流程：从源头消灭手工改 ConfigMap 的机会
+
+- [ ] 定价变更只允许通过 Git 进行：修改 `apps/loom/configs/pricing.yaml` → PR → 合并后由 `deploy/deploy.sh`（非 `--fresh`）统一重新生成 `loom-pricing` 与 `loom-catalog`，禁止 `kubectl edit` 两个 ConfigMap；在 `deploy/k8s/README.md` 与运维手册「修改价格」一节写明，并给两个 ConfigMap 加注解 `loom.ansible/managed-by: deploy.sh`。
+- [ ] 评估是否移除网关 `modelCatalog`（方案 A）：若生产看板不消费 `agw.ai.usage.cost.*`，从 `01-gateway.yaml` 删掉 `modelCatalog`、`deploy.sh` 不再生成 `loom-catalog`，smoke 删除两条对账断言，`render-catalog` 降级为可选工具。决策人：dingwenjiang。
+- [ ] `deploy.sh` 在 apply 之前用 `loom check-config` 校验 `pricing.yaml` 可解析，并把 `pricing.yaml` 的 sha256 写进 `loom-pricing` 的注解，账单争议时可追溯到具体版本。
+- [ ] PG 兜底定价（`model_pricing`）同样纳入流程：只允许通过管理 API `PUT /v1/pricing/<model>` 写入并记录操作审计（当前没有审计），禁止直接改库。
+
+### 14.2 校验：漂移发生时能被发现
+
+- [ ] loom 启动及每次热加载时，把 `RenderCatalog(spec)` 与挂载进来的 `loom-catalog` 逐模型比对，不一致则设置指标 `loom_catalog_drift{model}` = 1 并打 WARN 日志；需要把 `loom-catalog` 以只读方式挂进 loom Pod。
+- [ ] `deploy/smoke.sh` 增加一项：对比 `kubectl get configmap loom-pricing` 的 sha256 与 `loom-pricing` 注解，以及 `loom-catalog` 与本地 `render-catalog` 输出是否一致。
+- [ ] PrometheusRule：`loom_catalog_drift > 0` 持续 5 分钟告警；`loom_cost_mismatch_total` 增长率 > 0 告警（当前指标只在 `group_ratio = 1` 的账户上比较，告警文案需说明）。
+- [ ] 为 `loom_cost_mismatch_total` 增加按 `pricing_source` 的拆分，区分「ConfigMap 漂移」与「PG 兜底模型本来就不在 catalog 里」两类情况。
