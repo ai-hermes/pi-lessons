@@ -14,6 +14,7 @@ type Querier interface {
 	AddAccountQuotaLimit(ctx context.Context, arg AddAccountQuotaLimitParams) (Account, error)
 	AddAccountUsed(ctx context.Context, arg AddAccountUsedParams) error
 	AddKeyUsed(ctx context.Context, arg AddKeyUsedParams) error
+	BackfillGatewayCost(ctx context.Context, arg BackfillGatewayCostParams) (int64, error)
 	CountReservations(ctx context.Context) (int64, error)
 	CreateAccount(ctx context.Context, arg CreateAccountParams) (Account, error)
 	CreateKey(ctx context.Context, arg CreateKeyParams) (ApiKey, error)

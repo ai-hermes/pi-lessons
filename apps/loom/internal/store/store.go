@@ -191,6 +191,8 @@ type Store interface {
 	CountReservations(ctx context.Context) (int64, error)
 	// SettleUsage 单事务：幂等插入 usage_event → 按预扣记录结算或直接累加 → 删除预扣。返回是否真正插入。
 	SettleUsage(ctx context.Context, ev UsageEvent) (bool, error)
+	// BackfillGatewayCost 在另一条通道已先结算时补写网关金额（只填空值），返回是否更新。
+	BackfillGatewayCost(ctx context.Context, requestID string, nanos int64) (bool, error)
 	// ReleaseExpiredReservations 单事务：锁定过期的预扣、释放两级额度、删除记录，返回释放条数。
 	ReleaseExpiredReservations(ctx context.Context, now time.Time, limit int) (int, error)
 

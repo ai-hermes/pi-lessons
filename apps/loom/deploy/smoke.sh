@@ -103,14 +103,17 @@ echo "### 6. embeddings 路由"
 check "dave embeddings → 200" 200 "$(code -X POST -H "x-api-key: $(key dave)" -H 'content-type: application/json' -d '{"model":"lab-model","input":["a"]}' $BASE/v1/embeddings)"
 check "dave images → 200" 200 "$(code -X POST -H "x-api-key: $(key dave)" -H 'content-type: application/json' -d '{"model":"lab-image","prompt":"cat"}' $BASE/v1/images/generations)"
 
-echo "### 7. 并发预扣：erin 额度 15,360,000 = 5 × 3,072,000，并发 20 次恰好 5 次 200"
+echo "### 7. 并发预扣：erin 额度 15,360,000 = 5 × 3,072,000；并发 20 次不得超额（RLS 同步结算会让早完成的请求释放预扣，故 200 次数 ≥ 5）"
 cat > /tmp/loom-req.sh <<'REQ'
 curl -s -o /dev/null -w '%{http_code}\n' --max-time 60 -X POST -H 'x-api-key: loom-demo-erin-000000000000000006' -H 'content-type: application/json' -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' http://127.0.0.1:14001/v1/chat/completions
 REQ
 RESULT=$(seq 1 20 | xargs -P 20 -I{} sh /tmp/loom-req.sh | sort | uniq -c | awk '{print $2"="$1}' | tr '\n' ' ')
-check "erin concurrent → 5×200 15×403" "200=5 403=15 " "$RESULT"
+OK_COUNT=$(echo "$RESULT" | tr ' ' '\n' | awk -F= '$1==200{print $2}')
+check "erin concurrent → 200 ≥ 5 and 200 + 403 = 20" "yes" "$([ "${OK_COUNT:-0}" -ge 5 ] && [ "$RESULT" = "200=$OK_COUNT 403=$((20-OK_COUNT)) " ] && echo yes || echo "no: $RESULT")"
 sleep 4
 check "erin reserved back to 0" 0 "$(q "select reserved from api_keys where account_id=(select id from accounts where name='erin')")"
+check "erin quota_used ≤ quota_limit (从不超额)" yes "$(q "select case when quota_used <= quota_limit then 'yes' else 'no: '||quota_used end from api_keys where account_id=(select id from accounts where name='erin')")"
+check "erin charged = 200 次数 × 1,820,000" "$((OK_COUNT*1820000))" "$(q "select quota_used from api_keys where account_id=(select id from accounts where name='erin')")"
 
 echo "### 8. 凭据头清理与 identity 注入（/echo 回显上游收到的请求头）"
 check "echo GET no credential → 401" 401 "$(code $BASE/echo)"
@@ -132,7 +135,7 @@ check "admin usage summary has rows" yes "$(admin '/v1/usage/summary' | grep -q 
 check "admin pricing view has pg row" 1 "$(admin /v1/pricing | grep -o '"model":"lab-pg-only"' | wc -l | tr -d ' ')"
 check "admin catalog has lab-model rate 1" '"input":"1"' "$(admin /v1/catalog | grep -o '"input":"1"' | head -1)"
 M=$(kubectl -n loom exec deploy/loom -- wget -qO- http://127.0.0.1:9102/metrics)
-for mname in loom_auth_decisions_total loom_auth_duration_seconds loom_pricing_lookups_total loom_quota_reserved_nanos_total loom_quota_settled_nanos_total loom_quota_remaining_nanos loom_reservations_open loom_reservations_expired_total loom_usage_events_ingested_total loom_ingest_queue_depth loom_pg_pool_acquires_total loom_build_info; do
+for mname in loom_auth_decisions_total loom_auth_duration_seconds loom_pricing_lookups_total loom_quota_reserved_nanos_total loom_quota_settled_nanos_total loom_quota_remaining_nanos loom_reservations_open loom_reservations_expired_total loom_usage_events_ingested_total loom_ingest_queue_depth loom_rls_calls_total loom_usage_settled_total loom_pg_pool_acquires_total loom_build_info; do
   check "metric $mname" yes "$(echo "$M" | grep -q "^$mname" && echo yes)"
 done
 # 带标签的 counter 在首次自增前不会出现：只要求没有 mismatch 计数（下一行）
@@ -161,8 +164,36 @@ echo "### 11. ConfigMap 热加载：lab-image 价格 0.04 → 0.05，30s 内生�
   check "pricing reload counter ≥ 2" yes "$([ "${RELOADS:-0}" -ge 2 ] && echo yes || echo no:$RELOADS)"
 fi
 
+echo "### 13. RLS 同步结算通道：响应完成后网关 amend → loom :9004，先于 OTLP 入库"
+dave_rows() { q "select count(*) from usage_events where model='lab-model' and account_id=(select id from accounts where name='dave')"; }
+BEFORE=$(dave_rows)
+curl -s -o /dev/null -m 60 -X POST -H "x-api-key: $(key dave)" -H 'content-type: application/json' -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' $BASE/v1/chat/completions
+sleep 1   # 不等 OTLP 的 2s flush：RLS 是同步的，1s 内应已入库
+check "non-stream settled by rls within 1s" $((BEFORE+1)) "$(dave_rows)"
+STREAM_USAGE=$(curl -s -N -m 60 -X POST -H "x-api-key: $(key dave)" -H 'content-type: application/json' -d '{"model":"lab-model","stream":true,"messages":[{"role":"user","content":"hi"}]}' $BASE/v1/chat/completions | grep -o '"prompt_tokens":[0-9]*' | head -1 | cut -d: -f2)
+check "stream response carries usage" 1000 "$STREAM_USAGE"
+sleep 1
+check "stream settled by rls within 1s" $((BEFORE+2)) "$(dave_rows)"
+M2=$(for pod in $(kubectl -n loom get pods -l app=loom -o name); do kubectl -n loom exec "$pod" -- wget -qO- http://127.0.0.1:9102/metrics 2>/dev/null; done)
+check "rls amend calls observed" yes "$(echo "$M2" | grep -q '^loom_rls_calls_total{type="amend"}' && echo yes)"
+check "rls channel inserted rows" yes "$(echo "$M2" | grep -E '^loom_usage_settled_total\{channel="rls",inserted="true"\} [1-9]' | grep -q . && echo yes)"
+check "otlp duplicates blocked by idempotency key" yes "$(echo "$M2" | grep -E '^loom_usage_settled_total\{channel="otlp",inserted="false"\} [1-9]' | grep -q . && echo yes)"
+echo "### 14. 单通道独立性：移除 OTLP access log 策略，仅靠 RLS 也能结算；恢复后两通道并存"
+kubectl -n loom delete agentgatewaypolicy gateway-access-log >/dev/null; sleep 3
+BEFORE=$(dave_rows)
+curl -s -o /dev/null -m 60 -X POST -H "x-api-key: $(key dave)" -H 'content-type: application/json' -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' $BASE/v1/chat/completions
+sleep 1
+check "with otlp policy removed, rls alone settles" $((BEFORE+1)) "$(dave_rows)"
+kubectl -n loom apply -f /opt/agentgateway/loom/k8s/09-telemetry.yaml >/dev/null
+for i in $(seq 1 15); do [ "$(kubectl -n loom get agentgatewaypolicy gateway-access-log -o jsonpath='{.status.ancestors[0].conditions[?(@.type=="Accepted")].status}')" = True ] && break; sleep 2; done
+check "access log policy restored" True "$(kubectl -n loom get agentgatewaypolicy gateway-access-log -o jsonpath='{.status.ancestors[0].conditions[?(@.type=="Accepted")].status}')"
+sleep 3
+curl -s -o /dev/null -m 60 -X POST -H "x-api-key: $(key dave)" -H 'content-type: application/json' -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' $BASE/v1/chat/completions
+sleep 4
+check "both channels: otlp backfills gateway cost on rls-settled row" 1820000 "$(q "select gateway_cost_nanos from usage_events where model='lab-model' and account_id=(select id from accounts where name='dave') order by id desc limit 1")"
+
 if [ "$SKIP_FAILCLOSED" = 0 ]; then
-echo "### 12. FailClosed：loom 副本缩到 0 → 拒绝；恢复 → 放行"
+echo "### 15. FailClosed：loom 副本缩到 0 → 拒绝；恢复 → 放行"
   kubectl -n loom scale deploy/loom --replicas=0 >/dev/null
   sleep 8
   C=$(code -H "x-api-key: $(key dave)" $BASE/echo)
