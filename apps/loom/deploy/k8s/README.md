@@ -12,7 +12,7 @@
 | `05b-seed-job.yaml` | 幂等 seed Job |
 | `06-backends.yaml` | loom-mock + `AgentgatewayBackend` × 2 |
 | `07-routes.yaml` | HTTPRoute × 6 |
-| `08-policies.yaml` | extAuth（HTTP/gRPC）、凭据头清理、媒体限流、重试 |
+| `08-policies.yaml` | extAuth（HTTP/gRPC）、凭据头清理、媒体限流、重试、RLS 同步结算（`rateLimit.global` + `cost: llm.*`） |
 | `09-telemetry.yaml` | Gateway 级 access log / tracing / metrics 标签 |
 
 注意：Gateway 不能命名为 `loom`，controller 会以 Gateway 名创建同名 Deployment。

@@ -7,7 +7,8 @@ API Key 与额度不再落在网关 Secret，而是由 loom 在 PostgreSQL 中�
 client ──key + body──► agentgateway ──extAuth(forwardBody)──► loom /check ──► sha256 查 Key → 定价 → 原子预扣 → 放行 + identity headers
                           │ headerModifiers 删凭据头
                           ▼
-                     LLM backend ── usage ──► access log (OTLP) ──► loom :9101 ──► usage_events + 结算预扣
+                     LLM backend ── usage ──┬─► RLS amend (per request, sync) ──► loom :9004 ──┐
+                                           └─► access log (OTLP, backup) ─────► loom :9101 ──┴─► usage_events + 结算预扣（同一 request_id 幂等）
 ```
 
 ## 计价（one-api 口径）
@@ -32,7 +33,7 @@ migrations/       goose SQL（embed）
 internal/         auth / quota / pricing / billing / store(pg=sqlc, mem) / admin / server / config / telemetry / cache
 deploy/k8s/       00-namespace … 09-telemetry
 deploy/deploy.sh  交叉编译 → scp → docker build → kind load → kubectl apply → seed
-deploy/smoke.sh   70 项验收矩阵
+deploy/smoke.sh   83 项验收矩阵
 docs/             ../docs/loom-extauth-billing.md（本仓库 docs/）
 ```
 
@@ -42,7 +43,7 @@ docs/             ../docs/loom-extauth-billing.md（本仓库 docs/）
 make test vet            # 单测
 make check               # 校验配置并打印价目表（需 PG DSN）
 deploy/deploy.sh --fresh --tag v0.3.0   # 部署到 st2-aii
-deploy/smoke.sh          # 验收：RESULT: PASS=70 FAIL=0
+deploy/smoke.sh          # 验收：RESULT: PASS=83 FAIL=0
 ```
 
 运维手册（安装、验证、管理 API、改价、FAQ）见 [docs/loom-extauth-billing.md](../../docs/loom-extauth-billing.md)，实施计划见 [docs/loom-plan.md](../../docs/loom-plan.md)。

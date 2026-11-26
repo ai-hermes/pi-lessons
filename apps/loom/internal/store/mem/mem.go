@@ -370,6 +370,19 @@ func (m *Mem) SettleUsage(_ context.Context, ev store.UsageEvent) (bool, error) 
 	return true, nil
 }
 
+func (m *Mem) BackfillGatewayCost(_ context.Context, requestID string, nanos int64) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.usage {
+		if m.usage[i].RequestID == requestID && m.usage[i].GatewayCostNanos == nil {
+			n := nanos
+			m.usage[i].GatewayCostNanos = &n
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (m *Mem) ReleaseExpiredReservations(_ context.Context, now time.Time, limit int) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

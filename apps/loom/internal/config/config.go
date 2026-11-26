@@ -34,6 +34,7 @@ type Server struct {
 	ExtAuthGRPCAddr string        `koanf:"extauth_grpc_addr"`
 	AdminAddr       string        `koanf:"admin_addr"`
 	OTLPGRPCAddr    string        `koanf:"otlp_grpc_addr"`
+	RLSAddr         string        `koanf:"rls_addr"`
 	MetricsAddr     string        `koanf:"metrics_addr"`
 	ShutdownTimeout time.Duration `koanf:"shutdown_timeout"`
 }
@@ -115,6 +116,7 @@ type ReserveTokens struct {
 
 type Billing struct {
 	CostSource    string        `koanf:"cost_source"`
+	RLSDomain     string        `koanf:"rls_domain"`
 	RequireLoomID bool          `koanf:"require_loom_request_id"`
 	Protocols     []string      `koanf:"protocols"`
 	QueueSize     int           `koanf:"queue_size"`
@@ -238,7 +240,7 @@ func defaults() map[string]any {
 	return map[string]any{
 		"server": map[string]any{
 			"extauth_http_addr": ":9001", "extauth_grpc_addr": ":9002",
-			"admin_addr": ":9100", "otlp_grpc_addr": ":9101", "metrics_addr": ":9102",
+			"admin_addr": ":9100", "otlp_grpc_addr": ":9101", "metrics_addr": ":9102", "rls_addr": ":9004",
 			"shutdown_timeout": "15s",
 		},
 		"log":        map[string]any{"level": "info", "format": "json"},
@@ -262,7 +264,7 @@ func defaults() map[string]any {
 			"reservation_ttl": "15m", "reaper_interval": "1m", "reaper_batch": 200,
 		},
 		"billing": map[string]any{
-			"cost_source": "loom", "queue_size": 4096, "batch_size": 200, "flush_interval": "2s",
+			"cost_source": "loom", "queue_size": 4096, "batch_size": 200, "flush_interval": "2s", "rls_domain": "loom-billing",
 			"attributes": map[string]any{
 				"input_tokens": "gen_ai.usage.input_tokens", "output_tokens": "gen_ai.usage.output_tokens",
 				"cached_tokens": "gen_ai.usage.cache_read.input_tokens", "gateway_cost": "agw.ai.usage.cost.total",

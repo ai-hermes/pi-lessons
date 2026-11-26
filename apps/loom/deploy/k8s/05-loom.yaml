@@ -1,4 +1,4 @@
-# loom 本体：2 副本 + PDB。一个进程同时承载 extAuth HTTP(:9001)/gRPC(:9002)、管理 API(:9100)、OTLP ingest(:9101)、metrics(:9102)。
+# loom 本体：2 副本 + PDB。一个进程同时承载 extAuth HTTP(:9001)/gRPC(:9002)、RLS 结算(:9004)、管理 API(:9100)、OTLP ingest(:9101)、metrics(:9102)。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -42,6 +42,7 @@ spec:
         - {name: extauth-grpc, containerPort: 9002}
         - {name: admin, containerPort: 9100}
         - {name: otlp, containerPort: 9101}
+        - {name: rls, containerPort: 9004}
         - {name: metrics, containerPort: 9102}
         env:
         - name: LOOM_LOG_LEVEL
@@ -86,6 +87,7 @@ spec:
   - {name: extauth-grpc, port: 9002, targetPort: 9002}
   - {name: admin, port: 9100, targetPort: 9100}
   - {name: otlp, port: 9101, targetPort: 9101}
+  - {name: rls, port: 9004, targetPort: 9004}
   - {name: metrics, port: 9102, targetPort: 9102}
 ---
 apiVersion: policy/v1

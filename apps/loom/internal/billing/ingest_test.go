@@ -84,7 +84,7 @@ func TestSettleChargesReservationThenReleases(t *testing.T) {
 	require.NoError(t, err)
 
 	ing := NewIngest(cfg.Billing, st, pr, nil, log, NewResolver(st, time.Minute))
-	inserted, err := ing.settle(context.Background(), Record{RequestID: "req-1", KeyID: key.ID, Model: "lab-model", InputTokens: 1000, OutputTokens: 500, CachedTokens: 200})
+	inserted, err := ing.Settle(context.Background(), Record{RequestID: "req-1", KeyID: key.ID, Model: "lab-model", InputTokens: 1000, OutputTokens: 500, CachedTokens: 200})
 	require.NoError(t, err)
 	assert.True(t, inserted)
 
@@ -98,14 +98,14 @@ func TestSettleChargesReservationThenReleases(t *testing.T) {
 	assert.ErrorIs(t, err, loom.ErrNotFound)
 
 	// 重复投递：不重复扣费
-	inserted, err = ing.settle(context.Background(), Record{RequestID: "req-1", KeyID: key.ID, Model: "lab-model", InputTokens: 1000, OutputTokens: 500, CachedTokens: 200})
+	inserted, err = ing.Settle(context.Background(), Record{RequestID: "req-1", KeyID: key.ID, Model: "lab-model", InputTokens: 1000, OutputTokens: 500, CachedTokens: 200})
 	require.NoError(t, err)
 	assert.False(t, inserted)
 	k, _ = st.GetKey(context.Background(), key.ID)
 	assert.Equal(t, int64(1_820_000), k.QuotaUsed)
 
 	// 无预扣记录：直接累加
-	inserted, err = ing.settle(context.Background(), Record{RequestID: "req-2", KeyID: key.ID, Model: "lab-model", InputTokens: 1000, OutputTokens: 500, CachedTokens: 200})
+	inserted, err = ing.Settle(context.Background(), Record{RequestID: "req-2", KeyID: key.ID, Model: "lab-model", InputTokens: 1000, OutputTokens: 500, CachedTokens: 200})
 	require.NoError(t, err)
 	assert.True(t, inserted)
 	k, _ = st.GetKey(context.Background(), key.ID)

@@ -404,6 +404,15 @@ func (d *DB) SettleUsage(ctx context.Context, ev store.UsageEvent) (bool, error)
 	return true, nil
 }
 
+// BackfillGatewayCost 见 store.Store。
+func (d *DB) BackfillGatewayCost(ctx context.Context, requestID string, nanos int64) (bool, error) {
+	n, err := d.q.BackfillGatewayCost(ctx, sqlcgen.BackfillGatewayCostParams{RequestID: pgtype.Text{String: requestID, Valid: true}, GatewayCostNanos: &nanos})
+	if err != nil {
+		return false, d.fail("BackfillGatewayCost", err)
+	}
+	return n > 0, nil
+}
+
 // ReleaseExpiredReservations 见 store.Store。
 func (d *DB) ReleaseExpiredReservations(ctx context.Context, now time.Time, limit int) (int, error) {
 	tx, err := d.pool.Begin(ctx)
