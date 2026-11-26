@@ -1,0 +1,47 @@
+# Gateway loom-gateway + AgentgatewayParameters loom：NodePort 30080 → 宿主机 14001；
+# controller 会以 Gateway 名创建同名 Deployment，所以 Gateway 不能叫 loom（与服务同名）。modelCatalog 引用由 pricing.yaml 渲染的 loom-catalog，
+# 网关据此在 access log 里输出 agw.ai.usage.cost.total（仅做对账，扣费以 loom 计价表为准）。
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: loom-gateway
+  namespace: loom
+spec:
+  gatewayClassName: agentgateway
+  infrastructure:
+    parametersRef:
+      group: agentgateway.dev
+      kind: AgentgatewayParameters
+      name: loom
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 8080
+    allowedRoutes:
+      namespaces:
+        from: Same
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayParameters
+metadata:
+  name: loom
+  namespace: loom
+spec:
+  image:
+    registry: cr.agentgateway.dev
+    repository: agentgateway
+    tag: v1.7.0
+    pullPolicy: IfNotPresent
+  service:
+    spec:
+      type: NodePort
+      ports:
+      - name: http
+        port: 8080
+        targetPort: 8080
+        nodePort: 30080
+  modelCatalog:
+    sources:
+    - configMap:
+        name: loom-catalog
+        key: catalog.json

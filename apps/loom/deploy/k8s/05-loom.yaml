@@ -1,0 +1,107 @@
+# loom 本体：2 副本 + PDB。一个进程同时承载 extAuth HTTP(:9001)/gRPC(:9002)、管理 API(:9100)、OTLP ingest(:9101)、metrics(:9102)。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loom
+  namespace: loom
+  labels:
+    app: loom
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: loom
+  template:
+    metadata:
+      labels:
+        app: loom
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9102"
+    spec:
+      serviceAccountName: loom
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: loom
+      containers:
+      - name: loom
+        image: loom/loom:IMAGE_TAG
+        imagePullPolicy: IfNotPresent
+        args: ["serve", "--config", "/etc/loom/config.yaml"]
+        ports:
+        - {name: extauth-http, containerPort: 9001}
+        - {name: extauth-grpc, containerPort: 9002}
+        - {name: admin, containerPort: 9100}
+        - {name: otlp, containerPort: 9101}
+        - {name: metrics, containerPort: 9102}
+        env:
+        - name: LOOM_LOG_LEVEL
+          value: info
+        resources:
+          requests: {cpu: 100m, memory: 128Mi}
+          limits: {cpu: "1", memory: 512Mi}
+        readinessProbe:
+          httpGet: {path: /readyz, port: 9001}
+          periodSeconds: 5
+        livenessProbe:
+          httpGet: {path: /healthz, port: 9001}
+          periodSeconds: 10
+        startupProbe:
+          httpGet: {path: /healthz, port: 9001}
+          failureThreshold: 20
+          periodSeconds: 3
+        volumeMounts:
+        - name: config
+          mountPath: /etc/loom
+          readOnly: true
+      volumes:
+      - name: config
+        projected:
+          sources:
+          - configMap: {name: loom-config}
+          - configMap: {name: loom-pricing}
+          - secret: {name: loom-secrets}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loom
+  namespace: loom
+  labels:
+    app: loom
+spec:
+  selector:
+    app: loom
+  ports:
+  - {name: extauth-http, port: 9001, targetPort: 9001}
+  - {name: extauth-grpc, port: 9002, targetPort: 9002}
+  - {name: admin, port: 9100, targetPort: 9100}
+  - {name: otlp, port: 9101, targetPort: 9101}
+  - {name: metrics, port: 9102, targetPort: 9102}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: loom
+  namespace: loom
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: loom
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: loom
+  namespace: loom
+---

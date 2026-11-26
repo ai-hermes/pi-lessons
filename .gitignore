@@ -52,3 +52,7 @@ deploy/images/images.manifest.tsv
 deploy/agentgateway-image-mcp/
 deploy/.incoming/
 deploy/.download/
+
+# loom（Go）构建产物
+apps/loom/build/
+apps/loom/bin/
