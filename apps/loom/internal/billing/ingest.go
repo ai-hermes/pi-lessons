@@ -39,6 +39,8 @@ type Record struct {
 	GatewayCostNanos *int64
 	// PricingSource 由 ingest 回填，仅用于指标。
 	PricingSource string
+	// Channel 结算来源：rls（同步）或 otlp（补账）。
+	Channel string
 }
 
 // attrs 把 OTLP KeyValue 列表转为 map。
@@ -263,7 +265,7 @@ func (i *Ingest) Start(ctx context.Context) {
 func (i *Ingest) process(ctx context.Context, r Record) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		inserted, err := i.settle(ctx, r)
+		inserted, err := i.Settle(ctx, r)
 		if err == nil {
 			if i.m != nil {
 				i.m.UsageIngested.WithLabelValues(r.PricingSource, fmt.Sprintf("%t", inserted)).Inc()
@@ -282,7 +284,8 @@ func (i *Ingest) process(ctx context.Context, r Record) {
 	i.log.Error("usage settle failed", "err", lastErr, "request_id", r.RequestID, "model", r.Model)
 }
 
-func (i *Ingest) settle(ctx context.Context, r Record) (bool, error) {
+// Settle 同步结算一条记录（幂等）；RLS 与 OTLP 两个通道都走这里。
+func (i *Ingest) Settle(ctx context.Context, r Record) (bool, error) {
 	owner, err := i.resolve.Resolve(ctx, r)
 	if err != nil {
 		return false, err
@@ -327,10 +330,21 @@ func (i *Ingest) settle(ctx context.Context, r Record) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if inserted && i.m != nil {
-		i.m.QuotaSettled.WithLabelValues(r.Model).Add(float64(cost))
+	if !inserted && r.GatewayCostNanos != nil {
+		// 另一条通道（RLS）已先结算：只补写网关金额用于对账，不重复扣费
+		if _, err := i.st.BackfillGatewayCost(ctx, r.RequestID, *r.GatewayCostNanos); err != nil {
+			i.log.Warn("backfill gateway cost failed", "err", err, "request_id", r.RequestID)
+		}
+	}
+	if i.m != nil {
+		i.m.UsageSettled.WithLabelValues(r.Channel, fmt.Sprintf("%t", inserted)).Inc()
+		if inserted {
+			i.m.QuotaSettled.WithLabelValues(r.Model).Add(float64(cost))
+		}
 	}
 	r.PricingSource = source
+	i.log.Info("usage settled", "channel", r.Channel, "inserted", inserted, "request_id", r.RequestID, "model", r.Model,
+		"input", r.InputTokens, "cached", r.CachedTokens, "output", r.OutputTokens, "cost_nanos", cost, "source", source)
 	return inserted, nil
 }
 

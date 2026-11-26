@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	rlsv3 "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v3"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	logspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
@@ -186,6 +187,14 @@ func Run(ctx context.Context, cfg *config.Config, opts Options, migrationsFS fs.
 		reflection.Register(gs)
 		go serveGRPC(ctx, gs, lc, log, errCh, &wg, "otlp-grpc", addr)
 	}
+	// :9004 Envoy RateLimitService（同步结算通道：网关响应完成后的 amend）
+	if addr := cfg.Server.RLSAddr; addr != "" {
+		gs := grpc.NewServer()
+		rlsv3.RegisterRateLimitServiceServer(gs, billing.NewRLSServer(c.Ingest, cfg.Billing.RLSDomain))
+		healthpb.RegisterHealthServer(gs, health.NewServer())
+		reflection.Register(gs)
+		go serveGRPC(ctx, gs, lc, log, errCh, &wg, "rls-grpc", addr)
+	}
 	// :9102 metrics + pprof
 	if addr := cfg.Server.MetricsAddr; addr != "" && cfg.Telemetry.Metrics.Enabled {
 		mux := http.NewServeMux()
@@ -220,7 +229,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options, migrationsFS fs.
 	}()
 
 	log.Info("loom started", "version", opts.Version, "extauth_http", cfg.Server.ExtAuthHTTPAddr, "extauth_grpc", cfg.Server.ExtAuthGRPCAddr,
-		"admin", cfg.Server.AdminAddr, "otlp", cfg.Server.OTLPGRPCAddr, "metrics", cfg.Server.MetricsAddr)
+		"admin", cfg.Server.AdminAddr, "otlp", cfg.Server.OTLPGRPCAddr, "metrics", cfg.Server.MetricsAddr, "rls", cfg.Server.RLSAddr)
 
 	select {
 	case <-ctx.Done():

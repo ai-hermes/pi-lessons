@@ -520,3 +520,13 @@ kubectl -n agentgateway get deploy           # 预期 controller 仍 1/1
 - [ ] `configs/seed.yaml`、`deploy/smoke.sh` 的期望值按上表重算（alice 额度、erin 并发、vera 分组、lab-image 按次）。
 - [ ] 按次计费模型在 credit 口径下的正式定价规则（如 `doubao-seedream-5.0-pro: {model_price: 20}` = 20 credit/次）由业务确定后更新 `pricing.yaml`。
 - [ ] 文档：README、运维手册、`pricing.yaml` 头部注释统一改为 credit，并向用户说明「1 credit = 1M 基准 token」及各模型的倍率。
+
+## 十六、实施结果：计费结算改为 RLS 同步通道（2026-11-26）
+
+OTLP access log 是遥测链路（批量、可丢），不适合做账本的数据源。按 agentgateway 的 token 预算机制（PR #1498）改为：
+
+- 网关策略 `traffic.rateLimit.global`（`unit: Tokens`，三个描述符 `cost: llm.inputTokens / cachedInputTokens / outputTokens`）。请求阶段的 check 调用 `hits_addend=0`，loom 恒返回 OK；响应完成后的 amend 调用带上归一化 token 数，loom 在 `:9004`（`envoy.service.ratelimit.v3`）同步结算。
+- 描述符 entries 携带 `request_id / key_id / model`，来自 extAuth 注入的请求头，与预扣记录关联。
+- OTLP 保留为补账：同一 `request_id` 先到先结算；后到者只补写 `gateway_cost_nanos` 用于对账（`loom_usage_settled_total{channel,inserted}`）。
+- 源码确认的边界：amend 由 `tokio::spawn` 发出且忽略结果，无重试；流式响应由 `AmendOnDrop` 保证客户端断连也会上报。纯 HTTP 路由（按次计费）没有 `llm.*`，仍只走 OTLP。
+- 验收：`deploy/smoke.sh` 83 项全绿，新增 RLS 同步入库（≤1s）、单通道独立性、双通道幂等与网关金额补写。并发预扣用例因同步结算释放预扣更快，断言改为「不超额且每笔金额正确」。

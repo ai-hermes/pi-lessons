@@ -5,7 +5,8 @@ server:
   extauth_http_addr: ":9001"     # extAuth HTTP 门面 POST /check + 探针
   extauth_grpc_addr: ":9002"    # Envoy ext_authz.v3 门面
   admin_addr: ":9100"           # 管理 API（需 admin token）
-  otlp_grpc_addr: ":9101"       # OTLP Logs/Traces ingest
+  otlp_grpc_addr: ":9101"       # OTLP Logs/Traces ingest（补账）
+  rls_addr: ":9004"             # Envoy RateLimitService.v3：网关响应完成后的 amend 同步结算
   metrics_addr: ":9102"         # Prometheus /metrics + pprof
   shutdown_timeout: 15s
 
@@ -61,6 +62,7 @@ quota:
 
 billing:
   cost_source: loom           # loom 为准；gateway_prefer 则优先网关算出的 agw.ai.usage.cost.total
+  rls_domain: loom-billing    # 只处理该 domain 的 RateLimit 调用；需与策略 rateLimit.global.domain 一致
   queue_size: 4096
   batch_size: 200
   flush_interval: 2s

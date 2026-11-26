@@ -86,3 +86,8 @@ SET model_ratio = EXCLUDED.model_ratio,
 
 -- name: DeleteModelPricing :exec
 DELETE FROM model_pricing WHERE model = $1;
+
+-- name: BackfillGatewayCost :execrows
+UPDATE usage_events
+SET gateway_cost_nanos = $2
+WHERE request_id = $1 AND gateway_cost_nanos IS NULL;
