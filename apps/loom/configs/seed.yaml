@@ -1,0 +1,50 @@
+# loom seed.yaml：幂等写入演示账户 / Key / PG 兜底定价（loom seed --file seed.yaml）。
+# 明文 key 只存在于演示环境，真实环境请用管理 API 生成。
+accounts:
+  - name: alice
+    tenant: demo
+    group: default
+    quota_limit_nanos: 5000000000        # $5
+    keys:
+      - name: default
+        plaintext: loom-demo-alice-0000000000000001
+        quota_limit_nanos: 5000000       # $0.005：预扣 3,072,000 → 恰好两次 200，第三次 403
+  - name: bob                            # 账户额度不足：3,000,000 < 预扣 3,072,000 → 403
+    quota_limit_nanos: 3000000
+    keys:
+      - name: default
+        plaintext: loom-demo-bob-000000000000000002
+  - name: carol                          # 停用
+    status: disabled
+    keys:
+      - name: default
+        plaintext: loom-demo-carol-000000000000000003
+  - name: dave                           # 不限额度
+    keys:
+      - name: default
+        plaintext: loom-demo-dave-000000000000000004
+      - name: images-only                # 只允许 lab-image
+        plaintext: loom-demo-dave-images-only-0005
+        model_allowlist: [lab-image]
+  - name: erin                           # 并发用例：正好 5 次预扣（5 × 3,072,000）
+    quota_limit_nanos: 15360000
+    keys:
+      - name: default
+        plaintext: loom-demo-erin-000000000000000006
+        quota_limit_nanos: 15360000
+  - name: vera                           # vip 分组 0.9
+    group: vip
+    keys:
+      - name: default
+        plaintext: loom-demo-vera-000000000000000007
+  - name: frank                          # 过期 Key
+    keys:
+      - name: default
+        plaintext: loom-demo-frank-000000000000000008
+        expires_at: "2020-01-01T00:00:00Z"
+
+pricing:
+  - model: lab-pg-only                   # 只在 PG 表里的模型：验证 pg 兜底
+    model_ratio: 0.25
+    completion_ratio: 2
+    cache_ratio: 0.1

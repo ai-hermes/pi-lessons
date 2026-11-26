@@ -36,6 +36,14 @@ pnpm test:pi-opensandbox
 
 部署资源已按 Deployment、Service、NetworkPolicy、Backend 和 HTTPRoute 拆开，另附 NewAPI 文本模型池及客户端鉴权的脱敏示例。示例只保留 Secret 引用，不包含凭据值或私人分组、专属 endpoint；使用前需按自己的环境调整。
 
+## Loom：AgentGateway 外挂鉴权与计费
+
+[`apps/loom`](./apps/loom/README.md) 是一个 Go 实现的 AgentGateway `extAuth` + billing 服务：one-api 口径的模型计价表（ConfigMap 主、PG 表兜底）、账户 + Key 两级额度、鉴权阶段原子预扣、遥测阶段幂等结算、Prometheus 指标。部署到 st2-aii 并通过 70 项验收矩阵，见 [运维手册](./docs/loom-extauth-billing.md) 与 [实施计划](./docs/loom-plan.md)。
+
+```bash
+cd apps/loom && make test && deploy/deploy.sh --fresh --tag v0.3.0 && deploy/smoke.sh
+```
+
 ## 安全
 
 不要提交 `.env`、API Key、会话记录或本机路径；提交配置示例时使用占位值。

@@ -1,0 +1,154 @@
+# extAuth 策略：网关 POST loom:9001/check，2xx 放行并把 allowedResponseHeaders 复制到上游请求；
+# 其他状态码 + 响应体原样回给调用方。forwardBody 让 loom 能读到请求体里的 model 做定价与预扣。
+# 同一策略里的 headerModifiers 在放行后删除调用方凭据，避免流向模型供应商。
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: llm-ext-auth
+  namespace: loom
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: llm
+  traffic:
+    extAuth:
+      backendRef:
+        name: loom
+        port: 9001
+      forwardBody:
+        maxSize: 1Mi
+      http:
+        path: '"/check"'
+        allowedRequestHeaders: [authorization, x-api-key, x-request-id, content-type]
+        allowedResponseHeaders: [x-loom-client-id, x-loom-key-id, x-loom-request-id, x-loom-quota-remaining, x-loom-deny-reason, x-loom-model]
+      failureMode: FailClosed
+    headerModifiers:
+      request:
+        remove: [authorization, x-api-key]
+    # 上游 429/5xx 重试 4 次，100ms backoff（与生产 Chat 路由一致）
+    retry:
+      attempts: 4
+      backoff: 100ms
+      codes: [429, 500, 502, 503, 504]
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: pg-chat-ext-auth
+  namespace: loom
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: pg-chat
+  traffic:
+    extAuth:
+      backendRef: {name: loom, port: 9001}
+      forwardBody: {maxSize: 1Mi}
+      http:
+        path: '"/check"'
+        allowedRequestHeaders: [authorization, x-api-key, x-request-id, content-type]
+        allowedResponseHeaders: [x-loom-client-id, x-loom-key-id, x-loom-request-id, x-loom-quota-remaining, x-loom-deny-reason, x-loom-model]
+      failureMode: FailClosed
+    headerModifiers:
+      request:
+        remove: [authorization, x-api-key]
+---
+# 图片路由：按次计费；每客户端（x-loom-client-id）10 rpm、burst 2
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: media-ext-auth
+  namespace: loom
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: media
+  traffic:
+    extAuth:
+      backendRef: {name: loom, port: 9001}
+      forwardBody: {maxSize: 1Mi}
+      http:
+        path: '"/check"'
+        allowedRequestHeaders: [authorization, x-api-key, x-request-id, content-type]
+        allowedResponseHeaders: [x-loom-client-id, x-loom-key-id, x-loom-request-id, x-loom-quota-remaining, x-loom-deny-reason, x-loom-model]
+      failureMode: FailClosed
+    headerModifiers:
+      request:
+        remove: [authorization, x-api-key]
+    rateLimit:
+      local:
+      - requests: 10
+        unit: Minutes
+        burst: 2
+        key: 'request.headers["x-loom-client-id"]'
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: embeddings-ext-auth
+  namespace: loom
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: embeddings
+  traffic:
+    extAuth:
+      backendRef: {name: loom, port: 9001}
+      forwardBody: {maxSize: 1Mi}
+      http:
+        path: '"/check"'
+        allowedRequestHeaders: [authorization, x-api-key, x-request-id, content-type]
+        allowedResponseHeaders: [x-loom-client-id, x-loom-key-id, x-loom-request-id, x-loom-quota-remaining, x-loom-deny-reason, x-loom-model]
+      failureMode: FailClosed
+    headerModifiers:
+      request:
+        remove: [authorization, x-api-key]
+---
+# /echo：HTTP 门面；请求体不是 JSON，loom 不定价不预扣，只做鉴权
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: echo-ext-auth
+  namespace: loom
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: echo
+  traffic:
+    extAuth:
+      backendRef: {name: loom, port: 9001}
+      http:
+        path: '"/check"'
+        allowedRequestHeaders: [authorization, x-api-key, x-request-id]
+        allowedResponseHeaders: [x-loom-client-id, x-loom-key-id, x-loom-request-id, x-loom-quota-remaining, x-loom-deny-reason, x-loom-model]
+      failureMode: FailClosed
+    headerModifiers:
+      request:
+        remove: [authorization, x-api-key]
+---
+# /grpc：Envoy ext_authz.v3 gRPC 门面，同一决策引擎
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: grpc-echo-ext-auth
+  namespace: loom
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: grpc-echo
+  traffic:
+    extAuth:
+      backendRef: {name: loom, port: 9002}
+      grpc:
+        contextExtensions:
+          loom.route: grpc-echo
+      failureMode: FailClosed
+    headerModifiers:
+      request:
+        remove: [authorization, x-api-key]

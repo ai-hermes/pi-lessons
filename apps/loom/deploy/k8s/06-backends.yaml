@@ -1,0 +1,77 @@
+# loom-mock：伪 OpenAI 后端（chat 流式/非流式、embeddings、images、/echo 回显请求头）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loom-mock
+  namespace: loom
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loom-mock
+  template:
+    metadata:
+      labels:
+        app: loom-mock
+    spec:
+      containers:
+      - name: mock
+        image: loom/loom:IMAGE_TAG
+        imagePullPolicy: IfNotPresent
+        command: ["/usr/local/bin/loom-mock"]
+        ports:
+        - name: http
+          containerPort: 8080
+        env:
+        - {name: MOCK_INPUT_TOKENS, value: "1000"}
+        - {name: MOCK_OUTPUT_TOKENS, value: "500"}
+        - {name: MOCK_CACHED_TOKENS, value: "200"}
+        readinessProbe:
+          httpGet: {path: /healthz, port: 8080}
+          periodSeconds: 5
+        resources:
+          requests: {cpu: 50m, memory: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loom-mock
+  namespace: loom
+spec:
+  selector:
+    app: loom-mock
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+# LLM 后端：agentgateway 以 protocol=llm 转发，响应 usage 进入 access log（gen_ai.usage.*）
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: lab-chat
+  namespace: loom
+spec:
+  ai:
+    groups:
+    - providers:
+      - name: lab-model
+        host: loom-mock.loom.svc.cluster.local
+        port: 8080
+        openai:
+          model: lab-model
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: lab-pg-chat
+  namespace: loom
+spec:
+  ai:
+    groups:
+    - providers:
+      - name: lab-pg-only
+        host: loom-mock.loom.svc.cluster.local
+        port: 8080
+        openai:
+          model: lab-pg-only
