@@ -149,6 +149,7 @@ kubectl -n loom exec deploy/loom-postgres -- psql -U loom -d loom \
 ### 3.4 当前边界与风险
 
 - **结算双通道，先到先结算**：主通道是网关响应完成后的 RLS amend（同步，每请求一次 gRPC），OTLP access log 为补账。两者共用 `request_id` 幂等键，后到者不重复扣费、只补写网关金额用于对账。
+- **RLS amend 的返回值网关不看**：loom 在 amend 结算失败时返回 `RateLimitResponse.Code = ERROR(3)` 并计 `loom_ingest_errors_total{reason="rls_settle"}`，只为在网关 trace 里留下痕迹，不影响请求（响应已完成）。
 - **RLS amend 不重试**：网关源码里 amend 以 `tokio::spawn` 发出并忽略结果（`crates/agentgateway/src/http/remoteratelimit.rs`），loom 不可用期间该次结算会丢，此时依赖 OTLP 补账；两条通道都丢才会落到预扣过期释放（`loom_reservations_expired_total` 增长即为信号）。策略 `failureMode: FailOpen`，结算通道故障不影响转发。
 - `extAuth.cache` 不能开启：命中缓存的请求不会预扣。
 - 网关 `modelCatalog` 不表达分组倍率：非 `default` 分组的账户，loom 金额 ≠ 网关金额是设计内行为，`loom_cost_mismatch_total` 对这类账户跳过。
