@@ -13,6 +13,25 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const backfillGatewayCost = `-- name: BackfillGatewayCost :execrows
+UPDATE usage_events
+SET gateway_cost_nanos = $2
+WHERE request_id = $1 AND gateway_cost_nanos IS NULL
+`
+
+type BackfillGatewayCostParams struct {
+	RequestID        pgtype.Text
+	GatewayCostNanos *int64
+}
+
+func (q *Queries) BackfillGatewayCost(ctx context.Context, arg BackfillGatewayCostParams) (int64, error) {
+	result, err := q.db.Exec(ctx, backfillGatewayCost, arg.RequestID, arg.GatewayCostNanos)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countReservations = `-- name: CountReservations :one
 SELECT count(*) FROM reservations
 `

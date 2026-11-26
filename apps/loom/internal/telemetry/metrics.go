@@ -25,6 +25,8 @@ type Metrics struct {
 	IngestFlushDuration prometheus.Histogram
 	IngestDropped       prometheus.Counter
 	IngestTraces        prometheus.Counter
+	RLSCalls            *prometheus.CounterVec
+	UsageSettled        *prometheus.CounterVec
 	CostMismatch        *prometheus.CounterVec
 	PGAcquires          prometheus.Counter
 	PGAcquireDuration   prometheus.Histogram
@@ -53,6 +55,8 @@ func NewMetrics(version, commit string) *Metrics {
 		IngestFlushDuration: prometheus.NewHistogram(prometheus.HistogramOpts{Name: "loom_ingest_flush_duration_seconds", Help: "Batch flush latency."}),
 		IngestDropped:       prometheus.NewCounter(prometheus.CounterOpts{Name: "loom_ingest_dropped_total", Help: "Records dropped because the queue was full."}),
 		IngestTraces:        prometheus.NewCounter(prometheus.CounterOpts{Name: "loom_ingest_traces_total", Help: "Trace spans received (counted only)."}),
+		RLSCalls:            prometheus.NewCounterVec(prometheus.CounterOpts{Name: "loom_rls_calls_total", Help: "RateLimitService calls by type: check (request phase, no charge) or amend (settlement)."}, []string{"type"}),
+		UsageSettled:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "loom_usage_settled_total", Help: "Settlement attempts by channel (rls/otlp); inserted=false means the idempotency key already existed."}, []string{"channel", "inserted"}),
 		CostMismatch:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "loom_cost_mismatch_total", Help: "Requests where loom cost differs from gateway realized cost."}, []string{"model"}),
 		PGAcquires:          prometheus.NewCounter(prometheus.CounterOpts{Name: "loom_pg_pool_acquires_total", Help: "Pool acquisitions."}),
 		PGAcquireDuration:   prometheus.NewHistogram(prometheus.HistogramOpts{Name: "loom_pg_acquire_duration_seconds", Help: "Pool acquisition latency.", Buckets: []float64{0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1}}),
@@ -64,7 +68,7 @@ func NewMetrics(version, commit string) *Metrics {
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.BuildInfo, m.AuthDecisions, m.AuthDuration, m.AuthCacheHits, m.PricingLookups, m.PricingReload, m.PricingModels,
 		m.QuotaReserved, m.QuotaSettled, m.QuotaRemaining, m.ReservationsOpen, m.ReservationsExpired,
-		m.UsageIngested, m.IngestErrors, m.IngestQueueDepth, m.IngestFlushDuration, m.IngestDropped, m.IngestTraces,
+		m.UsageIngested, m.IngestErrors, m.IngestQueueDepth, m.IngestFlushDuration, m.IngestDropped, m.IngestTraces, m.RLSCalls, m.UsageSettled,
 		m.CostMismatch, m.PGAcquires, m.PGAcquireDuration, m.PGErrors,
 	)
 	return m

@@ -29,6 +29,7 @@ func (s *LogsServer) Export(ctx context.Context, req *logspb.ExportLogsServiceRe
 		for _, sl := range rl.GetScopeLogs() {
 			for _, lr := range sl.GetLogRecords() {
 				rec := RecordFromLogRecord(lr, res, s.attrs)
+				rec.Channel = "otlp"
 				if s.ingest.Queue(rec) {
 					n++
 				}
