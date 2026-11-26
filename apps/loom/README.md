@@ -35,7 +35,7 @@ client ──key + body──► agentgateway ──extauth──► loom :8080 
 
 ```text
 cmd/
-├── loom/              子命令分发：serve | migrate | seed | render-catalog | check-config
+├── loom/              cobra 子命令：serve | migrate | seed | render-catalog | check-config | version
 └── loom-mock/         伪 OpenAI 后端（chat / embeddings / images / echo），验收用
 internal/
 ├── admission/         准入门 Gate：凭据 → Key → 状态 → 模型 → 定价 → 预扣，输出 Verdict（与协议无关）
