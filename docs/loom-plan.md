@@ -635,7 +635,7 @@ OTLP access log 是遥测链路（批量、可丢），不适合做账本的数�
 
 - [ ] 部署清单固定 AgentGateway 版本，升级前跑 19.2 的契约测试。
 - [ ] 在运维手册中列出依赖的网关行为及源码出处（`crates/agentgateway/src/llm/mod.rs`、`http/remoteratelimit.rs`）。
-- [ ] 上游报错与客户端中途断开不依赖 OTLP：契约测试实测，这两类请求的 RLS amend 用量全为 `0`，loom 视同请求阶段忽略，由 OTLP 在 `1`～`2` s 内结算为 `0` 并释放预扣；OTLP 丢失时预扣冻结到 `reservation_ttl`（`15m`），而压测中高负载下 OTLP 会大量丢弃。方案：增加一个 `cost` 恒为 `1` 的 `completion` 描述符，amend 时必然非 0，loom 据此由 RLS 立即结算；契约测试第 2 组的 `settled by` 随之由 `otlp` 变为 `rls`。
+- [x] 上游报错与客户端中途断开不依赖 OTLP：契约测试实测，这两类请求的 RLS amend 用量全为 `0`，loom 视同请求阶段忽略，由 OTLP 在 `1`～`2` s 内结算为 `0` 并释放预扣；OTLP 丢失时预扣冻结到 `reservation_ttl`（`15m`），而压测中高负载下 OTLP 会大量丢弃。已实施：网关策略增加 `kind=completion`、`cost: '1'` 的描述符，amend 时必然非 0，loom 据此由 RLS 立即按实际用量（失败时为 `0`）结算；契约测试中上游报错与客户端断开 4 个场景均由 `rls` 结算。
 
 ### 19.10 数据增长
 

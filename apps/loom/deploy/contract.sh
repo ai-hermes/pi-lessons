@@ -72,14 +72,14 @@ echo "### 1. 正常响应：RLS 同步结算，OTLP 只补写网关金额"
 observe "non-stream 200"      200 rls 1820000 false
 observe "stream 200"          200 rls 1820000 true
 
-echo "### 2. 上游报错：网关以 0 用量 amend，loom 视同请求阶段忽略；由 OTLP 结算为 0 并释放预扣"
-observe "upstream 503"        503 otlp 0 false -H 'x-mock-status: 503'
-observe "upstream 400"        400 otlp 0 false -H 'x-mock-status: 400'
-observe "stream upstream 503" 503 otlp 0 true  -H 'x-mock-status: 503'
+echo "### 2. 上游报错：token 用量为 0，completion 描述符让 RLS 立即结算为 0 并释放预扣"
+observe "upstream 503"        503 rls 0 false -H 'x-mock-status: 503'
+observe "upstream 400"        400 rls 0 false -H 'x-mock-status: 400'
+observe "stream upstream 503" 503 rls 0 true  -H 'x-mock-status: 503'
 
-echo "### 3. 客户端在带 usage 的结束 chunk 之前断开：网关拿不到用量，按 0 结算（已知计费缺口）"
+echo "### 3. 客户端在带 usage 的结束 chunk 之前断开：网关拿不到用量，由 RLS 按 0 结算（已知计费缺口）"
 # curl 因 --max-time 主动断开时返回码记为 200（响应头已收到）
-observe "stream client abort" 200 otlp 0 true  -H 'x-mock-stream-chunks: 10' -H 'x-mock-stream-delay-ms: 200' --max-time 0.5
+observe "stream client abort" 200 rls 0 true  -H 'x-mock-stream-chunks: 10' -H 'x-mock-stream-delay-ms: 200' --max-time 0.5
 
 q "delete from reservations where account_id=$DAVE" >/dev/null
 echo "RESULT: PASS=$PASS FAIL=$FAIL"

@@ -81,6 +81,23 @@ func TestAmendMergesDescriptorsIntoOneUsageReport(t *testing.T) {
 	assert.Equal(t, pricing.TokenUsage{Input: 1000, Cached: 200, Output: 500}, u.TokenUsage)
 }
 
+func TestCompletionOnlyAmendSettlesZeroUsage(t *testing.T) {
+	settler := &fakeSettler{}
+	apiKeyID := uuid.New()
+	// 上游报错或客户端中途断开：token 描述符为 0（或求值失败被网关丢弃），只有 completion=1
+	_, err := newServer(settler).ShouldRateLimit(context.Background(), &rlsv3.RateLimitRequest{
+		Domain: "loom-billing",
+		Descriptors: []*rlscommon.RateLimitDescriptor{
+			descriptor("req-1", apiKeyID.String(), "input", 0),
+			descriptor("req-1", apiKeyID.String(), "completion", 1),
+		},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, settler.got, 1, "the request is settled (and its reservation released) by RLS")
+	assert.Equal(t, pricing.TokenUsage{}, settler.got[0].TokenUsage, "completion never counts as tokens")
+}
+
 func TestOtherDomainIsIgnored(t *testing.T) {
 	settler := &fakeSettler{}
 	resp, err := newServer(settler).ShouldRateLimit(context.Background(), &rlsv3.RateLimitRequest{

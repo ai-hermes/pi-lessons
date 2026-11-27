@@ -27,6 +27,7 @@ spec:
       request:
         remove: [authorization, x-api-key]
     # 同步结算通道：响应完成后网关按 cost CEL（已归一化的 token 数）回调 loom :8080（RateLimitService amend），与 OTLP 补账共用 request_id 幂等。
+    # completion 描述符恒为 1，标记"该请求已有结论"，没有 token 用量的失败请求也由 RLS 结算。
     # 请求阶段的 check 调用 hits_addend=0，loom 恒返回 OK；额度门禁由 extAuth 负责，所以这里 FailOpen。
     rateLimit:
       global:
@@ -55,6 +56,14 @@ spec:
           - {name: model, expression: 'request.headers["x-loom-model"]'}
           - {name: kind, expression: '"output"'}
           cost: 'llm.outputTokens'
+        # 恒为 1：让上游报错、客户端中途断开（token 用量为 0）的请求也能经 RLS 立即结算并释放预扣，不依赖 OTLP
+        - unit: Tokens
+          entries:
+          - {name: request_id, expression: 'request.headers["x-loom-request-id"]'}
+          - {name: key_id, expression: 'request.headers["x-loom-key-id"]'}
+          - {name: model, expression: 'request.headers["x-loom-model"]'}
+          - {name: kind, expression: '"completion"'}
+          cost: '1'
     # 上游 429/5xx 重试 4 次，100ms backoff（与生产 Chat 路由一致）
     retry:
       attempts: 4
@@ -84,6 +93,7 @@ spec:
       request:
         remove: [authorization, x-api-key]
     # 同步结算通道：响应完成后网关按 cost CEL（已归一化的 token 数）回调 loom :8080（RateLimitService amend），与 OTLP 补账共用 request_id 幂等。
+    # completion 描述符恒为 1，标记"该请求已有结论"，没有 token 用量的失败请求也由 RLS 结算。
     # 请求阶段的 check 调用 hits_addend=0，loom 恒返回 OK；额度门禁由 extAuth 负责，所以这里 FailOpen。
     rateLimit:
       global:
@@ -112,6 +122,14 @@ spec:
           - {name: model, expression: 'request.headers["x-loom-model"]'}
           - {name: kind, expression: '"output"'}
           cost: 'llm.outputTokens'
+        # 恒为 1：让上游报错、客户端中途断开（token 用量为 0）的请求也能经 RLS 立即结算并释放预扣，不依赖 OTLP
+        - unit: Tokens
+          entries:
+          - {name: request_id, expression: 'request.headers["x-loom-request-id"]'}
+          - {name: key_id, expression: 'request.headers["x-loom-key-id"]'}
+          - {name: model, expression: 'request.headers["x-loom-model"]'}
+          - {name: kind, expression: '"completion"'}
+          cost: '1'
 ---
 # 图片路由：按次计费；每客户端（x-loom-client-id）10 rpm、burst 2
 apiVersion: agentgateway.dev/v1alpha1
