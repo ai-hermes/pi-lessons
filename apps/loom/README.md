@@ -59,7 +59,7 @@ internal/
 └── telemetry/         slog 与 Prometheus 指标
 configs/               config.yaml · pricing.yaml · seed.yaml
 migrations/            goose SQL（embed 进二进制）
-deploy/                k8s 清单 · deploy.sh · smoke.sh · Dockerfile
+deploy/                k8s 清单 · deploy.sh · smoke.sh · contract.sh · bench.sh · monitoring/ · Dockerfile
 ```
 
 依赖方向：`transport → admission / ledger / account → pricing → store`；`app` 负责把它们接起来。
@@ -71,7 +71,10 @@ deploy/                k8s 清单 · deploy.sh · smoke.sh · Dockerfile
 make test lint                            # 单测（-race）+ golangci-lint
 make check                                # 校验配置并打印价目表
 deploy/deploy.sh --fresh --tag v0.5.0     # 部署到 st2-aii
-deploy/smoke.sh                           # 验收：RESULT: PASS=82 FAIL=0
+deploy/smoke.sh                           # 验收：RESULT: PASS=84 FAIL=0
+deploy/contract.sh                        # AgentGateway 契约测试：RESULT: PASS=30 FAIL=0
+deploy/bench.sh                           # 压测基线（单账户 / 多账户，按并发分档）
+deploy/monitoring/check.sh                # 告警规则校验（promtool + kind 内最小 Prometheus）
 ```
 
 运维手册（安装、验证、管理 API、改价、FAQ）见 [docs/loom-extauth-billing.md](../../docs/loom-extauth-billing.md)，

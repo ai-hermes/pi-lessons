@@ -132,7 +132,7 @@ check "grpc route bogus → 401" 401 "$(code -H 'x-api-key: loom-bogus' $BASE/gr
 
 echo "### 10. 管理 API 与指标"
 check "admin rejects undefined group" "HTTP/1.1 400" "$(admin_post /v1/accounts '{"name":"smoke-ghost","group":"no-such-group"}' 2>&1 | grep -o 'HTTP/1.1 400' | head -1)"
-check "admin list accounts" 7 "$(admin /v1/accounts | sed 's/"id":/\n&id=/g' | grep -c '"name"')"
+check "admin list accounts includes the 7 demo accounts" 7 "$(admin /v1/accounts | python3 -c 'import json,sys; names={a["name"] for a in json.load(sys.stdin)["accounts"]}; print(len(names & {"alice","bob","carol","dave","erin","vera","frank"}))')"
 check "admin usage summary has rows" yes "$(admin '/v1/usage/summary' | grep -q '"total"' && echo yes)"
 check "admin pricing view has pg row" 1 "$(admin /v1/pricing | grep -o '"model":"lab-pg-only"' | wc -l | tr -d ' ')"
 check "admin catalog has lab-model rate 1" '"input":"1"' "$(admin /v1/catalog | grep -o '"input":"1"' | head -1)"

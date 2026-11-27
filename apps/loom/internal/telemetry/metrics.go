@@ -158,6 +158,14 @@ func NewMetrics(version, commit string) *Metrics {
 	)
 	buildInfo.WithLabelValues(version, commit).Set(1)
 
+	// 标签取值固定的计数器预先创建 0 值序列：从未出错时告警的 rate() 也有数据可算。
+	for _, channel := range []string{"rls", "otlp"} {
+		m.SettleErrors.WithLabelValues(channel)
+	}
+	for _, result := range []string{"ok", "error"} {
+		m.PricingReload.WithLabelValues(result)
+	}
+
 	m.Registry.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
@@ -244,8 +252,13 @@ func histogram(name, help string) prometheus.Histogram {
 	return prometheus.NewHistogram(prometheus.HistogramOpts{Name: name, Help: help})
 }
 
+// latencyBuckets 覆盖亚毫秒到秒级：准入在请求关键路径上，需要能分辨 1ms 以内的变化。
+var latencyBuckets = []float64{
+	0.0005, 0.001, 0.002, 0.003, 0.005, 0.0075, 0.01, 0.015, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5,
+}
+
 func histogramVec(name, help string, labels ...string) *prometheus.HistogramVec {
-	opts := prometheus.HistogramOpts{Name: name, Help: help, Buckets: prometheus.DefBuckets}
+	opts := prometheus.HistogramOpts{Name: name, Help: help, Buckets: latencyBuckets}
 	return prometheus.NewHistogramVec(opts, labels)
 }
 

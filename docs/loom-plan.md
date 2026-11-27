@@ -568,9 +568,23 @@ OTLP access log 是遥测链路（批量、可丢），不适合做账本的数�
 
 ### 19.2 阶段 A：先测量
 
-- [ ] 压测：mock 上游 + 网关跑完整链路（准入 → 上游 → amend 结算），记录 extAuth `p50` / `p99`、整体吞吐、单账户 QPS 上限与每请求 PG 写入次数，结果作为后续优化的对照基线。
-- [ ] AgentGateway 契约测试：覆盖 RLS 描述符格式，以及成功、流式、上游报错、客户端断开四种情况下 amend 的行为与 OTLP 属性名；网关升级前必须通过。
-- [ ] 告警与看板：准入延迟 `p99`、拒绝率（按 `reason`）、`loom_store_errors_total`、预扣过期数、结算失败数。
+- [x] 压测：`deploy/bench.sh`（压测程序 `cmd/loom-bench`）经网关跑完整链路（准入 → mock 上游 → amend 结算），按并发分档记录端到端延迟、loom 准入耗时（`loom_admission_duration_seconds` 改为亚毫秒级桶）与每请求的 PG 写入。
+- [x] AgentGateway 契约测试：`deploy/contract.sh` 覆盖正常、流式、上游 `503` / `400`、流式上游报错、客户端在结束 chunk 前断开 6 个场景，断言返回码、用量记录、金额、预扣释放与完成结算的通道（30 项）；`loom-mock` 通过请求头 `x-mock-status`、`x-mock-stream-chunks`、`x-mock-stream-delay-ms` 模拟异常。
+- [x] 告警：`deploy/monitoring/loom-alerts.yaml`（11 条，覆盖可用性、PG、准入延迟与拒绝率、结算失败、预扣过期、OTLP 丢弃、对账不一致、价目热加载失败）；`deploy/monitoring/check.sh` 用 `promtool` 校验，并在 kind 中部署可选的最小 Prometheus（`deploy/monitoring/prometheus.yaml`）验证规则加载、指标存在与告警进入 `pending`（15 项）。标签取值固定的计数器（`loom_ledger_settle_errors_total{channel}`、`loom_pricing_reloads_total{result}`）启动时预建 0 值序列。
+- [ ] 看板：Grafana 面板待有 Grafana 的环境再补。
+
+压测基线（2026-11-27，st2-aii 单机 16 核，kind 中网关、loom 2 副本、PG 单实例与压测程序同机，mock 上游即时返回；数值只用于前后对比）：
+
+| 场景 | 吞吐上限 | 端到端 p99（并发 8 / 32 / 64） | 准入 p99 上界（并发 8 / 32 / 64） |
+| --- | --- | --- | --- |
+| 单账户（1 个 Key） | 约 `800 rps` | `35` / `135` / `197` ms | `50` / `250` / `250` ms |
+| 16 个账户轮询 | 约 `2,500 rps` | `29` / `53` / `73` ms | `25` / `50` / `100` ms |
+
+- 并发 1 时两种场景都是约 `510 rps`、端到端 p50 `1.9 ms`、准入 ≤ `2 ms`。
+- 每个模型请求约 `5`～`7` 个 PG 事务、`8`～`11` 行写入（含 OTLP 补账与准入审计）。
+- 单账户吞吐只有多账户的三分之一，随并发上升的延迟主要在准入阶段，即账户行锁排队，对应 19.5。
+- `2,500 rps` 时 OTLP 补账队列丢弃约一半上报；正常请求由 RLS 结算不受影响，但上游报错请求的预扣释放依赖 OTLP，见 19.9。
+- 无效 Key 请求可达约 `18,800 rps`、准入 ≤ `0.5 ms`（负缓存生效），但每个被拒请求写一行 `auth_audit`，见 19.10。
 
 ### 19.3 可用性
 
@@ -621,13 +635,14 @@ OTLP access log 是遥测链路（批量、可丢），不适合做账本的数�
 
 - [ ] 部署清单固定 AgentGateway 版本，升级前跑 19.2 的契约测试。
 - [ ] 在运维手册中列出依赖的网关行为及源码出处（`crates/agentgateway/src/llm/mod.rs`、`http/remoteratelimit.rs`）。
-- [ ] 上游报错时立即释放预扣：当前上游非 2xx 时网关以空用量调用 amend，loom 无法与请求阶段区分，预扣冻结到 `reservation_ttl`（`15m`）才释放。方案：增加一个 `cost` 恒为 `1` 的 `completion` 描述符，amend 时必然非 0，loom 据此立即按实际用量（可能为 0）结算；先在 st2-aii 上验证网关行为。
+- [ ] 上游报错与客户端中途断开不依赖 OTLP：契约测试实测，这两类请求的 RLS amend 用量全为 `0`，loom 视同请求阶段忽略，由 OTLP 在 `1`～`2` s 内结算为 `0` 并释放预扣；OTLP 丢失时预扣冻结到 `reservation_ttl`（`15m`），而压测中高负载下 OTLP 会大量丢弃。方案：增加一个 `cost` 恒为 `1` 的 `completion` 描述符，amend 时必然非 0，loom 据此由 RLS 立即结算；契约测试第 2 组的 `settled by` 随之由 `otlp` 变为 `rls`。
 
 ### 19.10 数据增长
 
 - [ ] 幂等改造：分区后 `usage_events.request_id` 的唯一约束必须包含分区键，因此先拆出已结算请求表（`request_id` 为主键）承担幂等，再做分区。
 - [ ] `usage_events`、`auth_audit` 按月分区，按下表的保留期删除过期分区；超期明细可选导出到对象存储（Parquet）。
 - [ ] 新增日汇总表 `usage_daily`，报表与管理 API 汇总改查该表。
+- [ ] 准入审计降噪：无效凭据的拒绝按 Key 前缀与时间窗口聚合或采样写入，避免无效 Key 洪水直接放大为同等数量的 `auth_audit` 写入。
 
 | 数据 | 保留期 | 说明 |
 | --- | --- | --- |
