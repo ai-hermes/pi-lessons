@@ -13,7 +13,7 @@ import (
 
 // PricingView 两处定价来源的当前内容。
 type PricingView struct {
-	File  map[string]pricing.ModelSpec `json:"configmap"` // pricing.yaml
+	File  map[string]pricing.ModelRate `json:"configmap"` // pricing.yaml
 	Store []store.ModelPrice           `json:"pg"`        // PG 兜底表
 }
 
@@ -23,40 +23,80 @@ func (s *Service) Pricing(ctx context.Context) (PricingView, error) {
 	if err != nil {
 		return PricingView{}, err
 	}
-	return PricingView{File: s.prices.Spec().Models, Store: rows}, nil
+	return PricingView{File: s.prices.PriceConfig().Models, Store: rows}, nil
 }
 
-// UpsertStorePrice 写入 PG 兜底定价并清除查价缓存。
-func (s *Service) UpsertStorePrice(ctx context.Context, p store.ModelPrice) error {
-	if p.Model == "" {
-		return fmt.Errorf("%w: model is required", ErrInvalidInput)
+// ModelPriceInput 写入 PG 兜底定价的参数。
+// 倍率未填写时取 1；0 表示免费；负数无效。填写 model_price（含 0）时按次计费。
+type ModelPriceInput struct {
+	ModelRatio          *float64 `json:"model_ratio"           yaml:"model_ratio"`
+	CompletionRatio     *float64 `json:"completion_ratio"      yaml:"completion_ratio"`
+	CacheRatio          *float64 `json:"cache_ratio"           yaml:"cache_ratio"`
+	ModelPrice          *float64 `json:"model_price"           yaml:"model_price"`
+	ReserveInputTokens  *int     `json:"reserve_input_tokens"  yaml:"reserve_input_tokens"`
+	ReserveOutputTokens *int     `json:"reserve_output_tokens" yaml:"reserve_output_tokens"`
+}
+
+// modelPrice 补齐未填写的倍率并校验取值。
+func (in ModelPriceInput) modelPrice(model string) (store.ModelPrice, error) {
+	if model == "" {
+		return store.ModelPrice{}, fmt.Errorf("%w: model is required", ErrInvalidInput)
 	}
-	if err := s.store.UpsertModelPricing(ctx, p); err != nil {
+	price := store.ModelPrice{
+		Model:               model,
+		ModelRatio:          ratioOrDefault(in.ModelRatio),
+		CompletionRatio:     ratioOrDefault(in.CompletionRatio),
+		CacheRatio:          ratioOrDefault(in.CacheRatio),
+		ModelPrice:          in.ModelPrice,
+		ReserveInputTokens:  in.ReserveInputTokens,
+		ReserveOutputTokens: in.ReserveOutputTokens,
+	}
+	if err := pricing.ValidateModelPrice(price); err != nil {
+		return store.ModelPrice{}, fmt.Errorf("%w: %w", ErrInvalidInput, err)
+	}
+	return price, nil
+}
+
+// UpsertModelPrice 写入 PG 兜底定价并清除查价缓存。
+func (s *Service) UpsertModelPrice(ctx context.Context, model string, in ModelPriceInput) error {
+	price, err := in.modelPrice(model)
+	if err != nil {
 		return err
 	}
-	s.prices.InvalidateStoreCache(p.Model)
+	if err := s.store.UpsertModelPricing(ctx, price); err != nil {
+		return err
+	}
+	s.prices.InvalidateFallbackCache(model)
 	return nil
 }
 
-// DeleteStorePrice 删除 PG 兜底定价并清除查价缓存。
-func (s *Service) DeleteStorePrice(ctx context.Context, model string) error {
+// ratioOrDefault 未填写的倍率取 1（与 model_pricing 列默认值一致）。
+func ratioOrDefault(v *float64) float64 {
+	if v == nil {
+		return 1
+	}
+	return *v
+}
+
+// DeleteModelPrice 删除 PG 兜底定价并清除查价缓存。
+func (s *Service) DeleteModelPrice(ctx context.Context, model string) error {
 	if err := s.store.DeleteModelPricing(ctx, model); err != nil {
 		return err
 	}
-	s.prices.InvalidateStoreCache(model)
+	s.prices.InvalidateFallbackCache(model)
 	return nil
 }
 
-// GatewayCatalog 渲染网关 modelCatalog。
-func (s *Service) GatewayCatalog(ctx context.Context) (pricing.GatewayCatalog, error) {
-	return s.prices.GatewayCatalog(ctx)
+// AgentGatewayCatalog 渲染网关 modelCatalog。
+func (s *Service) AgentGatewayCatalog(ctx context.Context) (pricing.AgentGatewayCatalog, error) {
+	return s.prices.AgentGatewayCatalog(ctx)
 }
 
 // UsageTotals 用量聚合的合计。
 type UsageTotals struct {
-	Requests         int64 `json:"requests"`
-	CostNanos        int64 `json:"cost_nanos"`
-	GatewayCostNanos int64 `json:"gateway_cost_nanos"`
+	Requests              int64 `json:"requests"`
+	CostNanos             int64 `json:"cost_nanos"`
+	AgentGatewayCostNanos int64 `json:"gateway_cost_nanos"`
 }
 
 // UsageSummary 按账户 / Key / 模型聚合的用量及合计。
@@ -69,7 +109,7 @@ func (s *Service) UsageSummary(ctx context.Context, f store.UsageFilter) ([]stor
 	for _, r := range rows {
 		totals.Requests += r.Requests
 		totals.CostNanos += r.CostNanos
-		totals.GatewayCostNanos += r.GatewayCostNanos
+		totals.AgentGatewayCostNanos += r.AgentGatewayCostNanos
 	}
 	return rows, totals, nil
 }
@@ -77,16 +117,16 @@ func (s *Service) UsageSummary(ctx context.Context, f store.UsageFilter) ([]stor
 // ListUsage 列出用量明细。
 func (s *Service) ListUsage(
 	ctx context.Context,
-	keyID *uuid.UUID,
+	apiKeyID *uuid.UUID,
 	since *time.Time,
 	limit int,
 ) ([]store.UsageEvent, error) {
-	return s.store.ListUsage(ctx, keyID, since, limit)
+	return s.store.ListUsage(ctx, apiKeyID, since, limit)
 }
 
 // ListAudit 列出准入审计。
-func (s *Service) ListAudit(ctx context.Context, keyID *uuid.UUID, limit int) ([]store.Audit, error) {
-	return s.store.ListAudit(ctx, keyID, limit)
+func (s *Service) ListAudit(ctx context.Context, apiKeyID *uuid.UUID, limit int) ([]store.Audit, error) {
+	return s.store.ListAudit(ctx, apiKeyID, limit)
 }
 
 // ListReservations 列出未结算的预扣。

@@ -6,6 +6,8 @@ package otlp
 import (
 	"context"
 	"encoding/hex"
+	"maps"
+	"math"
 	"strconv"
 	"time"
 
@@ -23,33 +25,33 @@ import (
 // Channel 是本通道在结算记录中的名称。
 const Channel = "otlp"
 
-// Attributes 是 access log 属性名映射（以网关实际输出为准）。
-type Attributes struct {
-	InputTokens  string
-	OutputTokens string
-	CachedTokens string
-	GatewayCost  string // 网关按 modelCatalog 算出的 USD 金额
-	Model        string // gen_ai.request.model；非 LLM 路由为空
-	LoomModel    string // extauth 注入的模型名，Model 为空时使用
-	Provider     string
-	Protocol     string
-	Route        string
-	Gateway      string
-	RequestID    string
-	KeyID        string
-	Account      string
+// AttributeNames 是 access log 属性名映射（以网关实际输出为准）。
+type AttributeNames struct {
+	InputTokens      string
+	OutputTokens     string
+	CachedTokens     string
+	AgentGatewayCost string // 网关按 modelCatalog 算出的 USD 金额
+	Model            string // gen_ai.request.model；非 LLM 路由为空
+	LoomModel        string // extauth 注入的模型名，Model 为空时使用
+	Provider         string
+	Protocol         string
+	Route            string
+	AgentGateway     string
+	RequestID        string
+	APIKeyID         string
+	Account          string
 }
 
 // LogsServer 实现 OTLP LogsService：解析 access log 并交给补账队列。
 type LogsServer struct {
 	logsv1.UnimplementedLogsServiceServer
-	queue *Queue
-	attrs Attributes
+	queue          *Queue
+	attributeNames AttributeNames
 }
 
 // NewLogsServer 创建 LogsService。
-func NewLogsServer(queue *Queue, attrs Attributes) *LogsServer {
-	return &LogsServer{queue: queue, attrs: attrs}
+func NewLogsServer(queue *Queue, attributeNames AttributeNames) *LogsServer {
+	return &LogsServer{queue: queue, attributeNames: attributeNames}
 }
 
 // Export 见 opentelemetry.proto.collector.logs.v1.LogsService/Export。
@@ -61,8 +63,8 @@ func (s *LogsServer) Export(
 		resource := rl.GetResource().GetAttributes()
 		for _, sl := range rl.GetScopeLogs() {
 			for _, record := range sl.GetLogRecords() {
-				usage, protocol := s.attrs.usage(record, resource)
-				s.queue.enqueue(usage, protocol)
+				report, protocol := s.attributeNames.usageReport(record, resource)
+				s.queue.enqueue(report, protocol)
 			}
 		}
 	}
@@ -95,41 +97,42 @@ func (s *TracesServer) Export(
 	return &tracev1.ExportTraceServiceResponse{}, nil
 }
 
-// usage 把一条 access log 转为用量上报；资源属性与记录属性合并，记录属性优先。
-func (a Attributes) usage(record *logspb.LogRecord, resource []*commonpb.KeyValue) (ledger.Usage, string) {
-	attrs := attributeMap(resource)
-	for k, v := range attributeMap(record.GetAttributes()) {
-		attrs[k] = v
-	}
+// usageReport 把一条 access log 转为用量上报；资源属性与记录属性合并，记录属性优先。
+func (a AttributeNames) usageReport(
+	record *logspb.LogRecord,
+	resource []*commonpb.KeyValue,
+) (ledger.UsageReport, string) {
+	values := attributeMap(resource)
+	maps.Copy(values, attributeMap(record.GetAttributes()))
 
-	u := ledger.Usage{
-		RequestID:   attrs.str(a.RequestID),
+	report := ledger.UsageReport{
+		RequestID:   values.str(a.RequestID),
 		Channel:     Channel,
-		AccountName: attrs.str(a.Account),
-		Model:       attrs.str(a.Model),
-		Tokens: pricing.Tokens{
-			Input:  attrs.int(a.InputTokens),
-			Cached: attrs.int(a.CachedTokens),
-			Output: attrs.int(a.OutputTokens),
+		AccountName: values.str(a.Account),
+		Model:       values.str(a.Model),
+		TokenUsage: pricing.TokenUsage{
+			Input:  values.int(a.InputTokens),
+			Cached: values.int(a.CachedTokens),
+			Output: values.int(a.OutputTokens),
 		},
-		Provider: attrs.str(a.Provider),
-		Route:    attrs.str(a.Route),
-		Gateway:  attrs.str(a.Gateway),
-		Time:     recordTime(record),
-		TraceID:  hexID(record.GetTraceId(), 16),
-		SpanID:   hexID(record.GetSpanId(), 8),
+		Provider:     values.str(a.Provider),
+		Route:        values.str(a.Route),
+		AgentGateway: values.str(a.AgentGateway),
+		Time:         recordTime(record),
+		TraceID:      hexID(record.GetTraceId(), 16),
+		SpanID:       hexID(record.GetSpanId(), 8),
 	}
-	if u.Model == "" {
-		u.Model = attrs.str(a.LoomModel)
+	if report.Model == "" {
+		report.Model = values.str(a.LoomModel)
 	}
-	if id, err := uuid.Parse(attrs.str(a.KeyID)); err == nil {
-		u.KeyID = id
+	if id, err := uuid.Parse(values.str(a.APIKeyID)); err == nil {
+		report.APIKeyID = id
 	}
-	if usd, ok := attrs.float(a.GatewayCost); ok {
+	if usd, ok := values.float(a.AgentGatewayCost); ok {
 		nanos := int64(usd*float64(pricing.NanosPerUSD) + 0.5)
-		u.GatewayCostNanos = &nanos
+		report.AgentGatewayCostNanos = &nanos
 	}
-	return u, attrs.str(a.Protocol)
+	return report, values.str(a.Protocol)
 }
 
 func recordTime(r *logspb.LogRecord) time.Time {
@@ -137,7 +140,7 @@ func recordTime(r *logspb.LogRecord) time.Time {
 	if ts == 0 {
 		ts = r.GetObservedTimeUnixNano()
 	}
-	if ts == 0 {
+	if ts == 0 || ts > math.MaxInt64 {
 		return time.Time{}
 	}
 	return time.Unix(0, int64(ts))
@@ -151,58 +154,58 @@ func hexID(b []byte, size int) string {
 }
 
 // attributes 是 OTLP 属性的扁平视图。
-type attributes map[string]any
+type attributeValues map[string]any
 
-func attributeMap(kvs []*commonpb.KeyValue) attributes {
-	m := make(attributes, len(kvs))
+func attributeMap(kvs []*commonpb.KeyValue) attributeValues {
+	values := make(attributeValues, len(kvs))
 	for _, kv := range kvs {
 		switch v := kv.GetValue().GetValue().(type) {
 		case *commonpb.AnyValue_StringValue:
-			m[kv.GetKey()] = v.StringValue
+			values[kv.GetKey()] = v.StringValue
 		case *commonpb.AnyValue_IntValue:
-			m[kv.GetKey()] = v.IntValue
+			values[kv.GetKey()] = v.IntValue
 		case *commonpb.AnyValue_DoubleValue:
-			m[kv.GetKey()] = v.DoubleValue
+			values[kv.GetKey()] = v.DoubleValue
 		case *commonpb.AnyValue_BoolValue:
-			m[kv.GetKey()] = v.BoolValue
+			values[kv.GetKey()] = v.BoolValue
 		}
 	}
-	return m
+	return values
 }
 
-func (m attributes) str(key string) string {
-	switch v := m[key].(type) {
+func (values attributeValues) str(name string) string {
+	switch value := values[name].(type) {
 	case string:
-		return v
+		return value
 	case int64:
-		return strconv.FormatInt(v, 10)
+		return strconv.FormatInt(value, 10)
 	case float64:
-		return strconv.FormatFloat(v, 'f', -1, 64)
+		return strconv.FormatFloat(value, 'f', -1, 64)
 	}
 	return ""
 }
 
-func (m attributes) int(key string) int64 {
-	switch v := m[key].(type) {
+func (values attributeValues) int(name string) int64 {
+	switch value := values[name].(type) {
 	case int64:
-		return v
+		return value
 	case float64:
-		return int64(v)
+		return int64(value)
 	case string:
-		n, _ := strconv.ParseInt(v, 10, 64)
+		n, _ := strconv.ParseInt(value, 10, 64)
 		return n
 	}
 	return 0
 }
 
-func (m attributes) float(key string) (float64, bool) {
-	switch v := m[key].(type) {
+func (values attributeValues) float(name string) (float64, bool) {
+	switch value := values[name].(type) {
 	case float64:
-		return v, true
+		return value, true
 	case int64:
-		return float64(v), true
+		return float64(value), true
 	case string:
-		f, err := strconv.ParseFloat(v, 64)
+		f, err := strconv.ParseFloat(value, 64)
 		return f, err == nil
 	}
 	return 0, false

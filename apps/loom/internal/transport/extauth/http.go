@@ -37,13 +37,13 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	verdict := h.gate.Admit(r.Context(), h.opts.request(headers, body, "http", r.URL.Path))
-	resp := h.opts.response(verdict)
+	verdict := h.gate.Admit(r.Context(), h.opts.admissionRequest(headers, body, "http", r.URL.Path))
+	resp := h.opts.checkResponse(verdict)
 
 	for name, value := range resp.headers {
 		w.Header().Set(name, value)
 	}
-	if resp.allowed {
+	if resp.isAllowed {
 		w.WriteHeader(http.StatusOK)
 		return
 	}

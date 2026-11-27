@@ -26,33 +26,33 @@ type CostSource string
 const (
 	// CostSourceLoom 以 loom 计价表为准，网关金额只做对账（默认）。
 	CostSourceLoom CostSource = "loom"
-	// CostSourceGatewayPreferred 网关上报了金额时优先使用网关金额。
-	CostSourceGatewayPreferred CostSource = "gateway_prefer"
+	// CostSourceAgentGatewayPreferred 网关上报了金额时优先使用网关金额。
+	CostSourceAgentGatewayPreferred CostSource = "gateway_prefer"
 
-	pricingSourceGateway pricing.Source = "gateway"
+	pricingSourceAgentGateway pricing.PriceSource = "gateway"
 )
 
 // Store 是账本所需的持久化能力。
 type Store interface {
-	ReserveKeyQuota(ctx context.Context, keyID uuid.UUID, nanos int64) (store.QuotaState, error)
+	ReserveAPIKeyQuota(ctx context.Context, apiKeyID uuid.UUID, nanos int64) (store.QuotaState, error)
 	ReserveAccountQuota(ctx context.Context, accountID uuid.UUID, nanos int64) (store.QuotaState, error)
-	ReleaseKeyReservation(ctx context.Context, keyID uuid.UUID, nanos int64) error
+	ReleaseAPIKeyReservation(ctx context.Context, apiKeyID uuid.UUID, nanos int64) error
 	ReleaseAccountReservation(ctx context.Context, accountID uuid.UUID, nanos int64) error
 	CreateReservation(ctx context.Context, r store.Reservation) error
 	CountReservations(ctx context.Context) (int64, error)
 	ReleaseExpiredReservations(ctx context.Context, now time.Time, limit int) (int, error)
 
 	SettleUsage(ctx context.Context, ev store.UsageEvent) (bool, error)
-	BackfillGatewayCost(ctx context.Context, requestID string, nanos int64) (bool, error)
+	BackfillAgentGatewayCost(ctx context.Context, requestID string, nanos int64) (bool, error)
 
-	GetKey(ctx context.Context, id uuid.UUID) (store.Key, error)
+	GetAPIKey(ctx context.Context, id uuid.UUID) (store.APIKey, error)
 	GetAccountByName(ctx context.Context, name string) (store.Account, error)
 	ListAccounts(ctx context.Context, limit int) ([]store.Account, error)
 }
 
 // Pricer 按模型与分组查单价卡。
 type Pricer interface {
-	Lookup(ctx context.Context, model, group string) (pricing.Card, error)
+	Lookup(ctx context.Context, model, group string) (pricing.UnitPrice, error)
 }
 
 // Options 账本参数。
@@ -69,13 +69,13 @@ type Ledger struct {
 	opts    Options
 	store   Store
 	pricer  Pricer
-	owners  *ownerCache
+	owners  *usageOwnerCache
 	metrics *telemetry.Metrics
 	log     *slog.Logger
 }
 
 // New 创建账本。
-func New(opts Options, st Store, pricer Pricer, metrics *telemetry.Metrics, log *slog.Logger) *Ledger {
+func New(opts Options, storage Store, pricer Pricer, metrics *telemetry.Metrics, log *slog.Logger) *Ledger {
 	if opts.ReservationTTL <= 0 {
 		opts.ReservationTTL = 15 * time.Minute
 	}
@@ -90,10 +90,16 @@ func New(opts Options, st Store, pricer Pricer, metrics *telemetry.Metrics, log 
 	}
 	return &Ledger{
 		opts:    opts,
-		store:   st,
+		store:   storage,
 		pricer:  pricer,
-		owners:  newOwnerCache(st, opts.OwnerCacheTTL),
+		owners:  newOwnerCache(storage, opts.OwnerCacheTTL),
 		metrics: metrics,
 		log:     log,
 	}
 }
+
+// InvalidateAPIKey 清除某 API Key 的结算归属缓存（仅作用于当前副本）。
+func (l *Ledger) InvalidateAPIKey(apiKeyID uuid.UUID) { l.owners.invalidateAPIKey(apiKeyID) }
+
+// InvalidateAccount 清除某账户的结算归属缓存，使分组变更立即按新倍率结算（仅作用于当前副本）。
+func (l *Ledger) InvalidateAccount(accountID uuid.UUID) { l.owners.invalidateAccount(accountID) }

@@ -12,18 +12,18 @@ import (
 // GetAccount 见 store.Store。
 func (d *DB) GetAccount(ctx context.Context, id uuid.UUID) (store.Account, error) {
 	row, err := d.q.GetAccount(ctx, id)
-	return toAccount(row), d.fail("GetAccount", err)
+	return toAccount(row), d.fail("Account", err)
 }
 
 // GetAccountByName 见 store.Store。
 func (d *DB) GetAccountByName(ctx context.Context, name string) (store.Account, error) {
 	row, err := d.q.GetAccountByName(ctx, name)
-	return toAccount(row), d.fail("GetAccountByName", err)
+	return toAccount(row), d.fail("AccountByName", err)
 }
 
 // ListAccounts 见 store.Store。
 func (d *DB) ListAccounts(ctx context.Context, limit int) ([]store.Account, error) {
-	rows, err := d.q.ListAccounts(ctx, int32(limit))
+	rows, err := d.q.ListAccounts(ctx, queryLimit(limit))
 	if err != nil {
 		return nil, d.fail("ListAccounts", err)
 	}
@@ -44,25 +44,20 @@ func (d *DB) CreateAccount(ctx context.Context, a store.Account) (store.Account,
 }
 
 // UpdateAccount 见 store.Store。
-func (d *DB) UpdateAccount(
-	ctx context.Context,
-	id uuid.UUID,
-	status store.Status,
-	quotaLimit *int64,
-	group string,
-) (store.Account, error) {
+func (d *DB) UpdateAccount(ctx context.Context, id uuid.UUID, s store.AccountSettings) (store.Account, error) {
 	row, err := d.q.UpdateAccount(ctx, sqlcgen.UpdateAccountParams{
 		ID:         id,
-		Status:     string(status),
-		QuotaLimit: quotaLimit,
-		Group:      group,
+		Status:     string(s.Status),
+		Group:      s.Group,
+		QuotaLimit: s.QuotaLimit,
 	})
 	return toAccount(row), d.fail("UpdateAccount", err)
 }
 
 // AddAccountQuotaLimit 见 store.Store。
 func (d *DB) AddAccountQuotaLimit(ctx context.Context, id uuid.UUID, delta int64) (store.Account, error) {
-	row, err := d.q.AddAccountQuotaLimit(ctx, sqlcgen.AddAccountQuotaLimitParams{ID: id, QuotaLimit: &delta})
+	params := sqlcgen.AddAccountQuotaLimitParams{ID: id, QuotaLimit: &delta}
+	row, err := d.q.AddAccountQuotaLimit(ctx, params)
 	return toAccount(row), d.fail("AddAccountQuotaLimit", err)
 }
 
@@ -72,7 +67,8 @@ func (d *DB) SetAccountQuota(ctx context.Context, id uuid.UUID, limit *int64, us
 		if _, err := q.DeleteAccountReservations(ctx, id); err != nil {
 			return d.fail("SetAccountQuota.deleteReservations", err)
 		}
-		err := q.SetAccountQuota(ctx, sqlcgen.SetAccountQuotaParams{ID: id, QuotaLimit: limit, QuotaUsed: used})
+		params := sqlcgen.SetAccountQuotaParams{ID: id, QuotaLimit: limit, QuotaUsed: used}
+		err := q.SetAccountQuota(ctx, params)
 		return d.fail("SetAccountQuota", err)
 	})
 }

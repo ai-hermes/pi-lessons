@@ -46,6 +46,7 @@ extauth:
     client_inactive: 403
     model_not_allowed: 403
     model_not_priced: 403
+    group_not_priced: 403
     insufficient_quota: 403
     internal_error: 500
   body_limit: 1048576
@@ -62,7 +63,7 @@ ledger:
   reservation_ttl: 15m          # 两条用量通道都没送达时，预扣在此之后释放
   reaper_interval: 1m
   reaper_batch: 200
-  cost_source: loom             # loom：以计价表为准；gateway_prefer：优先网关 agw.ai.usage.cost.total
+  cost_source: loom             # loom：以计价表为准；gateway_prefer：优先网关 agw.ai.usage.cost.total × 分组倍率
   owner_cache_ttl: 60s
 
 ratelimit:

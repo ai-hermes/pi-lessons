@@ -13,28 +13,29 @@ func newRenderCatalogCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "render-catalog",
 		GroupID: "tooling",
-		Short:   "Render the agentgateway modelCatalog from pricing.yaml",
-		Long: `Render pricing.yaml into the catalog.json format understood by agentgateway's
-modelCatalog (rates in USD per 1M tokens). Per-call models and group ratios cannot
-be expressed in the gateway catalog and are skipped.`,
+		Short:   "Generate an AgentGateway model catalog from Loom pricing",
+		Long: `Convert Loom's pricing rules into a model catalog that AgentGateway can load.
+
+Token rates are written in USD per one million tokens. Models priced per request
+and account-group price adjustments are Loom-only features and are not included.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if out == "" {
-				return app.RenderGatewayCatalog(pricingFile, cmd.OutOrStdout())
+				return app.RenderAgentGatewayCatalog(pricingFile, cmd.OutOrStdout())
 			}
-			f, err := os.Create(out)
+			f, err := os.Create(out) //nolint:gosec // Output path is explicitly supplied by the CLI operator.
 			if err != nil {
 				return err
 			}
-			if err := app.RenderGatewayCatalog(pricingFile, f); err != nil {
+			if err := app.RenderAgentGatewayCatalog(pricingFile, f); err != nil {
 				_ = f.Close()
 				return err
 			}
 			return f.Close()
 		},
 	}
-	cmd.Flags().StringVar(&pricingFile, "pricing", "", "pricing.yaml")
-	cmd.Flags().StringVar(&out, "out", "", "output file (default stdout)")
+	cmd.Flags().StringVar(&pricingFile, "pricing", "", "path to Loom pricing.yaml")
+	cmd.Flags().StringVar(&out, "out", "", "write the catalog to this file (default: stdout)")
 	_ = cmd.MarkFlagRequired("pricing")
 	return cmd
 }

@@ -16,7 +16,7 @@ const settleAttempts = 3
 
 // Settler 结算用量。
 type Settler interface {
-	Settle(ctx context.Context, u ledger.Usage) (bool, error)
+	Settle(ctx context.Context, report ledger.UsageReport) (bool, error)
 }
 
 // QueueOptions 补账队列参数。
@@ -30,7 +30,7 @@ type QueueOptions struct {
 // Queue 缓冲 access log 中的用量并批量结算；满了即丢弃，绝不阻塞网关的 Export。
 type Queue struct {
 	opts    QueueOptions
-	items   chan ledger.Usage
+	items   chan ledger.UsageReport
 	settler Settler
 	metrics *telemetry.Metrics
 	log     *slog.Logger
@@ -49,26 +49,26 @@ func NewQueue(opts QueueOptions, settler Settler, metrics *telemetry.Metrics, lo
 	}
 	return &Queue{
 		opts:    opts,
-		items:   make(chan ledger.Usage, opts.Size),
+		items:   make(chan ledger.UsageReport, opts.Size),
 		settler: settler,
 		metrics: metrics,
 		log:     log,
 	}
 }
 
-func (q *Queue) enqueue(u ledger.Usage, protocol string) {
-	if u.Model == "" {
+func (q *Queue) enqueue(report ledger.UsageReport, protocol string) {
+	if report.Model == "" {
 		return // 健康检查等非计费流量
 	}
 	if len(q.opts.Protocols) > 0 && !slices.Contains(q.opts.Protocols, protocol) {
 		return
 	}
 	select {
-	case q.items <- u:
+	case q.items <- report:
 		q.metrics.OTLPQueueDepth.Set(float64(len(q.items)))
 	default:
 		q.metrics.OTLPDropped.Inc()
-		q.log.Warn("otlp queue full, dropping usage report", "request_id", u.RequestID, "model", u.Model)
+		q.log.Warn("otlp queue full, dropping usage report", "request_id", report.RequestID, "model", report.Model)
 	}
 }
 
@@ -76,14 +76,14 @@ func (q *Queue) enqueue(u ledger.Usage, protocol string) {
 func (q *Queue) Run(ctx context.Context) {
 	ticker := time.NewTicker(q.opts.FlushInterval)
 	defer ticker.Stop()
-	batch := make([]ledger.Usage, 0, q.opts.BatchSize)
+	batch := make([]ledger.UsageReport, 0, q.opts.BatchSize)
 	flush := func(ctx context.Context) {
 		if len(batch) == 0 {
 			return
 		}
 		start := time.Now()
-		for _, u := range batch {
-			q.settle(ctx, u)
+		for _, report := range batch {
+			q.settle(ctx, report)
 		}
 		q.metrics.OTLPFlushDuration.Observe(time.Since(start).Seconds())
 		q.metrics.OTLPQueueDepth.Set(float64(len(q.items)))
@@ -96,8 +96,8 @@ func (q *Queue) Run(ctx context.Context) {
 			batch = append(batch, q.drain()...)
 			flush(context.WithoutCancel(ctx))
 			return
-		case u := <-q.items:
-			batch = append(batch, u)
+		case report := <-q.items:
+			batch = append(batch, report)
 			if len(batch) >= q.opts.BatchSize {
 				flush(ctx)
 			}
@@ -107,12 +107,12 @@ func (q *Queue) Run(ctx context.Context) {
 	}
 }
 
-func (q *Queue) drain() []ledger.Usage {
-	var rest []ledger.Usage
+func (q *Queue) drain() []ledger.UsageReport {
+	var rest []ledger.UsageReport
 	for {
 		select {
-		case u := <-q.items:
-			rest = append(rest, u)
+		case report := <-q.items:
+			rest = append(rest, report)
 		default:
 			return rest
 		}
@@ -120,15 +120,20 @@ func (q *Queue) drain() []ledger.Usage {
 }
 
 // settle 结算一条记录，瞬时错误重试；归属不存在不重试。
-func (q *Queue) settle(ctx context.Context, u ledger.Usage) {
+func (q *Queue) settle(ctx context.Context, report ledger.UsageReport) {
 	var err error
 	for attempt := range settleAttempts {
-		if _, err = q.settler.Settle(ctx, u); err == nil || errors.Is(err, store.ErrNotFound) {
+		if _, err = q.settler.Settle(ctx, report); err == nil || errors.Is(err, store.ErrNotFound) {
 			break
 		}
 		time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
 	}
 	if err != nil {
-		q.log.Error("otlp settlement failed", "err", err, "request_id", u.RequestID, "model", u.Model)
+		q.log.Error(
+			"otlp settlement failed",
+			"err", err,
+			"request_id", report.RequestID,
+			"model", report.Model,
+		)
 	}
 }

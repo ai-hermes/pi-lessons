@@ -14,10 +14,10 @@ import (
 
 // 额度预扣、结算与过期释放。
 
-// ReserveKeyQuota 见 store.Store：条件 UPDATE，剩余额度不足或 Key 不可用时返回 ErrInsufficientQuota。
-func (d *DB) ReserveKeyQuota(ctx context.Context, id uuid.UUID, nanos int64) (store.QuotaState, error) {
+// ReserveAPIKeyQuota 见 store.Store：条件 UPDATE，剩余额度不足或 Key 不可用时返回 ErrInsufficientQuota。
+func (d *DB) ReserveAPIKeyQuota(ctx context.Context, id uuid.UUID, nanos int64) (store.QuotaState, error) {
 	if nanos <= 0 {
-		k, err := d.GetKey(ctx, id)
+		k, err := d.GetAPIKey(ctx, id)
 		return store.QuotaState{Limit: k.QuotaLimit, Used: k.QuotaUsed, Reserved: k.Reserved}, err
 	}
 	row, err := d.q.ReserveKeyQuota(ctx, sqlcgen.ReserveKeyQuotaParams{ID: id, Reserved: nanos})
@@ -25,7 +25,7 @@ func (d *DB) ReserveKeyQuota(ctx context.Context, id uuid.UUID, nanos int64) (st
 		return store.QuotaState{}, store.ErrInsufficientQuota
 	}
 	return store.QuotaState{Limit: row.QuotaLimit, Used: row.QuotaUsed, Reserved: row.Reserved},
-		d.fail("ReserveKeyQuota", err)
+		d.fail("ReserveAPIKeyQuota", err)
 }
 
 // ReserveAccountQuota 见 store.Store。
@@ -34,7 +34,8 @@ func (d *DB) ReserveAccountQuota(ctx context.Context, id uuid.UUID, nanos int64)
 		a, err := d.GetAccount(ctx, id)
 		return store.QuotaState{Limit: a.QuotaLimit, Used: a.QuotaUsed, Reserved: a.Reserved}, err
 	}
-	row, err := d.q.ReserveAccountQuota(ctx, sqlcgen.ReserveAccountQuotaParams{ID: id, Reserved: nanos})
+	params := sqlcgen.ReserveAccountQuotaParams{ID: id, Reserved: nanos}
+	row, err := d.q.ReserveAccountQuota(ctx, params)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.QuotaState{}, store.ErrInsufficientQuota
 	}
@@ -42,13 +43,13 @@ func (d *DB) ReserveAccountQuota(ctx context.Context, id uuid.UUID, nanos int64)
 		d.fail("ReserveAccountQuota", err)
 }
 
-// ReleaseKeyReservation 见 store.Store。
-func (d *DB) ReleaseKeyReservation(ctx context.Context, id uuid.UUID, nanos int64) error {
+// ReleaseAPIKeyReservation 见 store.Store。
+func (d *DB) ReleaseAPIKeyReservation(ctx context.Context, id uuid.UUID, nanos int64) error {
 	if nanos <= 0 {
 		return nil
 	}
 	err := d.q.ReleaseKeyReservation(ctx, sqlcgen.ReleaseKeyReservationParams{ID: id, Reserved: nanos})
-	return d.fail("ReleaseKeyReservation", err)
+	return d.fail("ReleaseAPIKeyReservation", err)
 }
 
 // ReleaseAccountReservation 见 store.Store。
@@ -64,7 +65,7 @@ func (d *DB) ReleaseAccountReservation(ctx context.Context, id uuid.UUID, nanos 
 func (d *DB) CreateReservation(ctx context.Context, r store.Reservation) error {
 	err := d.q.CreateReservation(ctx, sqlcgen.CreateReservationParams{
 		RequestID: r.RequestID,
-		KeyID:     r.KeyID,
+		KeyID:     r.APIKeyID,
 		AccountID: r.AccountID,
 		Model:     r.Model,
 		Nanos:     r.Nanos,
@@ -76,12 +77,12 @@ func (d *DB) CreateReservation(ctx context.Context, r store.Reservation) error {
 // GetReservation 见 store.Store。
 func (d *DB) GetReservation(ctx context.Context, requestID string) (store.Reservation, error) {
 	row, err := d.q.GetReservation(ctx, requestID)
-	return toReservation(row), d.fail("GetReservation", err)
+	return toReservation(row), d.fail("Reservation", err)
 }
 
 // ListReservations 见 store.Store。
 func (d *DB) ListReservations(ctx context.Context, limit int) ([]store.Reservation, error) {
-	rows, err := d.q.ListReservations(ctx, int32(limit))
+	rows, err := d.q.ListReservations(ctx, queryLimit(limit))
 	if err != nil {
 		return nil, d.fail("ListReservations", err)
 	}
@@ -112,7 +113,7 @@ func (d *DB) SettleUsage(ctx context.Context, ev store.UsageEvent) (inserted boo
 
 // chargeQuota 有预扣记录时用实际金额冲正预扣；没有时（预扣为 0、已过期释放）直接累加已用额度。
 func (d *DB) chargeQuota(ctx context.Context, q *sqlcgen.Queries, ev store.UsageEvent) error {
-	if ev.KeyID == nil {
+	if ev.APIKeyID == nil {
 		if ev.AccountID == nil {
 			return nil
 		}
@@ -122,7 +123,7 @@ func (d *DB) chargeQuota(ctx context.Context, q *sqlcgen.Queries, ev store.Usage
 
 	res, err := q.GetReservation(ctx, ev.RequestID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		if err := q.AddKeyUsed(ctx, sqlcgen.AddKeyUsedParams{ID: *ev.KeyID, QuotaUsed: ev.CostNanos}); err != nil {
+		if err := q.AddKeyUsed(ctx, sqlcgen.AddKeyUsedParams{ID: *ev.APIKeyID, QuotaUsed: ev.CostNanos}); err != nil {
 			return d.fail("SettleUsage.addKeyUsed", err)
 		}
 		if ev.AccountID == nil {
@@ -151,7 +152,7 @@ func (d *DB) ReleaseExpiredReservations(ctx context.Context, now time.Time, limi
 	err = d.inTx(ctx, "ReleaseExpired", func(q *sqlcgen.Queries) error {
 		rows, err := q.LockExpiredReservations(ctx, sqlcgen.LockExpiredReservationsParams{
 			ExpiresAt: now,
-			Limit:     int32(limit),
+			Limit:     queryLimit(limit),
 		})
 		if err != nil {
 			return d.fail("ReleaseExpired.lock", err)
@@ -176,22 +177,31 @@ func (d *DB) ReleaseExpiredReservations(ctx context.Context, now time.Time, limi
 }
 
 func usageEventParams(ev store.UsageEvent) sqlcgen.SettleUsageParams {
-	return sqlcgen.SettleUsageParams{
+	params := sqlcgen.SettleUsageParams{
 		Time:             ev.Time,
 		RequestID:        optionalText(ev.RequestID),
 		TraceID:          ev.TraceID,
 		SpanID:           ev.SpanID,
 		AccountID:        ev.AccountID,
-		KeyID:            ev.KeyID,
+		KeyID:            ev.APIKeyID,
 		Model:            ev.Model,
 		Provider:         ev.Provider,
 		Route:            ev.Route,
-		Gateway:          ev.Gateway,
+		Gateway:          ev.AgentGateway,
 		InputTokens:      ev.InputTokens,
 		OutputTokens:     ev.OutputTokens,
 		CachedTokens:     ev.CachedTokens,
 		CostNanos:        ev.CostNanos,
-		GatewayCostNanos: ev.GatewayCostNanos,
+		GatewayCostNanos: ev.AgentGatewayCostNanos,
 		PricingSource:    ev.PricingSource,
 	}
+	if snap := ev.Pricing; snap != nil {
+		params.PricingGroup = optionalText(snap.Group)
+		params.GroupRatio = &snap.GroupRatio
+		params.ModelRatio = &snap.ModelRatio
+		params.CompletionRatio = &snap.CompletionRatio
+		params.CacheRatio = &snap.CacheRatio
+		params.ModelPrice = snap.ModelPrice
+	}
+	return params
 }

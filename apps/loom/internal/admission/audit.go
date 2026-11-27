@@ -5,8 +5,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store"
 )
 
@@ -49,8 +47,8 @@ func (w *auditWriter) record(req Request, v Verdict) {
 		Reason:          string(v.Reason),
 	}
 	if v.hasKey() {
-		row.KeyID = ptr(v.KeyID)
-		row.AccountID = ptr(v.AccountID)
+		row.APIKeyID = new(v.APIKeyID)
+		row.AccountID = new(v.AccountID)
 	}
 	select {
 	case w.queue <- row:
@@ -102,5 +100,3 @@ func (w *auditWriter) run(ctx context.Context) {
 		}
 	}
 }
-
-func ptr(id uuid.UUID) *uuid.UUID { return &id }

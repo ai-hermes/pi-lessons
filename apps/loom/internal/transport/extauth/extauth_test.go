@@ -34,7 +34,7 @@ func testOptions() Options {
 			ClientRequestID: "x-request-id",
 			Model:           "x-loom-model",
 			Account:         "x-loom-client-id",
-			KeyID:           "x-loom-key-id",
+			APIKeyID:        "x-loom-key-id",
 			RequestID:       "x-loom-request-id",
 			QuotaRemaining:  "x-loom-quota-remaining",
 			DenyReason:      "x-loom-deny-reason",
@@ -48,10 +48,10 @@ func TestHTTPAllowCarriesIdentityHeaders(t *testing.T) {
 	remaining := int64(42)
 	gate := &fakeGate{verdict: admission.Verdict{
 		Allowed: true, Reason: admission.ReasonAllowed, RequestID: "req-1",
-		KeyID: uuid.MustParse("11111111-1111-1111-1111-111111111111"), AccountName: "alice",
+		APIKeyID: uuid.MustParse("11111111-1111-1111-1111-111111111111"), AccountName: "alice",
 		Model: "lab-model", RemainingNanos: &remaining,
 	}}
-	req := httptest.NewRequest(http.MethodPost, CheckPath, bytes.NewReader([]byte(`{"model":"lab-model"}`)))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, CheckPath, bytes.NewReader([]byte(`{"model":"lab-model"}`)))
 	req.Header.Set("Authorization", "Bearer loom-secret")
 	req.Header.Set("X-Request-Id", "client-req")
 	rec := httptest.NewRecorder()
@@ -70,7 +70,7 @@ func TestHTTPAllowCarriesIdentityHeaders(t *testing.T) {
 
 func TestHTTPDenyReturnsOpenAIErrorBody(t *testing.T) {
 	gate := &fakeGate{verdict: admission.Verdict{Reason: admission.ReasonInsufficientQuota}}
-	req := httptest.NewRequest(http.MethodGet, CheckPath, http.NoBody)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, CheckPath, http.NoBody)
 	rec := httptest.NewRecorder()
 
 	NewHTTPHandler(gate, testOptions()).ServeHTTP(rec, req)

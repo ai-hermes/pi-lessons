@@ -37,14 +37,32 @@ func TestLoadAppliesEnvOverrides(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, ":19090", cfg.Server.OpsListen)
-	assert.Equal(t, int64(512), cfg.Ledger.ReserveTokens.Input)
-	assert.Equal(t, int64(1024), cfg.Ledger.ReserveTokens.Output)
+	assert.Equal(t, int64(512), cfg.Ledger.ReserveEstimate.Input)
+	assert.Equal(t, int64(1024), cfg.Ledger.ReserveEstimate.Output)
 }
 
 func TestLoadRejectsMissingSecrets(t *testing.T) {
 	_, err := Load("")
-	assert.ErrorContains(t, err, "postgres.dsn")
+	require.ErrorContains(t, err, "postgres.dsn")
 	assert.ErrorContains(t, err, "admin.token")
+}
+
+func TestInitPublishesValidatedConfig(t *testing.T) {
+	dir := t.TempDir()
+	explicit := filepath.Join(dir, "explicit.yaml")
+	envFile := filepath.Join(dir, "env.yaml")
+	require.NoError(t, os.WriteFile(explicit, []byte("postgres:\n  dsn: postgres://explicit\nadmin:\n  token: explicit\n"), 0o600))
+	require.NoError(t, os.WriteFile(envFile, []byte("postgres:\n  dsn: postgres://env\nadmin:\n  token: env\n"), 0o600))
+	t.Setenv("LOOM_CONFIG", envFile)
+
+	_, err := Init(explicit)
+	require.NoError(t, err)
+	assert.Equal(t, "postgres://explicit", MustGet().Postgres.DSN)
+
+	before := MustGet()
+	_, err = Init(filepath.Join(dir, "missing.yaml"))
+	require.Error(t, err)
+	assert.Same(t, before, MustGet(), "failed Init must not replace the active config")
 }
 
 func TestShippedConfigIsValid(t *testing.T) {

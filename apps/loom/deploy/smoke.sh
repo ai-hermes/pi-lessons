@@ -85,7 +85,8 @@ echo "### 3. 分组倍率：vera(vip 0.9) → 1,638,000"
 chat "$(key vera)" lab-model /v1/chat/completions >/dev/null
 sleep 4
 check "vera cost_nanos = 1,638,000" 1638000 "$(q "select cost_nanos from usage_events where account_id=(select id from accounts where name='vera') order by id desc limit 1")"
-check "vera gateway cost = 1,820,000 (catalog 无分组倍率，对账跳过)" 1820000 "$(q "select gateway_cost_nanos from usage_events where account_id=(select id from accounts where name='vera') order by id desc limit 1")"
+check "vera gateway cost = 1,820,000 (catalog 1 倍价，对账时 × 0.9)" 1820000 "$(q "select gateway_cost_nanos from usage_events where account_id=(select id from accounts where name='vera') order by id desc limit 1")"
+check "vera pricing snapshot = vip|0.9" "vip|0.9" "$(q "select pricing_group || '|' || group_ratio from usage_events where account_id=(select id from accounts where name='vera') order by id desc limit 1")"
 
 echo "### 4. 按次计费：图片模型 lab-image = \$0.04"
 check "dave images-only key lab-image → 200" 200 "$(code -X POST -H "x-api-key: $(key dave-images)" -H 'content-type: application/json' -d '{"model":"lab-image","prompt":"cat"}' $BASE/v1/images/generations)"
@@ -130,6 +131,7 @@ check "grpc route dave → 200" 200 "$(code -H "x-api-key: $(key dave)" $BASE/gr
 check "grpc route bogus → 401" 401 "$(code -H 'x-api-key: loom-bogus' $BASE/grpc)"
 
 echo "### 10. 管理 API 与指标"
+check "admin rejects undefined group" "HTTP/1.1 400" "$(admin_post /v1/accounts '{"name":"smoke-ghost","group":"no-such-group"}' 2>&1 | grep -o 'HTTP/1.1 400' | head -1)"
 check "admin list accounts" 7 "$(admin /v1/accounts | sed 's/"id":/\n&id=/g' | grep -c '"name"')"
 check "admin usage summary has rows" yes "$(admin '/v1/usage/summary' | grep -q '"total"' && echo yes)"
 check "admin pricing view has pg row" 1 "$(admin /v1/pricing | grep -o '"model":"lab-pg-only"' | wc -l | tr -d ' ')"

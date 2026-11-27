@@ -38,59 +38,56 @@ const (
 //
 // 停机顺序：先关闭两个端口（不再接收新请求、等待进行中的请求结束），
 // 再停止后台任务，让 OTLP 补账队列与审计队列把已收到的数据写完。
-func (a *App) Run(ctx context.Context) error {
+func (s *Service) Run(ctx context.Context) error {
 	signalCtx, stopSignals := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignals()
 
-	token, err := a.cfg.Admin.ResolveToken()
+	token, err := s.cfg.Admin.ResolveToken()
 	if err != nil {
 		return err
 	}
 	grpcHealth := health.NewServer()
-	dataPlane, grpcServer := a.dataServer(grpcHealth)
-	opsPlane := a.opsServer(token)
+	dataPlane, grpcServer := s.dataServer(grpcHealth)
+	opsPlane := s.opsServer(token)
 
 	workerCtx, stopWorkers := context.WithCancel(context.WithoutCancel(ctx))
 	var workers sync.WaitGroup
 	for _, run := range []func(context.Context){
-		a.prices.Run,
-		a.ledger.RunReaper,
-		a.gate.RunAuditWriter,
-		a.queue.Run,
-		func(ctx context.Context) { a.watchHealth(ctx, grpcHealth) },
+		s.prices.Run,
+		s.ledger.RunReaper,
+		s.gate.RunAuditWriter,
+		s.queue.Run,
+		func(ctx context.Context) { s.watchHealth(ctx, grpcHealth) },
 	} {
 		workers.Go(func() { run(workerCtx) })
 	}
 
-	a.ready.Store(true)
+	s.ready.Store(true)
 	serveErr := make(chan error, 2)
 	for _, srv := range []*http.Server{dataPlane, opsPlane} {
-		go func() { serveErr <- listenAndServe(srv) }()
+		go func() { serveErr <- listenAndServe(signalCtx, srv) }()
 	}
-	a.log.Info(
+	s.log.Info(
 		"loom started",
-		"version",
-		a.build.Version,
-		"listen",
-		a.cfg.Server.Listen,
-		"ops_listen",
-		a.cfg.Server.OpsListen,
+		"version", s.build.Version,
+		"listen", s.cfg.Server.Listen,
+		"ops_listen", s.cfg.Server.OpsListen,
 	)
 
 	select {
 	case <-signalCtx.Done():
-		a.log.Info("shutdown signal received")
+		s.log.Info("shutdown signal received")
 	case err = <-serveErr:
-		a.log.Error("listener failed", "err", err)
+		s.log.Error("listener failed", "err", err)
 	}
 
-	a.ready.Store(false)
+	s.ready.Store(false)
 	grpcHealth.Shutdown()
-	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.cfg.Server.ShutdownTimeout)
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.Server.ShutdownTimeout)
 	defer cancel()
 	for _, srv := range []*http.Server{dataPlane, opsPlane} {
 		if shutdownErr := srv.Shutdown(shutdownCtx); shutdownErr != nil {
-			a.log.Warn("server shutdown", "addr", srv.Addr, "err", shutdownErr)
+			s.log.Warn("server shutdown", "addr", srv.Addr, "err", shutdownErr)
 		}
 	}
 	grpcServer.Stop()
@@ -101,26 +98,31 @@ func (a *App) Run(ctx context.Context) error {
 	select {
 	case <-done:
 	case <-shutdownCtx.Done():
-		a.log.Warn("background workers did not stop before shutdown timeout")
+		s.log.Warn("background workers did not stop before shutdown timeout")
 	}
-	a.log.Info("loom stopped")
+	s.log.Info("loom stopped")
 	return err
 }
 
 // dataServer 构建数据面：单端口 h2c，gRPC 与 HTTP 按 Content-Type 分流。
-func (a *App) dataServer(grpcHealth *health.Server) (*http.Server, *grpc.Server) {
-	extOpts := extauthOptions(a.cfg.ExtAuth)
+func (s *Service) dataServer(grpcHealth *health.Server) (*http.Server, *grpc.Server) {
+	extOpts := extauthOptions(s.cfg.ExtAuth)
+
+	extAuthz := extauth.NewGRPCServer(s.gate, extOpts)
+	rateLimit := ratelimit.NewServer(s.ledger, s.cfg.RateLimit.Domain, s.metrics, s.log)
+	logs := otlp.NewLogsServer(s.queue, otlp.AttributeNames(s.cfg.OTLP.AttributeNames))
+	traces := otlp.NewTracesServer(s.metrics)
 
 	gs := grpc.NewServer()
-	authv3.RegisterAuthorizationServer(gs, extauth.NewGRPCServer(a.gate, extOpts))
-	rlsv3.RegisterRateLimitServiceServer(gs, ratelimit.NewServer(a.ledger, a.cfg.RateLimit.Domain, a.metrics, a.log))
-	logsv1.RegisterLogsServiceServer(gs, otlp.NewLogsServer(a.queue, otlpAttributes(a.cfg.OTLP.Attributes)))
-	tracev1.RegisterTraceServiceServer(gs, otlp.NewTracesServer(a.metrics))
+	authv3.RegisterAuthorizationServer(gs, extAuthz)
+	rlsv3.RegisterRateLimitServiceServer(gs, rateLimit)
+	logsv1.RegisterLogsServiceServer(gs, logs)
+	tracev1.RegisterTraceServiceServer(gs, traces)
 	healthpb.RegisterHealthServer(gs, grpcHealth)
 	reflection.Register(gs)
 
 	mux := http.NewServeMux()
-	mux.Handle(extauth.CheckPath, extauth.NewHTTPHandler(a.gate, extOpts))
+	mux.Handle(extauth.CheckPath, extauth.NewHTTPHandler(s.gate, extOpts))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
@@ -134,7 +136,7 @@ func (a *App) dataServer(grpcHealth *health.Server) (*http.Server, *grpc.Server)
 	protocols.SetHTTP1(true)
 	protocols.SetUnencryptedHTTP2(true) // 网关以 HTTP/2 prior knowledge 调 gRPC
 	return &http.Server{
-		Addr:              a.cfg.Server.Listen,
+		Addr:              s.cfg.Server.Listen,
 		Handler:           handler,
 		Protocols:         protocols,
 		ReadHeaderTimeout: readHeaderTimeout,
@@ -142,28 +144,36 @@ func (a *App) dataServer(grpcHealth *health.Server) (*http.Server, *grpc.Server)
 }
 
 // opsServer 构建运维面：管理 API、指标、探针、pprof。
-func (a *App) opsServer(adminToken string) *http.Server {
+func (s *Service) opsServer(adminToken string) *http.Server {
 	mux := http.NewServeMux()
-	mux.Handle("/v1/", adminapi.New(a.accounts, adminToken).Handler())
-	mux.Handle("GET /metrics", promhttp.HandlerFor(a.metrics.Registry, promhttp.HandlerOpts{}))
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
-		if !a.ready.Load() {
-			http.Error(w, "not ready", http.StatusServiceUnavailable)
-			return
-		}
-		_, _ = w.Write([]byte("ready"))
-	})
+	mux.Handle("/v1/", adminapi.New(s.accounts, adminToken).Handler())
+	mux.Handle("GET /metrics", promhttp.HandlerFor(s.metrics.Registry, promhttp.HandlerOpts{}))
+	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
-	return &http.Server{Addr: a.cfg.Server.OpsListen, Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
+	return &http.Server{Addr: s.cfg.Server.OpsListen, Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
+}
+
+// handleHealthz 存活探针：进程在即返回 200。
+func (s *Service) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	_, _ = w.Write([]byte("ok"))
+}
+
+// handleReadyz 就绪探针：数据库不可达或正在停机时返回 503。
+func (s *Service) handleReadyz(w http.ResponseWriter, _ *http.Request) {
+	if !s.ready.Load() {
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+		return
+	}
+	_, _ = w.Write([]byte("ready"))
 }
 
 // watchHealth 周期检查数据库，更新就绪状态与账本指标。
-func (a *App) watchHealth(ctx context.Context, grpcHealth *health.Server) {
+func (s *Service) watchHealth(ctx context.Context, grpcHealth *health.Server) {
 	ticker := time.NewTicker(healthCheckInterval)
 	defer ticker.Stop()
 	for {
@@ -171,20 +181,21 @@ func (a *App) watchHealth(ctx context.Context, grpcHealth *health.Server) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			healthy := a.db.Ping(ctx) == nil
-			a.ready.Store(healthy)
+			healthy := s.db.Ping(ctx) == nil
+			s.ready.Store(healthy)
 			status := healthpb.HealthCheckResponse_SERVING
 			if !healthy {
 				status = healthpb.HealthCheckResponse_NOT_SERVING
 			}
 			grpcHealth.SetServingStatus("", status)
-			a.ledger.RefreshGauges(ctx)
+			s.ledger.RefreshGauges(ctx)
 		}
 	}
 }
 
-func listenAndServe(srv *http.Server) error {
-	ln, err := net.Listen("tcp", srv.Addr)
+func listenAndServe(ctx context.Context, srv *http.Server) error {
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", srv.Addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", srv.Addr, err)
 	}

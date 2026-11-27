@@ -7,13 +7,12 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ai-hermes/pi-lessons/apps/loom/internal/pricing"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store"
 )
 
-const defaultGroup = "default"
-
-// NewAccount 创建账户的参数。
-type NewAccount struct {
+// CreateAccountInput 创建账户的参数。
+type CreateAccountInput struct {
 	Name       string       `json:"name"`
 	Tenant     string       `json:"tenant"`
 	Group      string       `json:"group"`
@@ -21,8 +20,8 @@ type NewAccount struct {
 	Status     store.Status `json:"status"`
 }
 
-// AccountUpdate 修改账户的参数；零值字段保持不变。
-type AccountUpdate struct {
+// UpdateAccountInput 修改账户的参数；零值字段保持不变。
+type UpdateAccountInput struct {
 	Status     store.Status `json:"status"`
 	Group      string       `json:"group"`
 	QuotaNanos *int64       `json:"quota_limit_nanos"`
@@ -35,31 +34,53 @@ type QuotaReset struct {
 }
 
 // CreateAccount 创建账户。
-func (s *Service) CreateAccount(ctx context.Context, in NewAccount) (store.Account, error) {
+func (s *Service) CreateAccount(ctx context.Context, in CreateAccountInput) (store.Account, error) {
 	if strings.TrimSpace(in.Name) == "" {
 		return store.Account{}, fmt.Errorf("%w: name is required", ErrInvalidInput)
+	}
+	group := orDefault(in.Group, pricing.DefaultGroup)
+	if err := s.validateGroup(group); err != nil {
+		return store.Account{}, err
 	}
 	return s.store.CreateAccount(ctx, store.Account{
 		ID:         uuid.New(),
 		Name:       in.Name,
 		Tenant:     in.Tenant,
-		Group:      orDefault(in.Group, defaultGroup),
+		Group:      group,
 		Status:     orDefault(in.Status, store.StatusActive),
 		QuotaLimit: in.QuotaNanos,
 	})
 }
 
 // UpdateAccount 修改账户。
-func (s *Service) UpdateAccount(ctx context.Context, id uuid.UUID, in AccountUpdate) (store.Account, error) {
+func (s *Service) UpdateAccount(ctx context.Context, id uuid.UUID, in UpdateAccountInput) (store.Account, error) {
 	cur, err := s.store.GetAccount(ctx, id)
 	if err != nil {
 		return store.Account{}, err
 	}
-	limit := cur.QuotaLimit
+	settings := cur.Settings()
+	settings.Status = orDefault(in.Status, settings.Status)
+	settings.Group = orDefault(in.Group, settings.Group)
 	if in.QuotaNanos != nil {
-		limit = in.QuotaNanos
+		settings.QuotaLimit = in.QuotaNanos
 	}
-	return s.store.UpdateAccount(ctx, id, orDefault(in.Status, cur.Status), limit, orDefault(in.Group, cur.Group))
+	if err := s.validateGroup(settings.Group); err != nil {
+		return store.Account{}, err
+	}
+	account, err := s.store.UpdateAccount(ctx, id, settings)
+	if err != nil {
+		return store.Account{}, err
+	}
+	s.invalidateAccount(id)
+	return account, nil
+}
+
+// validateGroup 拒绝 pricing.yaml 中未定义的分组（unknown_group 为 default 时放行）。
+func (s *Service) validateGroup(group string) error {
+	if err := s.prices.PriceConfig().ValidateGroup(group); err != nil {
+		return fmt.Errorf("%w: group %w", ErrInvalidInput, err)
+	}
+	return nil
 }
 
 // TopUp 增加账户额度上限。

@@ -65,12 +65,12 @@ type Migrations struct {
 
 // Admission 准入。
 type Admission struct {
-	KeyCache   KeyCache `koanf:"key_cache"`
-	AuditQueue int      `koanf:"audit_queue"`
+	APIKeyCache APIKeyCache `koanf:"key_cache"`
+	AuditQueue  int         `koanf:"audit_queue"`
 }
 
-// KeyCache Key 查找缓存。
-type KeyCache struct {
+// APIKeyCache API Key 查找缓存。
+type APIKeyCache struct {
 	Enabled     bool          `koanf:"enabled"`
 	Size        int           `koanf:"size"`
 	TTL         time.Duration `koanf:"ttl"`
@@ -90,7 +90,7 @@ type ExtAuthHeaders struct {
 	ClientRequestID string `koanf:"client_request_id"`
 	Model           string `koanf:"model"`
 	Account         string `koanf:"account"`
-	KeyID           string `koanf:"key_id"`
+	APIKeyID        string `koanf:"key_id"`
 	RequestID       string `koanf:"request_id"`
 	QuotaRemaining  string `koanf:"quota_remaining"`
 	DenyReason      string `koanf:"deny_reason"`
@@ -98,23 +98,23 @@ type ExtAuthHeaders struct {
 
 // Pricing 价目表。
 type Pricing struct {
-	File           string        `koanf:"file"` // pricing.yaml（ConfigMap 挂载点）
-	ReloadInterval time.Duration `koanf:"reload_interval"`
-	StoreFallback  bool          `koanf:"store_fallback"` // 查 PG model_pricing 兜底
+	File                    string        `koanf:"file"` // pricing.yaml（ConfigMap 挂载点）
+	ReloadInterval          time.Duration `koanf:"reload_interval"`
+	DatabaseFallbackEnabled bool          `koanf:"store_fallback"` // 查 PG model_pricing 兜底
 }
 
 // Ledger 额度账本。
 type Ledger struct {
-	ReserveTokens  ReserveTokens `koanf:"reserve_tokens"`
-	ReservationTTL time.Duration `koanf:"reservation_ttl"`
-	ReaperInterval time.Duration `koanf:"reaper_interval"`
-	ReaperBatch    int           `koanf:"reaper_batch"`
-	CostSource     string        `koanf:"cost_source"` // loom | gateway_prefer
-	OwnerCacheTTL  time.Duration `koanf:"owner_cache_ttl"`
+	ReserveEstimate ReserveEstimate `koanf:"reserve_tokens"`
+	ReservationTTL  time.Duration   `koanf:"reservation_ttl"`
+	ReaperInterval  time.Duration   `koanf:"reaper_interval"`
+	ReaperBatch     int             `koanf:"reaper_batch"`
+	CostSource      string          `koanf:"cost_source"` // loom | gateway_prefer
+	OwnerCacheTTL   time.Duration   `koanf:"owner_cache_ttl"`
 }
 
-// ReserveTokens 准入阶段预扣使用的 token 估值。
-type ReserveTokens struct {
+// ReserveEstimate 准入阶段预扣使用的 token 估值。
+type ReserveEstimate struct {
 	Input  int64 `koanf:"input"`
 	Output int64 `koanf:"output"`
 }
@@ -126,28 +126,28 @@ type RateLimit struct {
 
 // OTLP 补账通道（access log）。
 type OTLP struct {
-	Protocols     []string       `koanf:"protocols"`
-	QueueSize     int            `koanf:"queue_size"`
-	BatchSize     int            `koanf:"batch_size"`
-	FlushInterval time.Duration  `koanf:"flush_interval"`
-	Attributes    OTLPAttributes `koanf:"attributes"`
+	Protocols      []string           `koanf:"protocols"`
+	QueueSize      int                `koanf:"queue_size"`
+	BatchSize      int                `koanf:"batch_size"`
+	FlushInterval  time.Duration      `koanf:"flush_interval"`
+	AttributeNames OTLPAttributeNames `koanf:"attributes"`
 }
 
-// OTLPAttributes access log 属性名映射。
-type OTLPAttributes struct {
-	InputTokens  string `koanf:"input_tokens"`
-	OutputTokens string `koanf:"output_tokens"`
-	CachedTokens string `koanf:"cached_tokens"`
-	GatewayCost  string `koanf:"gateway_cost"`
-	Model        string `koanf:"model"`
-	LoomModel    string `koanf:"loom_model"`
-	Provider     string `koanf:"provider"`
-	Protocol     string `koanf:"protocol"`
-	Route        string `koanf:"route"`
-	Gateway      string `koanf:"gateway"`
-	RequestID    string `koanf:"request_id"`
-	KeyID        string `koanf:"key_id"`
-	Account      string `koanf:"account"`
+// OTLPAttributeNames access log 属性名映射。
+type OTLPAttributeNames struct {
+	InputTokens      string `koanf:"input_tokens"`
+	OutputTokens     string `koanf:"output_tokens"`
+	CachedTokens     string `koanf:"cached_tokens"`
+	AgentGatewayCost string `koanf:"gateway_cost"`
+	Model            string `koanf:"model"`
+	LoomModel        string `koanf:"loom_model"`
+	Provider         string `koanf:"provider"`
+	Protocol         string `koanf:"protocol"`
+	Route            string `koanf:"route"`
+	AgentGateway     string `koanf:"gateway"`
+	RequestID        string `koanf:"request_id"`
+	APIKeyID         string `koanf:"key_id"`
+	Account          string `koanf:"account"`
 }
 
 // Admin 管理 API。
@@ -223,7 +223,7 @@ func defaults() map[string]any {
 			},
 			"deny_status": map[string]any{
 				"missing_credential": 401, "unknown_api_key": 401, "expired_api_key": 401,
-				"client_inactive": 403, "model_not_allowed": 403, "model_not_priced": 403,
+				"client_inactive": 403, "model_not_allowed": 403, "model_not_priced": 403, "group_not_priced": 403,
 				"insufficient_quota": 403, "internal_error": 500,
 			},
 			"body_limit": 1 << 20,
@@ -271,16 +271,19 @@ func (c *Config) validate() error {
 	if c.Pricing.File == "" {
 		errs = append(errs, errors.New("pricing.file is required"))
 	}
-	if c.Ledger.ReserveTokens.Input < 0 || c.Ledger.ReserveTokens.Output < 0 {
+	for reason, status := range c.ExtAuth.DenyStatus {
+		if status < 100 || status > 599 {
+			errs = append(errs, fmt.Errorf("extauth.deny_status.%s must be between 100 and 599", reason))
+		}
+	}
+	if c.Ledger.ReserveEstimate.Input < 0 || c.Ledger.ReserveEstimate.Output < 0 {
 		errs = append(errs, errors.New("ledger.reserve_tokens must be >= 0"))
 	}
 	switch c.Ledger.CostSource {
 	case "loom", "gateway_prefer":
 	default:
-		errs = append(
-			errs,
-			fmt.Errorf("ledger.cost_source must be loom or gateway_prefer, got %q", c.Ledger.CostSource),
-		)
+		err := fmt.Errorf("ledger.cost_source must be loom or gateway_prefer, got %q", c.Ledger.CostSource)
+		errs = append(errs, err)
 	}
 	if c.RateLimit.Domain == "" {
 		errs = append(errs, errors.New("ratelimit.domain is required"))
@@ -305,7 +308,7 @@ func inlineOrFile(inline, path, name string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("%s or %s_file is required", name, name)
 	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // Secret-file path comes from trusted deployment configuration.
 	if err != nil {
 		return "", fmt.Errorf("read %s_file: %w", name, err)
 	}

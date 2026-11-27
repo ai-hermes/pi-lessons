@@ -18,9 +18,11 @@ var (
 	commit  = "none"
 )
 
+const requiresConfigAnnotation = "loom.requires-config"
+
 func main() {
 	if err := newRoot().Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "loom:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "loom:", err)
 		os.Exit(1)
 	}
 }
@@ -29,33 +31,36 @@ func main() {
 func newRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "loom",
-		Short: "extAuth + billing service for AgentGateway",
-		Long: `loom is the external authentication (extAuth) and billing service for AgentGateway.
-It admits requests against per-key and per-account quota, prices them from a
-one-api style price table, and settles the actual token usage after the response.`,
-		Version:       version,
-		SilenceUsage:  true,
-		SilenceErrors: true,
+		Short: "Add authentication and usage billing to AgentGateway",
+		Long: `Loom adds authentication, quota control, and usage billing to AgentGateway.
+
+It provides extAuth and billing services that validate API keys, enforce account
+and key quotas, price model usage, and settle the actual cost of each request.`,
+		Version:           version,
+		SilenceUsage:      true,
+		SilenceErrors:     true,
+		PersistentPreRunE: prepareCommand,
 	}
 	root.SetVersionTemplate("loom {{.Version}} (" + commit + ")\n")
 
-	var configPath string
-	root.PersistentFlags().StringVar(&configPath, "config", "",
-		"config.yaml (default: $LOOM_CONFIG, or ./config.yaml when present)")
-	load := func() (*config.Config, error) { return loadConfig(configPath) }
-
-	root.AddCommand(
-		newServeCmd(load),
-		newMigrateCmd(load),
-		newSeedCmd(load),
-		newRenderCatalogCmd(),
-		newCheckConfigCmd(load),
-		newVersionCmd(),
+	root.PersistentFlags().String(
+		"config",
+		"",
+		"path to the Loom config file ($LOOM_CONFIG or ./config.yaml if unset)",
 	)
+
 	root.AddGroup(
-		&cobra.Group{ID: "run", Title: "Running:"},
-		&cobra.Group{ID: "ops", Title: "Operations:"},
-		&cobra.Group{ID: "tooling", Title: "Tooling:"},
+		&cobra.Group{ID: "run", Title: "Service:"},
+		&cobra.Group{ID: "ops", Title: "Administration:"},
+		&cobra.Group{ID: "tooling", Title: "Utilities:"},
+	)
+	root.AddCommand(
+		newServeCmd(),
+		newMigrateCmd(),
+		newSeedCmd(),
+		newRenderCatalogCmd(),
+		newCheckConfigCmd(),
+		newVersionCmd(),
 	)
 	return root
 }
@@ -63,7 +68,7 @@ one-api style price table, and settles the actual token usage after the response
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Print the build version",
+		Short: "Show the installed Loom version",
 		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, _ []string) {
 			_, _ = fmt.Fprint(cmd.OutOrStdout(), "loom "+version+" ("+commit+")\n")
@@ -71,17 +76,35 @@ func newVersionCmd() *cobra.Command {
 	}
 }
 
-// loadConfig 依次使用 --config、$LOOM_CONFIG、./config.yaml（存在时）。
-func loadConfig(path string) (*config.Config, error) {
-	if path == "" {
-		path = os.Getenv("LOOM_CONFIG")
+// prepareCommand 编排所有子命令执行前的公共准备工作。
+func prepareCommand(cmd *cobra.Command, args []string) error {
+	if err := initializeConfig(cmd, args); err != nil {
+		return err
 	}
-	if path == "" {
-		if _, err := os.Stat("config.yaml"); err == nil {
-			path = "config.yaml"
-		}
+	return nil
+}
+
+// initializeConfig 仅初始化显式声明需要 Loom 运行配置的子命令。
+func initializeConfig(cmd *cobra.Command, _ []string) error {
+	if cmd.Annotations[requiresConfigAnnotation] != "true" {
+		return nil
 	}
-	return config.Load(path)
+
+	// Cobra 默认在 PersistentPreRunE 之后检查 required flags；这里提前检查，
+	// 避免缺少业务参数时被配置错误掩盖。
+	if err := cmd.ValidateRequiredFlags(); err != nil {
+		return err
+	}
+	if err := cmd.ValidateFlagGroups(); err != nil {
+		return err
+	}
+
+	path, err := cmd.Flags().GetString("config")
+	if err != nil {
+		return err
+	}
+	_, err = config.Init(path)
+	return err
 }
 
 func printLines(cmd *cobra.Command, lines []string) {

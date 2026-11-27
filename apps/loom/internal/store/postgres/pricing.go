@@ -18,10 +18,10 @@ func (d *DB) ListModelPricing(ctx context.Context) ([]store.ModelPrice, error) {
 	return mapRows(rows, toModelPrice), nil
 }
 
-// GetModelPricing 见 store.Store。
-func (d *DB) GetModelPricing(ctx context.Context, model string) (store.ModelPrice, error) {
+// GetModelPrice 见 store.Store。
+func (d *DB) GetModelPrice(ctx context.Context, model string) (store.ModelPrice, error) {
 	row, err := d.q.GetModelPricing(ctx, model)
-	return toModelPrice(row), d.fail("GetModelPricing", err)
+	return toModelPrice(row), d.fail("ModelPrice", err)
 }
 
 // UpsertModelPricing 见 store.Store。

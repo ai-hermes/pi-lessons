@@ -1,6 +1,6 @@
 // Package ratelimit 把 AgentGateway 的 RateLimitService 调用用作同步结算通道。
 //
-// 网关策略 rateLimit.global（unit: Tokens，descriptors[].cost 读取 llm.* 用量）对每个请求调用两次：
+// 网关策略 rateLimit.global（unit: TokenUsage，descriptors[].cost 读取 llm.* 用量）对每个请求调用两次：
 //   - check：请求阶段，所有描述符 hits_addend=0；恒返回 OK，额度门禁在 extauth 准入阶段完成。
 //   - amend：响应完成后，三个描述符分别携带 input / cached / output token 数；收到后立即结算。
 //
@@ -11,6 +11,7 @@ package ratelimit
 import (
 	"context"
 	"log/slog"
+	"math"
 	"time"
 
 	rlscommon "github.com/envoyproxy/go-control-plane/envoy/extensions/common/ratelimit/v3"
@@ -31,7 +32,7 @@ const codeError = rlsv3.RateLimitResponse_Code(3)
 
 // Settler 结算用量。
 type Settler interface {
-	Settle(ctx context.Context, u ledger.Usage) (bool, error)
+	Settle(ctx context.Context, u ledger.UsageReport) (bool, error)
 }
 
 // Server 实现 envoy.service.ratelimit.v3.RateLimitService。
@@ -55,10 +56,8 @@ func (s *Server) ShouldRateLimit(ctx context.Context, req *rlsv3.RateLimitReques
 		return resp, nil
 	}
 	for range req.GetDescriptors() {
-		resp.Statuses = append(
-			resp.Statuses,
-			&rlsv3.RateLimitResponse_DescriptorStatus{Code: rlsv3.RateLimitResponse_OK},
-		)
+		status := &rlsv3.RateLimitResponse_DescriptorStatus{Code: rlsv3.RateLimitResponse_OK}
+		resp.Statuses = append(resp.Statuses, status)
 	}
 
 	reports := groupByRequest(req.GetDescriptors())
@@ -70,7 +69,7 @@ func (s *Server) ShouldRateLimit(ctx context.Context, req *rlsv3.RateLimitReques
 
 	failed := false
 	for _, r := range reports {
-		if _, err := s.settler.Settle(ctx, r.usage()); err != nil {
+		if _, err := s.settler.Settle(ctx, r.usageReport()); err != nil {
 			failed = true
 			s.log.Error("ratelimit amend settlement failed", "err", err, "request_id", r.requestID)
 		}
@@ -86,22 +85,22 @@ func (s *Server) ShouldRateLimit(ctx context.Context, req *rlsv3.RateLimitReques
 
 // report 是同一 request_id 的三个描述符合并后的用量。
 type report struct {
-	requestID string
-	keyID     string
-	model     string
-	tokens    pricing.Tokens
+	requestID  string
+	apiKeyID   string
+	model      string
+	tokenUsage pricing.TokenUsage
 }
 
-func (r report) usage() ledger.Usage {
-	u := ledger.Usage{
-		RequestID: r.requestID,
-		Channel:   Channel,
-		Model:     r.model,
-		Tokens:    r.tokens,
-		Time:      time.Now(),
+func (r report) usageReport() ledger.UsageReport {
+	u := ledger.UsageReport{
+		RequestID:  r.requestID,
+		Channel:    Channel,
+		Model:      r.model,
+		TokenUsage: r.tokenUsage,
+		Time:       time.Now(),
 	}
-	if id, err := uuid.Parse(r.keyID); err == nil {
-		u.KeyID = id
+	if id, err := uuid.Parse(r.apiKeyID); err == nil {
+		u.APIKeyID = id
 	}
 	return u
 }
@@ -120,21 +119,25 @@ func groupByRequest(descriptors []*rlscommon.RateLimitDescriptor) []report {
 		}
 		r, ok := byID[requestID]
 		if !ok {
-			r = &report{requestID: requestID, keyID: entries["key_id"], model: entries["model"]}
+			r = &report{requestID: requestID, apiKeyID: entries["key_id"], model: entries["model"]}
 			byID[requestID] = r
 			order = append(order, requestID)
 		}
-		n := int64(d.GetHitsAddend().GetValue())
+		value := d.GetHitsAddend().GetValue()
+		if value > math.MaxInt64 {
+			continue
+		}
+		n := int64(value)
 		if n > 0 {
 			charged[requestID] = true
 		}
 		switch entries["kind"] {
 		case "input":
-			r.tokens.Input = n
+			r.tokenUsage.Input = n
 		case "cached":
-			r.tokens.Cached = n
+			r.tokenUsage.Cached = n
 		case "output":
-			r.tokens.Output = n
+			r.tokenUsage.Output = n
 		}
 	}
 

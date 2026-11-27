@@ -7,23 +7,24 @@ import (
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/config"
 )
 
-// configLoader 加载配置；由根命令注入，便于统一 --config / LOOM_CONFIG 的解析。
-type configLoader func() (*config.Config, error)
-
-func newServeCmd(load configLoader) *cobra.Command {
+func newServeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "serve",
 		GroupID: "run",
-		Short:   "Start the service (data plane + ops plane)",
-		Long: `Start loom with the data plane (extauth, ratelimit, otlp; one h2c port) and the
-ops plane (admin API, metrics, health, pprof). Blocks until SIGINT or SIGTERM.`,
+		Annotations: map[string]string{
+			requiresConfigAnnotation: "true",
+		},
+		Short: "Run Loom's extAuth and billing services",
+		Long: `Start Loom and connect its authentication and billing capabilities to AgentGateway.
+
+The service validates API keys and quotas, records model usage and cost, and
+exposes the administration API, health checks, and operational metrics.
+It continues running until it receives SIGINT or SIGTERM.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := load()
-			if err != nil {
-				return err
-			}
-			svc, err := app.New(cmd.Context(), cfg, app.BuildInfo{Version: version, Commit: commit})
+			cfg := config.MustGet()
+			info := app.BuildInfo{Version: version, Commit: commit}
+			svc, err := app.New(cmd.Context(), cfg, info)
 			if err != nil {
 				return err
 			}

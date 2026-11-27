@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/account"
@@ -40,59 +42,68 @@ func Seed(ctx context.Context, cfg *config.Config, path string) ([]string, error
 	}
 	defer db.Close()
 
-	prices, err := pricing.New(
-		pricing.Options{File: cfg.Pricing.File, StoreFallback: cfg.Pricing.StoreFallback},
-		db,
-		metrics,
-		log,
-	)
+	priceOpts := pricing.Options{File: cfg.Pricing.File, DatabaseFallbackEnabled: cfg.Pricing.DatabaseFallbackEnabled}
+	prices, err := pricing.New(priceOpts, db, metrics, log)
 	if err != nil {
 		return nil, fmt.Errorf("load pricing: %w", err)
 	}
-	return account.New(db, prices, nil, cfg.Admin.KeyPrefix).Seed(ctx, path)
+	return account.New(db, prices, cfg.Admin.KeyPrefix).Seed(ctx, path)
 }
 
-// RenderGatewayCatalog 把 pricing.yaml 渲染为 agentgateway modelCatalog 的 catalog.json。
-func RenderGatewayCatalog(pricingFile string, w io.Writer) error {
-	spec, err := pricing.LoadSpec(pricingFile)
+// RenderAgentGatewayCatalog 把 pricing.yaml 渲染为 agentgateway modelCatalog 的 catalog.json。
+func RenderAgentGatewayCatalog(pricingFile string, w io.Writer) error {
+	priceConfig, err := pricing.LoadPriceConfig(pricingFile)
 	if err != nil {
 		return err
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(pricing.RenderGatewayCatalog(spec))
+	return enc.Encode(pricing.RenderAgentGatewayCatalog(priceConfig))
 }
 
 // CheckConfig 校验配置与 pricing.yaml，输出生效的端口与价目表。
 func CheckConfig(cfg *config.Config, w io.Writer) error {
-	spec, err := pricing.LoadSpec(cfg.Pricing.File)
+	priceConfig, err := pricing.LoadPriceConfig(cfg.Pricing.File)
 	if err != nil {
 		return err
 	}
 	var b strings.Builder
-	reserve := cfg.Ledger.ReserveTokens
-	fmt.Fprintf(&b, "config ok: listen=%s ops_listen=%s ratelimit.domain=%s\n",
-		cfg.Server.Listen, cfg.Server.OpsListen, cfg.RateLimit.Domain)
-	fmt.Fprintf(&b, "pricing: %d models, unknown_model=%s, reserve_tokens=%d/%d\n",
-		len(spec.Models), spec.Defaults.UnknownModel, reserve.Input, reserve.Output)
-	for _, name := range spec.SortedModels() {
-		m := spec.Models[name]
+	server, reserve, defaults := cfg.Server, cfg.Ledger.ReserveEstimate, priceConfig.Defaults
+	fmt.Fprintf(
+		&b,
+		"config ok: listen=%s ops_listen=%s ratelimit.domain=%s\n",
+		server.Listen,
+		server.OpsListen,
+		cfg.RateLimit.Domain,
+	)
+	fmt.Fprintf(
+		&b,
+		"pricing: %d models, unknown_model=%s, reserve_tokens=%d/%d\n",
+		len(priceConfig.Models),
+		defaults.UnknownModel,
+		reserve.Input,
+		reserve.Output,
+	)
+
+	groupNames := slices.Sorted(maps.Keys(priceConfig.Groups))
+	for _, name := range groupNames {
+		fmt.Fprintf(&b, "  group %-22s ratio=%v\n", name, priceConfig.Groups[name].Ratio)
+	}
+	for _, name := range priceConfig.SortedModelNames() {
+		m := priceConfig.Models[name]
 		if m.ModelPrice != nil {
 			fmt.Fprintf(&b, "  %-28s per_call=$%v\n", name, *m.ModelPrice)
 			continue
 		}
-		fmt.Fprintf(&b, "  %-28s ratio=%-6v completion=%-4v cache=%-4v\n",
-			name, positive(m.ModelRatio, spec.Defaults.ModelRatio),
-			positive(m.CompletionRatio, spec.Defaults.CompletionRatio),
-			positive(m.CacheRatio, spec.Defaults.CacheRatio))
+		fmt.Fprintf(
+			&b,
+			"  %-28s ratio=%-6v completion=%-4v cache=%-4v\n",
+			name,
+			m.ModelRatio,
+			m.CompletionRatio,
+			m.CacheRatio,
+		)
 	}
 	_, err = io.WriteString(w, b.String())
 	return err
-}
-
-func positive(v, fallback float64) float64 {
-	if v > 0 {
-		return v
-	}
-	return fallback
 }

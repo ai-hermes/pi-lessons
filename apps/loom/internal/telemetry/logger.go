@@ -21,7 +21,7 @@ func NewLogger(level, format string) *slog.Logger {
 		lv = slog.LevelInfo
 	}
 	opts := &slog.HandlerOptions{Level: lv}
-	if strings.ToLower(format) == "text" {
+	if strings.EqualFold(format, "text") {
 		return slog.New(slog.NewTextHandler(os.Stdout, opts))
 	}
 	return slog.New(slog.NewJSONHandler(os.Stdout, opts))
