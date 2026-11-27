@@ -101,6 +101,9 @@ linters:
     paths:
       - internal/store/sqlcgen
     rules:
+      # storetest 的 test* 函数是一致性用例的主体而不是辅助函数，标记 t.Helper() 会让失败定位到 Run 而不是用例内部。
+      - path: internal/store/storetest/
+        linters: [thelper]
       # Tests may use long fixture strings and need not document every test-only exported helper.
       - path: _test\.go
         linters: [lll, revive]

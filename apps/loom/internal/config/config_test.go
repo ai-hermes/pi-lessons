@@ -80,3 +80,13 @@ func TestShippedConfigIsValid(t *testing.T) {
 	assert.Equal(t, ":8080", cfg.Server.Listen)
 	assert.Equal(t, 403, cfg.ExtAuth.DenyStatus["insufficient_quota"])
 }
+
+func TestLoadRejectsUnsupportedStoreDriver(t *testing.T) {
+	t.Setenv("LOOM_POSTGRES_DSN", "postgres://x")
+	t.Setenv("LOOM_ADMIN_TOKEN", "t")
+	t.Setenv("LOOM_STORE_DRIVER", "mysql")
+
+	_, err := Load("")
+
+	require.ErrorContains(t, err, "store.driver must be postgres")
+}

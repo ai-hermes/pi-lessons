@@ -22,6 +22,7 @@ import (
 type Config struct {
 	Server     Server     `koanf:"server"`
 	Log        Log        `koanf:"log"`
+	Store      Store      `koanf:"store"`
 	Postgres   Postgres   `koanf:"postgres"`
 	Migrations Migrations `koanf:"migrations"`
 	Admission  Admission  `koanf:"admission"`
@@ -59,6 +60,11 @@ type Postgres struct {
 	MaxConns         int32         `koanf:"max_conns"`
 	MaxConnLifetime  time.Duration `koanf:"max_conn_lifetime"`
 	StatementTimeout time.Duration `koanf:"statement_timeout"`
+}
+
+// Store 存储后端；当前只实现 postgres，新驱动须先通过 internal/store/storetest 一致性用例。
+type Store struct {
+	Driver string `koanf:"driver"`
 }
 
 // Migrations 数据库迁移。
@@ -205,6 +211,7 @@ func defaults() map[string]any {
 	return map[string]any{
 		"server": map[string]any{"listen": ":8080", "ops_listen": ":9090", "shutdown_timeout": "15s"},
 		"log":    map[string]any{"level": "info", "format": "json"},
+		"store":  map[string]any{"driver": "postgres"},
 		"postgres": map[string]any{
 			"min_conns": 2, "max_conns": 20, "max_conn_lifetime": "30m", "statement_timeout": "5s",
 		},
@@ -262,6 +269,9 @@ func defaults() map[string]any {
 
 func (c *Config) validate() error {
 	var errs []error
+	if c.Store.Driver != "postgres" {
+		errs = append(errs, fmt.Errorf("store.driver must be postgres, got %q", c.Store.Driver))
+	}
 	if _, err := c.Postgres.ResolveDSN(); err != nil {
 		errs = append(errs, err)
 	}
