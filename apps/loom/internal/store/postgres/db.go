@@ -123,7 +123,14 @@ func (d *DB) inTx(ctx context.Context, op string, fn func(q *sqlcgen.Queries) er
 	if err := fn(d.q.WithTx(tx)); err != nil {
 		return err
 	}
-	return d.fail(op+".commit", tx.Commit(ctx))
+	if err := tx.Commit(ctx); err != nil {
+		// 提交失败只有两种可能：服务端明确拒绝（序列化冲突等，PgError），或确认丢失（结果未知）
+		if _, rejected := errors.AsType[*pgconn.PgError](err); !rejected {
+			err = fmt.Errorf("%w: %w", store.ErrCommitOutcomeUnknown, err)
+		}
+		return d.fail(op+".commit", err)
+	}
+	return nil
 }
 
 // isUniqueViolation 判断是否唯一约束冲突（SQLSTATE 23505）。

@@ -14,14 +14,16 @@ done
 PORT=15432
 DB=loom_conformance
 REMOTE_PATH='export PATH=/opt/agentgateway/k8s/bin:$PATH'
-psql_remote() { ssh "$HOST" "$REMOTE_PATH; kubectl -n loom exec deploy/loom-postgres -- psql -U loom -d postgres -Atc \"$1\""; }
+remote() { cat deploy/pg.sh - <<<"$1" | ssh "$HOST" "$REMOTE_PATH; bash -s"; }
+psql_remote() { remote "pg_psql postgres -Atc \"$1\""; }
 
 echo "==> recreate database ${DB}"
 psql_remote "DROP DATABASE IF EXISTS ${DB} WITH (FORCE)" >/dev/null
 psql_remote "CREATE DATABASE ${DB}" >/dev/null
 
-echo "==> tunnel 127.0.0.1:${PORT} → loom-postgres:5432"
-ssh -L "${PORT}:127.0.0.1:${PORT}" "$HOST" "$REMOTE_PATH; exec kubectl -n loom port-forward svc/loom-postgres ${PORT}:5432" >/dev/null 2>&1 &
+SERVICE=$(remote pg_service)
+echo "==> tunnel 127.0.0.1:${PORT} → ${SERVICE}:5432"
+ssh -L "${PORT}:127.0.0.1:${PORT}" "$HOST" "$REMOTE_PATH; exec kubectl -n loom port-forward svc/${SERVICE} ${PORT}:5432" >/dev/null 2>&1 &
 TUNNEL=$!
 trap 'kill $TUNNEL 2>/dev/null; psql_remote "DROP DATABASE IF EXISTS ${DB} WITH (FORCE)" >/dev/null || true' EXIT
 # ssh -L 一启动就在本地监听，要等远端的 port-forward 真正就绪

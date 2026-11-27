@@ -10,7 +10,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-ssh "${HOST}" 'bash -s' <<'REMOTE'
+cat "$(dirname "$0")/pg.sh" - <<'REMOTE' | ssh "${HOST}" 'bash -s'
 set -u
 export PATH=/opt/agentgateway/k8s/bin:$PATH
 BASE=http://127.0.0.1:14001
@@ -19,7 +19,6 @@ PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); printf 'PASS\t%s\t%s\n' "$1" "$2"; }
 bad() { FAIL=$((FAIL+1)); printf 'FAIL\t%s\t%s\n' "$1" "$2"; }
 check() { if [ "$2" = "$3" ]; then ok "$1" "$3"; else bad "$1" "expected $2 got $3"; fi; }
-q() { kubectl -n loom exec deploy/loom-postgres -- psql -U loom -d loom -Atc "$1"; }
 DAVE="(select id from accounts where name='dave')"
 events()       { q "select count(*) from usage_events where account_id=$DAVE"; }
 last_event()   { q "select cost_nanos || '|' || input_tokens || '|' || output_tokens from usage_events where account_id=$DAVE order by id desc limit 1"; }

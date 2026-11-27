@@ -774,3 +774,17 @@ func (m *Store) ReserveQuota(ctx context.Context, r store.Reservation) (store.Qu
 	m.reserv[r.RequestID] = r
 	return store.QuotaReservation{APIKey: keyState, Account: accountState}, nil
 }
+
+// ReleaseReservation 见 store.Store。
+func (m *Store) ReleaseReservation(_ context.Context, requestID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.reserv[requestID]
+	if !ok {
+		return false, nil
+	}
+	m.apiKeys[r.APIKeyID].Reserved -= r.Nanos
+	m.accounts[r.AccountID].Reserved -= r.Nanos
+	delete(m.reserv, requestID)
+	return true, nil
+}

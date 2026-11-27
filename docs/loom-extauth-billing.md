@@ -20,11 +20,13 @@
 
 | 键 | 值 |
 | --- | --- |
-| Go | `1.25`（本机交叉编译 `linux/amd64`，`CGO_ENABLED=0`） |
+| Go | `1.26`（本机交叉编译 `linux/amd64`，`CGO_ENABLED=0`） |
 | agentgateway | `v1.7.0`（`cr.agentgateway.dev/agentgateway:v1.7.0`） |
 | loom 镜像 | `loom/loom:<tag>`，`FROM busybox:stable`，`kind load docker-image` 注入 |
 | 依赖 | `gin v1.12.0`、`pgx/v5 v5.13.0`、`goose/v3 v3.30.1`、`sqlc v1.31.1`、`client_golang v1.25.0`、`golang-lru/v2 v2.0.7`、`koanf/v2 v2.4.1`、`grpc v1.85.0` |
-| 数据库 | PostgreSQL 15（`postgres:15-alpine`，PVC `loom-postgres`） |
+| 数据库（`--pg single`） | PostgreSQL 15（`postgres:15-alpine`，PVC `loom-postgres`），开发演示用 |
+| 数据库（`--pg cnpg`） | CloudNativePG `1.30.2` 集群 `loom-pg`：PostgreSQL 18（`ghcr.io/cloudnative-pg/postgresql:18.7-minimal-trixie`）一主两从、`ANY 1` 同步复制，应用连 `loom-pg-rw` |
+| 备份 | Barman Cloud 插件 `v0.16.0` + cert-manager `v1.20.5`；对象存储为集群内 minio（`ghcr.io/ai-hermes/coze-dep-minio:2025.6.13`，桶 `loom-pg-backups`），WAL 持续归档，每日 03:00 基础备份，保留 7 天 |
 
 构建产物在 `apps/loom/build/`（不入库），部署脚本在远端 `docker build` 后 `kind load`。
 
@@ -70,15 +72,46 @@ deploy/deploy.sh --fresh --tag v0.3.0
 
 如果 seed Job 失败，先不要改清单，优先检查：`kubectl -n loom logs job/loom-seed` 里的 DSN 是否指向 `loom-postgres`、`/etc/loom/seed.yaml` 是否挂载。
 
-### 2.3 部署后检查
+### 2.3 CloudNativePG 形态
+
+生产形态用 CloudNativePG。平台组件（cert-manager、operator、Barman Cloud 插件）是集群级的，只需安装一次：
+
+```bash
+cd apps/loom
+deploy/cnpg/install.sh             # 本机按固定版本下载上游清单，scp 后 apply 并等待就绪
+deploy/deploy.sh --pg cnpg --tag v0.7.1
+```
+
+`--pg cnpg` 会在 `loom` 命名空间创建 minio 与 `loom-pg` 集群、把 `pg-dsn` 指向 `loom-pg-rw`，并删除单实例 `loom-postgres`。之后不带 `--pg` 时沿用集群里的现有形态；显式切回 `--pg single` 会删除 `loom-pg` 与 minio（含备份）。
+
+宿主机直接拉取 ghcr.io / quay.io 常超时。7 个镜像已归档在网盘 `bd://deploy/images/`（`manifest.tsv` 记录镜像引用、digest 与 SHA-256），按下面的方式离线导入 kind 节点：
+
+```bash
+# 本机：下载并校验（文件名见 manifest.tsv 中 cloudnative-pg、plugin-barman-cloud、cert-manager 开头的行）
+bdpan cp bd://deploy/images/cloudnative-pg-1.30.2-amd64.tar ./
+shasum -a 256 cloudnative-pg-1.30.2-amd64.tar   # 与 manifest.tsv 第 5 列一致
+scp ./*.tar 192.168.16.62:/opt/agentgateway/loom/cnpg/images/
+# 宿主机：kind load 处理不了多平台镜像，直接导入节点的 containerd
+for f in /opt/agentgateway/loom/cnpg/images/*.tar; do
+  docker exec -i agentgateway-control-plane ctr --namespace=k8s.io images import --snapshotter=overlayfs - < "$f"
+done
+```
+
+```bash
+ssh 192.168.16.62 'export PATH=/opt/agentgateway/k8s/bin:$PATH; kubectl -n loom get cluster loom-pg; kubectl -n loom get pods -l cnpg.io/cluster=loom-pg -L cnpg.io/instanceRole'
+```
+
+**通过标准：** `STATUS` 为 `Cluster in healthy state`，3 个实例 `2/2 Running`（PostgreSQL + 备份插件 sidecar），一个 `primary` 两个 `replica`；`kubectl -n loom get cluster loom-pg -o jsonpath='{.status.conditions}'` 中 `ContinuousArchiving=True`。
+
+### 2.4 部署后检查
 
 ```bash
 ssh 192.168.16.62 'export PATH=/opt/agentgateway/k8s/bin:$PATH; kubectl -n loom get pods,agentgatewaypolicy'
 ```
 
-**通过标准：** `loom` 2/2、`loom-gateway` 1/1、`loom-mock` 1/1、`loom-postgres` 1/1 Running，`RESTARTS` 为 0；9 条 `AgentgatewayPolicy` 均 `ACCEPTED=True ATTACHED=True`。
+**通过标准：** `loom` 2/2、`loom-gateway` 1/1、`loom-mock` 1/1、`loom-postgres` 1/1（`cnpg` 形态为 `loom-pg-1..3` 与 `loom-minio`）Running，`RESTARTS` 为 0；9 条 `AgentgatewayPolicy` 均 `ACCEPTED=True ATTACHED=True`。
 
-### 2.4 离线目录说明
+### 2.5 离线目录说明
 
 ```text
 /opt/agentgateway/loom/
@@ -108,9 +141,9 @@ cd apps/loom
 deploy/smoke.sh
 ```
 
-矩阵共 99 项检查，覆盖：鉴权拒绝矩阵、按量计费与预扣、分组倍率、按次计费、PG 兜底定价、embeddings、并发预扣、凭据头清理、gRPC 门面、管理 API 与指标、ConfigMap 热加载、RLS 同步结算与单通道独立性、多副本缓存失效、管理面角色与审计、FailClosed。脚本开头会通过管理 API 复位 `alice`、`erin` 的额度，可重复执行。
+矩阵共 104 项检查，覆盖：鉴权拒绝矩阵、按量计费与预扣、分组倍率、按次计费、PG 兜底定价、embeddings、并发预扣、凭据头清理、gRPC 门面、管理 API 与指标、ConfigMap 热加载、RLS 同步结算与单通道独立性、多副本缓存失效、管理面角色与审计、超时预算（PG 行锁下准入在截止时间内拒绝且无残留预扣）、FailClosed。两种 PG 形态都适用。脚本开头会通过管理 API 复位 `alice`、`erin` 的额度，可重复执行。
 
-**通过标准：** 末行输出 `RESULT: PASS=82 FAIL=0`。
+**通过标准：** 末行输出 `RESULT: PASS=104 FAIL=0`。
 
 ### 3.2 关键结果实测
 
@@ -211,13 +244,34 @@ curl -X PUT -H "$H" -H 'content-type: application/json' localhost:9090/v1/pricin
 
 **回滚路径：** `kubectl apply -f pricing.bak.yaml`；PG 行用 `DELETE /v1/pricing/<model>`。
 
-### 4.4 停止服务
+### 4.4 故障切换与备份恢复
+
+CloudNativePG 自动处理主库故障：从库提升为主库，`loom-pg-rw` 跟随新主库，loom 连接池自动重连，无需人工介入。切换期间准入按 FailClosed 返回 `500 internal_error`。用演练脚本复核：
+
+```bash
+deploy/cnpg/drill.sh failover     # 持续请求中强制删除主库 Pod（模拟节点宕机）
+deploy/cnpg/drill.sh switchover   # 正常删除主库 Pod（模拟滚动升级、节点排空）
+deploy/cnpg/drill.sh restore      # 按需备份 → 时间点前后写标记 → 恢复到独立集群 loom-pg-restore → 核对
+```
+
+**通过标准：** 末行 `RESULT: ... FAIL=0`。st2-aii 实测基线：
+
+| 场景 | 新主库提升 | 错误窗口 | 说明 |
+| --- | --- | --- | --- |
+| 强制删除主库 | 约 `20 s` | 约 `21 s` | 其中约 `16 s` 等旧主库租约过期（防脑裂） |
+| 正常删除主库 | 约 `18 s` | 约 `9 s` | 先 `15 s` smart shutdown，期间已有连接照常服务 |
+| 按需基础备份 | — | — | 约 `10 s` |
+| 时间点恢复到新集群 | — | — | 约 `50 s` |
+
+真实恢复（误删数据、逻辑损坏）不要覆盖原集群：参照 `drill.sh` 中 `loom-pg-restore` 的清单新建集群，`bootstrap.recovery.recoveryTarget.targetTime` 设为事故前的时间点，核对数据后把 `loom-secrets` 的 `pg-dsn` 改指 `loom-pg-restore-rw` 并重启 loom。
+
+### 4.5 停止服务
 
 ```bash
 kubectl -n loom scale deploy/loom --replicas=0
 ```
 
-`failureMode: FailClosed` 下所有受保护路由会拒绝；恢复 `--replicas=2` 后自动放行。完全卸载：`kubectl delete ns loom`（PostgreSQL PVC 一并删除）。
+`failureMode: FailClosed` 下所有受保护路由会拒绝；恢复 `--replicas=2` 后自动放行。完全卸载：`kubectl delete ns loom`（PostgreSQL PVC 一并删除；`cnpg` 形态的 minio 备份也在该命名空间内，一并删除）。CloudNativePG 平台组件在 `cnpg-system`、`cert-manager` 命名空间，按需单独卸载。
 
 ## 五、FAQ
 
@@ -229,4 +283,8 @@ kubectl -n loom scale deploy/loom --replicas=0
 - 现象：`usage_events.gateway_cost_nanos` 为空。说明该行由 RLS 先结算且 OTLP 尚未到达或已丢；等 `flush_interval` 后仍为空即为补账通道丢失，看 `loom_ledger_settlements_total{channel="otlp",inserted="false"}` 是否增长。
 - 现象：`loom_ledger_cost_mismatch_total` 增长。对账已经把网关金额乘过分组倍率，不一致说明价目不同源：先查 ConfigMap 与 `loom-catalog` 是否同源（`make catalog` 重新渲染），再用 `usage_events` 的计价快照（`pricing_group`、`group_ratio` 等列）复核单笔金额。
 - 现象：Controller 报 Gateway `Programmed=False` 或 Deployment 冲突。Gateway 不能命名为 `loom`：controller 会以 Gateway 名创建同名 Deployment，与服务 Deployment 冲突；本环境用 `loom-gateway`。
+- 现象：正常删除主库 Pod 后要等约 3 分钟才切换。先查 `loom-pg` 的 `smartShutdownTimeout`；默认 `180` 秒，smart shutdown 要等所有客户端断开，而 loom 连接池与 `LISTEN` 长连接不会主动断开，本环境设为 `15`。
+- 现象：按需备份要 4～5 分钟才 `completed`。先查 ObjectStore `loom-pg-backups` 的 `data.immediateCheckpoint`；为 `false` 时备份要等下一次定时检查点（`checkpoint_timeout` 默认 5 分钟）。
+- 现象：告警 `LoomReserveCompensationFailed`。准入预扣的提交确认丢失（多见于主库切换），且 30 秒内补偿释放没成功；这些预扣会在 `reservation_ttl` 后由 reaper 释放，期间相关账户可用额度偏少。确认 PG 已恢复即可，无需人工改账；急需时查 `reservations` 表中无对应 `usage_events` 的记录。
+- 现象：宿主机拉取 `ghcr.io/cloudnative-pg/*` 或 `quay.io/jetstack/*` 长时间无进度。从网盘 `bd://deploy/images/` 离线导入，见 2.3。
 - 现象：某模型只改了 PG `model_pricing` 表但价格没变。先查 `GET /v1/pricing` 的 `pg` 段；PG 兜底有 `pricing_ttl`（30s）正缓存，管理 API 写入会主动清缓存，直接改库需等缓存过期。

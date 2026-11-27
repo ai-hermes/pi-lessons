@@ -51,10 +51,49 @@ func (l *Ledger) ReserveQuota(
 		CreatedAt: now,
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrCommitOutcomeUnknown) {
+			go l.compensateReservation(ctx, requestID)
+		}
 		return ReservationHold{}, fmt.Errorf("reserve quota: %w", err)
 	}
 	l.metrics.ReservedNanos.WithLabelValues(unitPrice.Model).Add(float64(nanos))
 	return ReservationHold{Nanos: nanos, Remaining: minRemaining(reserved.APIKey, reserved.Account)}, nil
+}
+
+// 补偿释放的总时限与重试间隔。确认丢失多半伴随主库故障，CloudNativePG 强制故障切换约需 17s（主库租约 15s），
+// 时限要覆盖它；仍失败时由 reaper 在预扣过期后释放。
+const (
+	compensateTimeout = 30 * time.Second
+	compensateRetry   = time.Second
+)
+
+// compensateReservation 撤销一次提交结果未知的预扣：PG 可能已经提交，但请求已被拒绝、永远不会结算，
+// 不补偿的话这笔额度要冻结到 reservation_ttl 才由 reaper 释放。释放按 requestID 幂等，预扣实际未提交时什么也不做。
+func (l *Ledger) compensateReservation(ctx context.Context, requestID string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), compensateTimeout)
+	defer cancel()
+	released, err := l.store.ReleaseReservation(ctx, requestID)
+	for err != nil && ctx.Err() == nil {
+		select {
+		case <-ctx.Done():
+		case <-time.After(compensateRetry):
+			released, err = l.store.ReleaseReservation(ctx, requestID)
+		}
+	}
+	switch {
+	case err != nil:
+		l.metrics.ReserveCompensations.WithLabelValues("failed").Inc()
+		l.log.Warn(
+			"compensate reservation failed; the reaper releases it after expiry",
+			"request_id", requestID,
+			"err", err,
+		)
+	case released:
+		l.metrics.ReserveCompensations.WithLabelValues("released").Inc()
+		l.log.Info("released reservation whose commit outcome was unknown", "request_id", requestID)
+	default:
+		l.metrics.ReserveCompensations.WithLabelValues("absent").Inc()
+	}
 }
 
 func minRemaining(states ...store.QuotaState) *int64 {
