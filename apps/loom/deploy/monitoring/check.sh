@@ -56,7 +56,7 @@ groups=json.load(sys.stdin)["data"]["groups"]
 rules=[r for g in groups for r in g["rules"]]
 bad=[r["name"]+": "+r.get("lastError","") for r in rules if r.get("health")!="ok"]
 print(len(rules), "|", "; ".join(bad) or "none")')
-check "alert rules loaded" 12 "$(echo "$rules" | cut -d'|' -f1 | tr -d ' ')"
+check "alert rules loaded" 13 "$(echo "$rules" | cut -d'|' -f1 | tr -d ' ')"
 check "rules evaluated without errors" none "$(echo "$rules" | cut -d'|' -f2 | sed 's/^ //')"
 
 echo "### 3. 规则引用的指标都有真实序列"

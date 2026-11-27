@@ -336,6 +336,25 @@ func (q *Queries) LockExpiredReservations(ctx context.Context, arg LockExpiredRe
 	return items, nil
 }
 
+const lockReservation = `-- name: LockReservation :one
+SELECT request_id, key_id, account_id, model, nanos, expires_at, created_at FROM reservations WHERE request_id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockReservation(ctx context.Context, requestID string) (Reservation, error) {
+	row := q.db.QueryRow(ctx, lockReservation, requestID)
+	var i Reservation
+	err := row.Scan(
+		&i.RequestID,
+		&i.KeyID,
+		&i.AccountID,
+		&i.Model,
+		&i.Nanos,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const reserveQuota = `-- name: ReserveQuota :one
 WITH api_key AS (
     UPDATE api_keys

@@ -2,12 +2,15 @@ package ledger
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -178,4 +181,34 @@ func TestReserveFailsWhenQuotaInsufficient(t *testing.T) {
 	apiKey, err := f.st.GetAPIKey(context.Background(), f.apiKey.ID)
 	require.NoError(t, err)
 	assert.Equal(t, int64(3_072_000), apiKey.Reserved, "failed reservation leaves nothing frozen")
+}
+
+// commitLostStore 预扣真的提交了，但调用方收到错误：模拟提交确认在途中连接断开或 context 到期。
+type commitLostStore struct{ Store }
+
+func (s commitLostStore) ReserveQuota(ctx context.Context, r store.Reservation) (store.QuotaReservation, error) {
+	if _, err := s.Store.ReserveQuota(ctx, r); err != nil {
+		return store.QuotaReservation{}, err
+	}
+	return store.QuotaReservation{}, fmt.Errorf("%w: %w", store.ErrCommitOutcomeUnknown, context.DeadlineExceeded)
+}
+
+func TestReserveCompensatesWhenCommitOutcomeIsUnknown(t *testing.T) {
+	f := newFixture(t)
+	f.ledger.store = commitLostStore{f.st}
+	unitPrice, err := f.prices.Lookup(context.Background(), "lab-model", "default")
+	require.NoError(t, err)
+
+	_, err = f.ledger.ReserveQuota(context.Background(), f.apiKey, unitPrice, "req-lost")
+
+	require.ErrorIs(t, err, store.ErrCommitOutcomeUnknown)
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		apiKey, err := f.st.GetAPIKey(context.Background(), f.apiKey.ID)
+		require.NoError(c, err)
+		assert.Zero(c, apiKey.Reserved, "the denied request's reservation is released, not left to the reaper")
+		_, err = f.st.GetReservation(context.Background(), "req-lost")
+		assert.ErrorIs(c, err, store.ErrNotFound)
+	}, 2*time.Second, 10*time.Millisecond)
+	released := testutil.ToFloat64(f.metrics.ReserveCompensations.WithLabelValues("released"))
+	assert.InDelta(t, 1, released, 0)
 }

@@ -588,15 +588,28 @@ OTLP access log 是遥测链路（批量、可丢），不适合做账本的数�
 
 ### 19.3 可用性
 
-- [ ] PG 形态：kind 演示环境保留 `postgres:15-alpine` 单实例；生产默认推荐 CloudNativePG（一主多从流复制、自动故障切换、WAL 持续归档与 PITR、`-rw` / `-ro` Service、内置指标）；也允许直接使用云厂商 PG，只改 DSN。
-- [ ] 备份恢复演练：从对象存储恢复到指定时间点，验证账本数据完整。
-- [ ] loom 部署：Pod 反亲和；保留现有 PDB 与 `/readyz`（PG 不可用时摘除流量）。
+- [x] PG 形态：`deploy/deploy.sh --pg single|cnpg`，不指定时沿用集群现有形态。`cnpg` 为 CloudNativePG `1.30.2` 集群 `loom-pg`：PostgreSQL 18 一主两从，`ANY 1` 法定人数同步复制（`dataDurability: preferred`，从库全部不可用时降级为异步），loom 连 `loom-pg-rw`；Barman Cloud 插件 `v0.16.0`（依赖 cert-manager `v1.20.5`）向对象存储持续归档 WAL 并每日基础备份，保留 7 天。平台组件由 `deploy/cnpg/install.sh` 安装一次；7 个镜像已归档到网盘 `bd://deploy/images/`（`manifest.tsv` 含 digest 与 SHA-256），宿主机拉取 ghcr.io 超时时离线导入。也允许直接使用云厂商 PG，只改 DSN。在 `cnpg` 形态下 smoke `104` 项、契约 `30` 项、store 一致性 `15` 组、监控 `16` 项全部通过。
+- [x] 故障切换演练（`deploy/cnpg/drill.sh failover|switchover`，4 路并发持续请求中删除主库 Pod）：
+
+| 场景 | 提升新主库 | 错误窗口 | 失败请求 | 账本校验 |
+|------|-----------|---------|---------|---------|
+| 强制删除（模拟节点宕机） | `20.4 s` | `20.7 s` | `65 / 8,064`，均为 `500 internal_error` | 通过 |
+| 正常删除（模拟滚动升级、节点排空） | `18.1 s` | `9.4 s` | `40 / 13,451` | 通过 |
+
+账本校验：每个成功请求恰好一条用量记录，`quota_used` 等于已结算用量之和，`reserved` 等于未结算预扣之和，无残留预扣。演练中的三个发现均已处理：
+
+1. 强制删除时约 `16 s` 花在等待旧主库的 Kubernetes 租约过期（`primaryLease.leaseDurationSeconds` 默认 `15`），这是防脑裂的必要代价，保持默认。
+2. 正常删除时 smart shutdown 会等所有客户端断开，而 loom 的连接池与 `LISTEN` 长连接不会主动断开，默认 `smartShutdownTimeout: 180` 使切换拖到 `185 s`；改为 `15` 后为 `18 s`。
+3. 提交结果未知：预扣事务已在 PG 提交，但确认返回前准入截止时间已到，请求被拒绝而预扣留存，额度冻结到 `reservation_ttl`（`15 min`）。现在 `inTx` 把提交阶段的非服务端错误标记为 `store.ErrCommitOutcomeUnknown`，账本据此在后台按 `request_id` 幂等释放（`ReleaseReservation`，最长重试 `30 s` 以覆盖故障切换）；演练中补偿释放 `2` 笔，无残留。新增指标 `loom_ledger_reserve_compensations_total{result}` 与告警 `LoomReserveCompensationFailed`（共 13 条）。
+
+- [x] 备份恢复演练（`deploy/cnpg/drill.sh restore`）：按需基础备份 `10 s`（ObjectStore 开启 `immediateCheckpoint`，否则要等下一次定时检查点，实测 `246 s`）；在目标时间点前后各写一个标记账户，按时间点恢复到独立集群 `loom-pg-restore` 用时 `50 s`，前一个标记存在、后一个不存在，账户数与源库在目标时间点一致。
+- [x] loom 部署：`topologySpreadConstraints` 按节点打散；保留现有 PDB 与 `/readyz`（PG 不可用时摘除流量）。PG 实例开启 Pod 反亲和（演练集群只有一个节点，用 `preferred`；生产多节点改为 `required`）。
 - [x] 超时预算：AgentGateway 对 extAuth 默认 `2s` 超时（`BackendRequestTimeout`）；loom 准入截止时间 `admission.timeout` 默认 `1500ms`，到期按 `500 internal_error` 拒绝并释放 PG 连接。
 - [x] 预扣原子化：两级预扣与预扣记录合为一个事务（`ReserveQuota`，一条数据修改 CTE，任一级不满足时回滚）。修复前实测：PG 行锁使准入拖到网关 `2s` 超时，被取消的账户级预扣之后，API Key 级预扣的补偿撤销也因 context 已取消而失败，`3,072,000` nano 永久冻结（此时尚无预扣记录，reaper 无法释放）。`deploy/smoke.sh` 第 17 节在行锁下验证 `<2s` 返回 `500 internal_error` 且无残留冻结；store 一致性用例增加"两级预扣全有或全无"（含已取消的 context）。
 
 ### 19.4 存储可替换性（云 PG 与 MySQL）
 
-- [x] 存储一致性测试：`internal/store/storetest` 的 13 组用例（账户与 API Key、条件预扣、结算幂等与冲正、过期释放、用量与计价快照、准入审计、兜底定价、额度变更流水、管理 token 与审计），`memstore` 在 `go test` 中运行，`postgres` 经 `deploy/conformance.sh` 在 st2-aii 的真实 PG 上（每次重建独立库 `loom_conformance`）运行，两者均通过；新增驱动以通过该测试为准入条件。统一后的语义：预扣金额大于 0 时，不存在的 API Key / 账户返回 `ErrInsufficientQuota`。
+- [x] 存储一致性测试：`internal/store/storetest` 的 15 组用例（账户与 API Key、条件预扣、两级预扣全有或全无、按请求释放预扣、结算幂等与冲正、过期释放、用量与计价快照、准入审计、兜底定价、额度变更流水、管理 token 与审计），`memstore` 在 `go test` 中运行，`postgres` 经 `deploy/conformance.sh` 在 st2-aii 的真实 PG 上（每次重建独立库 `loom_conformance`）运行，两者均通过；新增驱动以通过该测试为准入条件。统一后的语义：预扣金额大于 0 时，不存在的 API Key / 账户返回 `ErrInsufficientQuota`。
 - [x] 配置 `store.driver`（当前只接受 `postgres`，其他值在配置校验阶段报错）。
 - [x] `LISTEN` 使用可单独配置的直连 DSN（`postgres.listen_dsn`，为空时与主 DSN 相同），无法直连时退回 TTL 失效。
 - [ ] 连接经过事务模式连接池（PgBouncer 等）时，提供配置切换为简单查询协议。

@@ -27,6 +27,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"reserve respects the limit", testReserveRespectsLimit},
 		{"reserve rejects inactive key and account", testReserveRejectsInactive},
 		{"two-level reserve is all or nothing", testReserveQuotaIsAtomic},
+		{"release reservation by request id is idempotent", testReleaseReservation},
 		{"settle replaces reservation and is idempotent", testSettleIsIdempotent},
 		{"settle without reservation charges directly", testSettleWithoutReservation},
 		{"release expired reservations", testReleaseExpired},
@@ -236,6 +237,33 @@ func testReserveQuotaIsAtomic(t *testing.T, s store.Store) {
 	require.Error(t, err)
 	_, keyReserved, _, accountReserved = quotaOf(t, s, apiKey.ID)
 	assert.Equal(t, [2]int64{60, 60}, [2]int64{keyReserved, accountReserved}, "a cancelled reserve changes nothing")
+}
+
+func testReleaseReservation(t *testing.T, s store.Store) {
+	account := newAccount(t, s, new(int64(1000)))
+	apiKey := newAPIKey(t, s, account.ID, new(int64(1000)))
+	r := store.Reservation{
+		RequestID: unique("req"),
+		APIKeyID:  apiKey.ID,
+		AccountID: account.ID,
+		Model:     "m",
+		Nanos:     70,
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	_, err := s.ReserveQuota(ctx, r)
+	require.NoError(t, err)
+
+	released, err := s.ReleaseReservation(ctx, r.RequestID)
+	require.NoError(t, err)
+	assert.True(t, released)
+	_, keyReserved, _, accountReserved := quotaOf(t, s, apiKey.ID)
+	assert.Equal(t, [2]int64{0, 0}, [2]int64{keyReserved, accountReserved})
+
+	released, err = s.ReleaseReservation(ctx, r.RequestID)
+	require.NoError(t, err)
+	assert.False(t, released, "a second release finds nothing")
+	_, keyReserved, _, accountReserved = quotaOf(t, s, apiKey.ID)
+	assert.Equal(t, [2]int64{0, 0}, [2]int64{keyReserved, accountReserved}, "and changes nothing")
 }
 
 func reserveFor(t *testing.T, s store.Store, apiKey store.APIKey, nanos int64, expiresAt time.Time) string {

@@ -14,6 +14,9 @@ SELECT count(*) FROM reservations;
 -- name: DeleteReservation :exec
 DELETE FROM reservations WHERE request_id = $1;
 
+-- name: LockReservation :one
+SELECT * FROM reservations WHERE request_id = $1 FOR UPDATE;
+
 -- name: LockExpiredReservations :many
 SELECT * FROM reservations
 WHERE expires_at < $1

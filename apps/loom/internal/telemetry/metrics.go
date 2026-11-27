@@ -26,14 +26,15 @@ type Metrics struct {
 	PricingModels  prometheus.Gauge
 
 	// ledger
-	ReservedNanos       *prometheus.CounterVec // {model}
-	SettledNanos        *prometheus.CounterVec // {model}
-	Settlements         *prometheus.CounterVec // {channel, inserted}
-	SettleErrors        *prometheus.CounterVec // {channel}
-	RemainingNanos      *prometheus.GaugeVec   // {account}
-	ReservationsOpen    prometheus.Gauge
-	ReservationsExpired prometheus.Counter
-	CostMismatch        *prometheus.CounterVec // {model}
+	ReservedNanos        *prometheus.CounterVec // {model}
+	SettledNanos         *prometheus.CounterVec // {model}
+	Settlements          *prometheus.CounterVec // {channel, inserted}
+	SettleErrors         *prometheus.CounterVec // {channel}
+	RemainingNanos       *prometheus.GaugeVec   // {account}
+	ReservationsOpen     prometheus.Gauge
+	ReservationsExpired  prometheus.Counter
+	ReserveCompensations *prometheus.CounterVec // {result}
+	CostMismatch         *prometheus.CounterVec // {model}
 
 	// transport
 	RateLimitCalls    *prometheus.CounterVec // {phase}
@@ -123,6 +124,11 @@ func NewMetrics(version, commit string) *Metrics {
 			"loom_ledger_reservations_open",
 			"Reservations not yet settled.",
 		),
+		ReserveCompensations: counterVec(
+			"loom_ledger_reserve_compensations_total",
+			"Releases of reservations whose commit outcome was unknown; result=released|absent|failed.",
+			"result",
+		),
 		ReservationsExpired: counter(
 			"loom_ledger_reservations_expired_total",
 			"Reservations released because no usage report arrived.",
@@ -178,6 +184,9 @@ func NewMetrics(version, commit string) *Metrics {
 	for _, result := range []string{"ok", "error"} {
 		m.PricingReload.WithLabelValues(result)
 	}
+	for _, result := range []string{"released", "absent", "failed"} {
+		m.ReserveCompensations.WithLabelValues(result)
+	}
 	for _, kind := range []string{"api_key", "account", "model_price"} {
 		for _, origin := range []string{"local", "remote"} {
 			m.CacheInvalidations.WithLabelValues(kind, origin)
@@ -203,6 +212,7 @@ func NewMetrics(version, commit string) *Metrics {
 		m.RemainingNanos,
 		m.ReservationsOpen,
 		m.ReservationsExpired,
+		m.ReserveCompensations,
 		m.CostMismatch,
 		m.RateLimitCalls,
 		m.OTLPQueueDepth,

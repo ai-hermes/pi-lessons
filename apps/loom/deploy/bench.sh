@@ -27,13 +27,12 @@ BENCH_BIN="$(mktemp -d)/loom-bench"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$BENCH_BIN" ./cmd/loom-bench
 scp -q "$BENCH_BIN" "${HOST}:/opt/agentgateway/loom/loom-bench"
 
-ssh "${HOST}" "ACCOUNTS=${ACCOUNTS} DURATION=${DURATION} LEVELS='${LEVELS}' GROUPS_TO_RUN='${GROUPS_TO_RUN}' bash -s" <<'REMOTE'
+cat "$(dirname "$0")/pg.sh" - <<'REMOTE' | ssh "${HOST}" "ACCOUNTS=${ACCOUNTS} DURATION=${DURATION} LEVELS='${LEVELS}' GROUPS_TO_RUN='${GROUPS_TO_RUN}' bash -s"
 set -euo pipefail
 export PATH=/opt/agentgateway/k8s/bin:$PATH
 BENCH=/opt/agentgateway/loom/loom-bench
 
 bench_key() { printf 'loom-bench-%02d-000000000000000000\n' "$1"; }
-q() { kubectl -n loom exec deploy/loom-postgres -- psql -U loom -d loom -Atc "$1"; }
 
 echo "==> seed ${ACCOUNTS} bench accounts (unlimited quota, default group)"
 {

@@ -231,3 +231,30 @@ func (d *DB) ReserveQuota(ctx context.Context, r store.Reservation) (reserved st
 	})
 	return reserved, err
 }
+
+// ReleaseReservation 见 store.Store：锁住预扣记录后回退两级额度并删除，与 reaper、结算互斥。
+func (d *DB) ReleaseReservation(ctx context.Context, requestID string) (released bool, err error) {
+	err = d.inTx(ctx, "ReleaseReservation", func(q *sqlcgen.Queries) error {
+		r, err := q.LockReservation(ctx, requestID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return d.fail("ReleaseReservation.lock", err)
+		}
+		keyParams := sqlcgen.ReleaseKeyReservationParams{ID: r.KeyID, Reserved: r.Nanos}
+		if err := q.ReleaseKeyReservation(ctx, keyParams); err != nil {
+			return d.fail("ReleaseReservation.releaseKey", err)
+		}
+		accountParams := sqlcgen.ReleaseAccountReservationParams{ID: r.AccountID, Reserved: r.Nanos}
+		if err := q.ReleaseAccountReservation(ctx, accountParams); err != nil {
+			return d.fail("ReleaseReservation.releaseAccount", err)
+		}
+		if err := q.DeleteReservation(ctx, r.RequestID); err != nil {
+			return d.fail("ReleaseReservation.delete", err)
+		}
+		released = true
+		return nil
+	})
+	return released, err
+}

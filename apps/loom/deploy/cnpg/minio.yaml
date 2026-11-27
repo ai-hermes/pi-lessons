@@ -1,0 +1,77 @@
+# 演练用对象存储：CloudNativePG 的 WAL 归档与基础备份写到这里（bitnami minio，启动时自动建桶）。
+# 生产环境换成云对象存储或独立的 MinIO 集群，只需改 cluster.yaml 里 ObjectStore 的 endpointURL 与凭据。
+apiVersion: v1
+kind: Secret
+metadata:
+  name: loom-minio
+  namespace: loom
+type: Opaque
+stringData:
+  ACCESS_KEY_ID: loom-backup
+  ACCESS_SECRET_KEY: loom-backup-change-me
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loom-minio
+  namespace: loom
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loom-minio
+  namespace: loom
+  labels:
+    app: loom-minio
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: loom-minio
+  template:
+    metadata:
+      labels:
+        app: loom-minio
+    spec:
+      securityContext:
+        fsGroup: 1001
+      containers:
+      - name: minio
+        image: ghcr.io/ai-hermes/coze-dep-minio:2025.6.13
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: MINIO_ROOT_USER
+          valueFrom: {secretKeyRef: {name: loom-minio, key: ACCESS_KEY_ID}}
+        - name: MINIO_ROOT_PASSWORD
+          valueFrom: {secretKeyRef: {name: loom-minio, key: ACCESS_SECRET_KEY}}
+        - name: MINIO_DEFAULT_BUCKETS
+          value: loom-pg-backups
+        ports:
+        - {name: s3, containerPort: 9000}
+        readinessProbe:
+          httpGet: {path: /minio/health/ready, port: s3}
+          periodSeconds: 5
+        volumeMounts:
+        - {name: data, mountPath: /bitnami/minio/data}
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: loom-minio
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loom-minio
+  namespace: loom
+spec:
+  selector:
+    app: loom-minio
+  ports:
+  - {name: s3, port: 9000, targetPort: s3}

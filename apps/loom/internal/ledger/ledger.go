@@ -38,6 +38,7 @@ type Store interface {
 	ReserveAccountQuota(ctx context.Context, accountID uuid.UUID, nanos int64) (store.QuotaState, error)
 	ReserveQuota(ctx context.Context, r store.Reservation) (store.QuotaReservation, error)
 	CountReservations(ctx context.Context) (int64, error)
+	ReleaseReservation(ctx context.Context, requestID string) (bool, error)
 	ReleaseExpiredReservations(ctx context.Context, now time.Time, limit int) (int, error)
 
 	SettleUsage(ctx context.Context, ev store.UsageEvent) (bool, error)

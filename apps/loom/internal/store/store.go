@@ -21,6 +21,10 @@ var ErrConflict = errors.New("store: already exists")
 // ErrInsufficientQuota 条件预扣失败：剩余额度不足，或 API Key / 账户已停用、已过期。
 var ErrInsufficientQuota = errors.New("store: insufficient quota")
 
+// ErrCommitOutcomeUnknown 提交请求已发出但没收到确认（连接断开、context 到期）：事务可能已提交，也可能没有。
+// 调用方需要按幂等键核对或补偿，不能当作“未生效”。
+var ErrCommitOutcomeUnknown = errors.New("store: commit outcome unknown")
+
 // Status 账户与 API Key 的启用状态。
 type Status string
 
@@ -339,6 +343,9 @@ type Store interface {
 	SettleUsage(ctx context.Context, ev UsageEvent) (bool, error)
 	// BackfillAgentGatewayCost 在另一条通道已先结算时补写网关金额（只填空值），返回是否更新。
 	BackfillAgentGatewayCost(ctx context.Context, requestID string, nanos int64) (bool, error)
+	// ReleaseReservation 单事务：释放 requestID 的预扣（两级额度回退并删除记录）；记录不存在时什么也不做，返回 false。
+	// 用于预扣提交结果未知（提交时连接断开或超时）的补偿，可重复调用。
+	ReleaseReservation(ctx context.Context, requestID string) (released bool, err error)
 	// ReleaseExpiredReservations 单事务：锁定过期的预扣、释放两级额度、删除记录，返回释放条数。
 	ReleaseExpiredReservations(ctx context.Context, now time.Time, limit int) (int, error)
 

@@ -74,6 +74,14 @@ groups:
         annotations:
           summary: 有预扣在 reservation_ttl 内没有收到任何用量上报，被释放且未计费（RLS 与 OTLP 都未送达）。
 
+      - alert: LoomReserveCompensationFailed
+        expr: sum(increase(loom_ledger_reserve_compensations_total{result="failed"}[30m])) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: >-
+            提交结果未知的预扣补偿释放失败（PG 30s 内未恢复），这些额度冻结到 reservation_ttl 后由 reaper 释放；
+            期间受影响账户的可用额度偏少。
+
       - alert: LoomOTLPDropping
         expr: sum(rate(loom_otlp_dropped_total[5m])) > 0
         for: 10m

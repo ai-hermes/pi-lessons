@@ -1,0 +1,83 @@
+# loom 的生产形态 PostgreSQL：CloudNativePG 一主两从 + Barman Cloud 插件做 WAL 归档与基础备份。
+#   - 应用连接 loom-pg-rw（始终指向主库）；故障切换后 Service 自动跟随新主库。
+#   - 同步复制 1 个从库：主库宕机时已确认的提交不丢（RPO=0），代价是写延迟多一次网络往返。
+#   - 备份：WAL 持续归档 + 每日基础备份，保留 7 天，可恢复到 7 天内任意时间点（PITR）。
+apiVersion: v1
+kind: Secret
+metadata:
+  name: loom-pg-app
+  namespace: loom
+type: kubernetes.io/basic-auth
+stringData:
+  username: loom
+  password: loom
+---
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: loom-pg-backups
+  namespace: loom
+spec:
+  retentionPolicy: 7d
+  configuration:
+    destinationPath: s3://loom-pg-backups/
+    endpointURL: http://loom-minio:9000
+    s3Credentials:
+      accessKeyId: {name: loom-minio, key: ACCESS_KEY_ID}
+      secretAccessKey: {name: loom-minio, key: ACCESS_SECRET_KEY}
+    wal:
+      compression: gzip
+    data:
+      compression: gzip
+      immediateCheckpoint: true # 不等下一次定时检查点（checkpoint_timeout 默认 5min）；库小，立即检查点的 I/O 冲击可忽略
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: loom-pg
+  namespace: loom
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.7-minimal-trixie
+  primaryUpdateStrategy: unsupervised
+  # 正常停止主库（滚动升级、节点排空）时，smart shutdown 会等所有客户端断开；loom 连接池与 LISTEN 长连接不会主动断开，
+  # 默认 180s 意味着切换要等满 3 分钟。loom 只有短事务且连接池会自动重连，15s 足够。
+  smartShutdownTimeout: 15
+  postgresql:
+    parameters:
+      max_connections: "200"
+    synchronous:
+      method: any
+      number: 1
+      dataDurability: preferred # 从库全部不可用时降级为异步，写入不被阻塞
+  bootstrap:
+    initdb:
+      database: loom
+      owner: loom
+      secret: {name: loom-pg-app}
+      postInitApplicationSQL:
+      - ALTER ROLE loom CREATEDB # 仅供 deploy/conformance.sh 建独立测试库
+  storage:
+    size: 5Gi
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: preferred # 演练集群只有一个节点；生产多节点改为 required
+  plugins:
+  - name: barman-cloud.cloudnative-pg.io
+    isWALArchiver: true
+    parameters:
+      barmanObjectName: loom-pg-backups
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: loom-pg-daily
+  namespace: loom
+spec:
+  schedule: "0 0 3 * * *"
+  backupOwnerReference: self
+  cluster: {name: loom-pg}
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io

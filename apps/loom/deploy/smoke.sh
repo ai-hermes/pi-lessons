@@ -12,7 +12,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-ssh "${HOST}" "SKIP_FAILCLOSED=${SKIP_FAILCLOSED} SKIP_RELOAD=${SKIP_RELOAD} bash -s" <<'REMOTE'
+cat "$(dirname "$0")/pg.sh" - <<'REMOTE' | ssh "${HOST}" "SKIP_FAILCLOSED=${SKIP_FAILCLOSED} SKIP_RELOAD=${SKIP_RELOAD} bash -s"
 set -u
 export PATH=/opt/agentgateway/k8s/bin:$PATH
 BASE=http://127.0.0.1:14001
@@ -25,7 +25,6 @@ check() { # name expected actual
 }
 code()   { curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$@"; }
 reason() { curl -s -D - -o /dev/null --max-time 30 "$@" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-loom-deny-reason"{print $2}'; }
-q()      { kubectl -n loom exec deploy/loom-postgres -- psql -U loom -d loom -Atc "$1"; }
 admin()  { kubectl -n loom exec deploy/loom -- wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:9090$1"; }
 chat()   { curl -s --max-time 60 -H "Authorization: Bearer $1" -H 'content-type: application/json' -d "{\"model\":\"$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" "$BASE$3"; }
 key() { case "$1" in
@@ -265,7 +264,7 @@ echo "### 17. 超时预算：PG 行锁时准入在自己的截止时间（1.5s�
 # 第 16 节的充值让 cache-sync 有了上限；复位为不限额并清空预扣，保证请求真的走到被锁的行
 admin_post "/v1/accounts/$SYNC_AID/quota" '{"quota_limit_nanos":null,"quota_used_nanos":0}' >/dev/null
 admin_post "/v1/keys/$SYNC_KID/quota" '{"quota_limit_nanos":null,"quota_used_nanos":0}' >/dev/null
-kubectl -n loom exec deploy/loom-postgres -- psql -U loom -d loom -qc \
+pg_psql loom -qc \
   "BEGIN; SELECT 1 FROM accounts WHERE name = 'cache-sync' FOR UPDATE; SELECT pg_sleep(6); COMMIT;" >/dev/null 2>&1 &
 LOCK=$!
 sleep 1.5

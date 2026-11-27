@@ -45,6 +45,7 @@ type Querier interface {
 	LockAccountQuota(ctx context.Context, id uuid.UUID) (LockAccountQuotaRow, error)
 	LockExpiredReservations(ctx context.Context, arg LockExpiredReservationsParams) ([]Reservation, error)
 	LockKeyQuota(ctx context.Context, id uuid.UUID) (LockKeyQuotaRow, error)
+	LockReservation(ctx context.Context, requestID string) (Reservation, error)
 	ReleaseAccountReservation(ctx context.Context, arg ReleaseAccountReservationParams) error
 	ReleaseKeyReservation(ctx context.Context, arg ReleaseKeyReservationParams) error
 	ReserveAccountQuota(ctx context.Context, arg ReserveAccountQuotaParams) (ReserveAccountQuotaRow, error)
