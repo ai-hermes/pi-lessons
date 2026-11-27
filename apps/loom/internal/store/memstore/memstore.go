@@ -158,6 +158,14 @@ func (m *Store) appendAdjustmentLocked(adj store.QuotaAdjustment) {
 	m.quotaAdjustments = append(m.quotaAdjustments, adj)
 }
 
+// missingForReserve 与 PostgreSQL 的条件 UPDATE 一致：预扣金额大于 0 时，不存在的对象按“额度不足”处理。
+func missingForReserve(nanos int64) error {
+	if nanos > 0 {
+		return store.ErrInsufficientQuota
+	}
+	return store.ErrNotFound
+}
+
 func reserve(limit *int64, used, reserved, nanos int64) (store.QuotaState, bool) {
 	if limit != nil && *limit-used-reserved < nanos {
 		return store.QuotaState{}, false
@@ -226,7 +234,7 @@ func (m *Store) ReserveAccountQuota(_ context.Context, id uuid.UUID, nanos int64
 	defer m.mu.Unlock()
 	a, ok := m.accounts[id]
 	if !ok {
-		return store.QuotaState{}, store.ErrNotFound
+		return store.QuotaState{}, missingForReserve(nanos)
 	}
 	if nanos <= 0 {
 		return store.QuotaState{Limit: a.QuotaLimit, Used: a.QuotaUsed, Reserved: a.Reserved}, nil
@@ -349,7 +357,7 @@ func (m *Store) ReserveAPIKeyQuota(_ context.Context, id uuid.UUID, nanos int64)
 	defer m.mu.Unlock()
 	apiKey, ok := m.apiKeys[id]
 	if !ok {
-		return store.QuotaState{}, store.ErrNotFound
+		return store.QuotaState{}, missingForReserve(nanos)
 	}
 	if nanos <= 0 {
 		return store.QuotaState{Limit: apiKey.QuotaLimit, Used: apiKey.QuotaUsed, Reserved: apiKey.Reserved}, nil

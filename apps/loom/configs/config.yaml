@@ -12,6 +12,9 @@ log:
   level: info
   format: json
 
+store:
+  driver: postgres              # 存储后端；当前只实现 postgres
+
 postgres:
   dsn_file: /etc/loom/pg-dsn
   # listen_dsn: 跨副本缓存失效用 LISTEN 长连接；主 DSN 经过事务模式连接池（PgBouncer 等）时指向可直连的地址

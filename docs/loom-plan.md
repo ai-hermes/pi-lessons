@@ -595,8 +595,8 @@ OTLP access log 是遥测链路（批量、可丢），不适合做账本的数�
 
 ### 19.4 存储可替换性（云 PG 与 MySQL）
 
-- [ ] 存储一致性测试：一套针对 `store.Store` 的行为测试，`memstore` 与 `postgres` 必须同时通过；新增驱动以通过该测试为准入条件。
-- [ ] 配置 `store.driver: postgres | mysql`，当前只实现 `postgres`。
+- [x] 存储一致性测试：`internal/store/storetest` 的 13 组用例（账户与 API Key、条件预扣、结算幂等与冲正、过期释放、用量与计价快照、准入审计、兜底定价、额度变更流水、管理 token 与审计），`memstore` 在 `go test` 中运行，`postgres` 经 `deploy/conformance.sh` 在 st2-aii 的真实 PG 上（每次重建独立库 `loom_conformance`）运行，两者均通过；新增驱动以通过该测试为准入条件。统一后的语义：预扣金额大于 0 时，不存在的 API Key / 账户返回 `ErrInsufficientQuota`。
+- [x] 配置 `store.driver`（当前只接受 `postgres`，其他值在配置校验阶段报错）。
 - [x] `LISTEN` 使用可单独配置的直连 DSN（`postgres.listen_dsn`，为空时与主 DSN 相同），无法直连时退回 TTL 失效。
 - [ ] 连接经过事务模式连接池（PgBouncer 等）时，提供配置切换为简单查询协议。
 - [ ] PG 专有能力只出现在 `postgres` 实现内部，不改变 `store.Store` 方法语义：`RETURNING` / `ON CONFLICT`、带写操作的 CTE、`FOR UPDATE SKIP LOCKED`、`LISTEN` / `NOTIFY`、advisory lock、原生分区。MySQL 实现以多语句事务、`ON DUPLICATE KEY`、`GET_LOCK` 与轮询替代。
