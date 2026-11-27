@@ -19,6 +19,7 @@ import (
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/pricing"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store/postgres"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/telemetry"
+	"github.com/ai-hermes/pi-lessons/apps/loom/internal/throttle"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/transport/extauth"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/transport/otlp"
 )
@@ -39,6 +40,7 @@ type Service struct {
 	db       *postgres.DB
 	prices   *pricing.PriceTable
 	ledger   *ledger.Ledger
+	limiter  *throttle.Limiter
 	gate     *admission.Gate
 	accounts *account.Service
 	queue    *otlp.Queue
@@ -97,6 +99,8 @@ func wire(cfg *config.Config, db *postgres.DB, metrics *telemetry.Metrics, log *
 		OwnerCacheTTL:  cfg.Ledger.OwnerCacheTTL,
 	}
 	billingLedger := ledger.New(ledgerOpts, db, prices, metrics, log)
+	limiter := throttle.New(db, prices, metrics, log)
+	billingLedger.SetTokenCounter(limiter)
 
 	gateOpts := admission.Options{
 		Timeout:     cfg.Admission.Timeout,
@@ -108,6 +112,7 @@ func wire(cfg *config.Config, db *postgres.DB, metrics *telemetry.Metrics, log *
 		db,
 		prices,
 		billingLedger,
+		limiter,
 		metrics,
 		log,
 	)
@@ -134,6 +139,7 @@ func wire(cfg *config.Config, db *postgres.DB, metrics *telemetry.Metrics, log *
 		db:       db,
 		prices:   prices,
 		ledger:   billingLedger,
+		limiter:  limiter,
 		gate:     gate,
 		accounts: account.New(db, prices, cfg.Admin.KeyPrefix, caches),
 		queue:    queue,
@@ -193,6 +199,7 @@ func extauthOptions(cfg config.ExtAuth) extauth.Options {
 			RequestID:       h.RequestID,
 			QuotaRemaining:  h.QuotaRemaining,
 			DenyReason:      h.DenyReason,
+			RateLimit:       h.RateLimit,
 		},
 		DenyStatus: deny,
 		BodyLimit:  cfg.BodyLimit,

@@ -19,6 +19,8 @@ type CreateAccountInput struct {
 	Group      string       `json:"group"`
 	QuotaNanos *int64       `json:"quota_limit_nanos"` // nil = 不限
 	Status     store.Status `json:"status"`
+	// RateLimits 账户级限流；未配置的项取分组默认值。
+	RateLimits store.RateLimits `json:"rate_limits"`
 }
 
 // UpdateAccountInput 修改账户的参数；零值字段保持不变。
@@ -26,6 +28,8 @@ type UpdateAccountInput struct {
 	Status     store.Status `json:"status"`
 	Group      string       `json:"group"`
 	QuotaNanos *int64       `json:"quota_limit_nanos"`
+	// RateLimits 非 nil 时整体替换三项（其中为 null 的项表示不限 / 取分组默认值）。
+	RateLimits *store.RateLimits `json:"rate_limits"`
 }
 
 // QuotaReset 直接设置额度上限与已用量，并清空预扣（运维与验收复位用）；每次修改写入额度变更流水。
@@ -56,6 +60,9 @@ func (s *Service) CreateAccount(ctx context.Context, in CreateAccountInput) (sto
 	if err := s.validateGroup(group); err != nil {
 		return store.Account{}, err
 	}
+	if err := validateRateLimits(in.RateLimits); err != nil {
+		return store.Account{}, err
+	}
 	return s.store.CreateAccount(ctx, store.Account{
 		ID:         uuid.New(),
 		Name:       in.Name,
@@ -63,6 +70,7 @@ func (s *Service) CreateAccount(ctx context.Context, in CreateAccountInput) (sto
 		Group:      group,
 		Status:     orDefault(in.Status, store.StatusActive),
 		QuotaLimit: in.QuotaNanos,
+		Limits:     in.RateLimits,
 	})
 }
 
@@ -78,7 +86,13 @@ func (s *Service) UpdateAccount(ctx context.Context, id uuid.UUID, in UpdateAcco
 	if in.QuotaNanos != nil {
 		settings.QuotaLimit = in.QuotaNanos
 	}
+	if in.RateLimits != nil {
+		settings.Limits = *in.RateLimits
+	}
 	if err := s.validateGroup(settings.Group); err != nil {
+		return store.Account{}, err
+	}
+	if err := validateRateLimits(settings.Limits); err != nil {
 		return store.Account{}, err
 	}
 	account, err := s.store.UpdateAccount(ctx, id, settings)
@@ -87,6 +101,14 @@ func (s *Service) UpdateAccount(ctx context.Context, id uuid.UUID, in UpdateAcco
 	}
 	s.caches.InvalidateAccount(ctx, id)
 	return account, nil
+}
+
+// validateRateLimits 已配置的限流项必须大于 0。
+func validateRateLimits(limits store.RateLimits) error {
+	if err := limits.Validate(); err != nil {
+		return fmt.Errorf("%w: rate_limits: %w", ErrInvalidInput, err)
+	}
+	return nil
 }
 
 // validateGroup 拒绝 pricing.yaml 中未定义的分组（unknown_group 为 default 时放行）。

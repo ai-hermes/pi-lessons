@@ -105,6 +105,7 @@ type ExtAuthHeaders struct {
 	RequestID       string `koanf:"request_id"`
 	QuotaRemaining  string `koanf:"quota_remaining"`
 	DenyReason      string `koanf:"deny_reason"`
+	RateLimit       string `koanf:"rate_limit"`
 }
 
 // Pricing 价目表。
@@ -233,11 +234,12 @@ func defaults() map[string]any {
 				"request_id":        "x-loom-request-id",
 				"quota_remaining":   "x-loom-quota-remaining",
 				"deny_reason":       "x-loom-deny-reason",
+				"rate_limit":        "x-loom-rate-limit",
 			},
 			"deny_status": map[string]any{
 				"missing_credential": 401, "unknown_api_key": 401, "expired_api_key": 401,
 				"client_inactive": 403, "model_not_allowed": 403, "model_not_priced": 403, "group_not_priced": 403,
-				"insufficient_quota": 403, "internal_error": 500,
+				"insufficient_quota": 403, "rate_limited": 429, "internal_error": 500,
 			},
 			"body_limit": 1 << 20,
 		},

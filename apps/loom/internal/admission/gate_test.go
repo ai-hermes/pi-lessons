@@ -20,6 +20,7 @@ import (
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store/memstore"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/telemetry"
+	"github.com/ai-hermes/pi-lessons/apps/loom/internal/throttle"
 )
 
 const testPricing = `
@@ -27,6 +28,7 @@ groups:
   default: {ratio: 1}
   vip: {ratio: 0.5}
   free: {ratio: 0}
+  metered: {ratio: 1, limits: {rpm: 1}}
 models:
   lab-model: {model_ratio: 0.5, completion_ratio: 2, cache_ratio: 0.1}
   lab-image: {model_price: 0.04}
@@ -58,10 +60,12 @@ func newFixture(t *testing.T, reserve pricing.ReserveEstimate) *fixture {
 	prices, err := pricing.New(priceOpts, st, metrics, log)
 	require.NoError(t, err)
 	billingLedger := ledger.New(ledger.Options{}, st, prices, metrics, log)
+	limiter := throttle.New(st, prices, metrics, log)
+	billingLedger.SetTokenCounter(limiter)
 
 	f := &fixture{
 		st:         st,
-		gate:       New(Options{}, st, prices, billingLedger, metrics, log),
+		gate:       New(Options{}, st, prices, billingLedger, limiter, metrics, log),
 		ledger:     billingLedger,
 		prices:     prices,
 		plaintexts: map[uuid.UUID]string{},
@@ -328,6 +332,7 @@ func (f *fixture) enableAPIKeyCache() {
 		f.gate.store,
 		f.gate.pricer,
 		f.gate.quotaReserver,
+		f.gate.limiter,
 		f.gate.metrics,
 		f.gate.log,
 	)
@@ -392,6 +397,7 @@ func TestAdmitGivesUpAtItsDeadline(t *testing.T) {
 		blockingStore{f.gate.store},
 		f.gate.pricer,
 		f.gate.quotaReserver,
+		f.gate.limiter,
 		f.gate.metrics,
 		f.gate.log,
 	)
@@ -401,4 +407,92 @@ func TestAdmitGivesUpAtItsDeadline(t *testing.T) {
 
 	assert.Equal(t, ReasonInternalError, v.Reason)
 	assert.Less(t, time.Since(start), time.Second, "admission returns at its own deadline, before the gateway's 2s")
+}
+
+// withLimits 设置 Key 的限流配置，返回更新后的 Key。
+func (f *fixture) withLimits(t *testing.T, key store.APIKey, limits store.RateLimits) store.APIKey {
+	t.Helper()
+	settings := key.Settings()
+	settings.Limits = limits
+	updated, err := f.st.UpdateAPIKey(context.Background(), key.ID, settings)
+	require.NoError(t, err)
+	return updated
+}
+
+func requireRateLimited(t *testing.T, v Verdict, scope store.RateScope, kind store.RateLimitKind) {
+	t.Helper()
+	require.Equal(t, ReasonRateLimited, v.Reason)
+	require.NotNil(t, v.RateLimit)
+	assert.Equal(t, store.RateLimitError{Scope: scope, Kind: kind}, *v.RateLimit)
+	assert.Positive(t, v.RetryAfter)
+	assert.LessOrEqual(t, v.RetryAfter, time.Minute)
+}
+
+func TestAdmitEnforcesAPIKeyRPM(t *testing.T) {
+	f := newFixture(t, pricing.ReserveEstimate{Input: 1024, Output: 1024})
+	bob := f.withLimits(t, f.bob, store.RateLimits{RPM: new(int64(2))})
+
+	assert.True(t, f.admit(bob, "lab-model").Allowed)
+	assert.True(t, f.admit(bob, "").Allowed, "non-model requests count towards RPM too")
+	requireRateLimited(t, f.admit(bob, "lab-model"), store.RateScopeAPIKey, store.RateLimitRPM)
+}
+
+func TestAdmitAppliesGroupDefaultsToTheAccount(t *testing.T) {
+	f := newFixture(t, pricing.ReserveEstimate{Input: 1024, Output: 1024})
+	metered := f.addAPIKey(t, f.addAccount(t, store.Account{Name: "mia", Group: "metered"}), nil)
+
+	assert.True(t, f.admit(metered, "lab-model").Allowed)
+	requireRateLimited(t, f.admit(metered, "lab-model"), store.RateScopeAccount, store.RateLimitRPM)
+}
+
+func TestAdmitEnforcesConcurrencyUntilSettlement(t *testing.T) {
+	f := newFixture(t, pricing.ReserveEstimate{Input: 1024, Output: 1024})
+	bob := f.withLimits(t, f.bob, store.RateLimits{MaxConcurrency: new(int64(1))})
+
+	first := f.admit(bob, "lab-model")
+	require.True(t, first.Allowed)
+	requireRateLimited(t, f.admit(bob, "lab-model"), store.RateScopeAPIKey, store.RateLimitConcurrency)
+
+	f.settle(t, first, pricing.TokenUsage{Input: 10, Output: 10})
+	assert.True(t, f.admit(bob, "lab-model").Allowed, "settlement frees the slot")
+}
+
+func TestAdmitReleasesRateCountWhenReserveFails(t *testing.T) {
+	f := newFixture(t, pricing.ReserveEstimate{Input: 1024, Output: 1024})
+	alice := f.withLimits(t, f.alice, store.RateLimits{RPM: new(int64(1))})
+	require.NoError(t, f.st.SetAPIKeyQuota(context.Background(), alice.ID, store.QuotaChange{
+		LimitNanos: new(int64(1)),
+		Actor:      "test",
+	}))
+
+	assert.Equal(t, ReasonInsufficientQuota, f.admit(alice, "lab-model").Reason)
+	require.NoError(t, f.st.SetAPIKeyQuota(context.Background(), alice.ID, store.QuotaChange{Actor: "test"}))
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.True(c, f.admit(alice, "lab-model").Allowed, "the denied request gave its RPM slot back")
+	}, 2*time.Second, 20*time.Millisecond)
+}
+
+func TestAdmitCorrectsTPMWithActualTokens(t *testing.T) {
+	f := newFixture(t, pricing.ReserveEstimate{Input: 1024, Output: 1024}) // 每次准入按 2,048 token 计入
+	bob := f.withLimits(t, f.bob, store.RateLimits{TPM: new(int64(4000))})
+	actual := pricing.TokenUsage{Input: 1000, Output: 500}
+
+	first := f.admit(bob, "lab-model")
+	require.True(t, first.Allowed)
+	f.settle(t, first, actual) // 计数 2,048 → 1,500
+	second := f.admit(bob, "lab-model")
+	require.True(t, second.Allowed, "1,500 + 2,048 fits; without the correction 4,096 would not")
+	f.settle(t, second, actual) // 3,000
+	requireRateLimited(t, f.admit(bob, "lab-model"), store.RateScopeAPIKey, store.RateLimitTPM)
+}
+
+func TestTPMEnabledMidWindowStartsFromZero(t *testing.T) {
+	f := newFixture(t, pricing.ReserveEstimate{Input: 1024, Output: 1024})
+	bob := f.withLimits(t, f.bob, store.RateLimits{RPM: new(int64(100))})
+	for range 3 {
+		require.True(t, f.admit(bob, "lab-model").Allowed)
+	}
+
+	bob = f.withLimits(t, bob, store.RateLimits{TPM: new(int64(4000))})
+	assert.True(t, f.admit(bob, "lab-model").Allowed, "tokens are only counted on levels that have a TPM limit")
 }

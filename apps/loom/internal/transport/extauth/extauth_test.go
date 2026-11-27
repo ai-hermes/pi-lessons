@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"github.com/google/uuid"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/admission"
+	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store"
 )
 
 // fakeGate 记录收到的请求并返回固定结论。
@@ -38,9 +40,13 @@ func testOptions() Options {
 			RequestID:       "x-loom-request-id",
 			QuotaRemaining:  "x-loom-quota-remaining",
 			DenyReason:      "x-loom-deny-reason",
+			RateLimit:       "x-loom-rate-limit",
 		},
-		DenyStatus: map[admission.Reason]int{admission.ReasonInsufficientQuota: http.StatusForbidden},
-		BodyLimit:  1 << 20,
+		DenyStatus: map[admission.Reason]int{
+			admission.ReasonInsufficientQuota: http.StatusForbidden,
+			admission.ReasonRateLimited:       http.StatusTooManyRequests,
+		},
+		BodyLimit: 1 << 20,
 	}
 }
 
@@ -131,4 +137,27 @@ func TestGRPCMatchesHTTP(t *testing.T) {
 	assert.EqualValues(t, http.StatusUnauthorized, denied.GetStatus().GetCode())
 	assert.Equal(t, "bogus", gate.got.Credential)
 	assert.Equal(t, "grpc", gate.got.Protocol)
+}
+
+func TestHTTPRateLimitedTellsWhichLimitAndWhenToRetry(t *testing.T) {
+	gate := &fakeGate{verdict: admission.Verdict{
+		Reason:     admission.ReasonRateLimited,
+		RateLimit:  &store.RateLimitError{Scope: store.RateScopeAccount, Kind: store.RateLimitRPM},
+		RetryAfter: 12300 * time.Millisecond,
+	}}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, CheckPath, http.NoBody)
+	rec := httptest.NewRecorder()
+
+	NewHTTPHandler(gate, testOptions()).ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
+	assert.Equal(t, "rate_limited", rec.Header().Get("x-loom-deny-reason"))
+	assert.Equal(t, "account/rpm", rec.Header().Get("x-loom-rate-limit"))
+	assert.Equal(t, "13", rec.Header().Get("retry-after"), "rounded up to whole seconds")
+	var body struct {
+		Error struct{ Code, Message, Type string } `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, "rate_limit_error", body.Error.Type)
+	assert.Equal(t, "rate limit exceeded: account rpm", body.Error.Message)
 }

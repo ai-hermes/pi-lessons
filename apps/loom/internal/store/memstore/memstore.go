@@ -20,6 +20,7 @@ type Store struct {
 	apiKeys     map[uuid.UUID]*store.APIKey
 	byHash      map[string]uuid.UUID
 	reserv      map[string]store.Reservation
+	rates       map[rateKey]*rateCount
 	usageEvents []store.UsageEvent
 	audit       []store.Audit
 	pricing     map[string]store.ModelPrice
@@ -37,6 +38,7 @@ func New() *Store {
 		apiKeys:  map[uuid.UUID]*store.APIKey{},
 		byHash:   map[string]uuid.UUID{},
 		reserv:   map[string]store.Reservation{},
+		rates:    map[rateKey]*rateCount{},
 		pricing:  map[string]store.ModelPrice{},
 	}
 }
@@ -116,7 +118,7 @@ func (m *Store) UpdateAccount(_ context.Context, id uuid.UUID, s store.AccountSe
 	if !ok {
 		return store.Account{}, store.ErrNotFound
 	}
-	a.Status, a.Group, a.QuotaLimit = s.Status, s.Group, s.QuotaLimit
+	a.Status, a.Group, a.QuotaLimit, a.Limits = s.Status, s.Group, s.QuotaLimit, s.Limits
 	a.UpdatedAt = time.Now()
 	return *a, nil
 }
@@ -158,14 +160,6 @@ func (m *Store) appendAdjustmentLocked(adj store.QuotaAdjustment) {
 	m.quotaAdjustments = append(m.quotaAdjustments, adj)
 }
 
-// missingForReserve 与 PostgreSQL 的条件 UPDATE 一致：预扣金额大于 0 时，不存在的对象按“额度不足”处理。
-func missingForReserve(nanos int64) error {
-	if nanos > 0 {
-		return store.ErrInsufficientQuota
-	}
-	return store.ErrNotFound
-}
-
 func reserve(limit *int64, used, reserved, nanos int64) (store.QuotaState, bool) {
 	if limit != nil && *limit-used-reserved < nanos {
 		return store.QuotaState{}, false
@@ -190,9 +184,12 @@ func (m *Store) SetAccountQuota(_ context.Context, id uuid.UUID, change store.Qu
 		UsedAfter:   change.UsedNanos,
 		Actor:       change.Actor,
 	})
-	a.QuotaLimit, a.QuotaUsed, a.Reserved, a.UpdatedAt = change.LimitNanos, change.UsedNanos, 0, time.Now()
+	a.QuotaLimit, a.QuotaUsed, a.Reserved, a.InFlight = change.LimitNanos, change.UsedNanos, 0, 0
+	a.UpdatedAt = time.Now()
 	for k, r := range m.reserv {
 		if r.AccountID == id {
+			m.apiKeys[r.APIKeyID].Reserved -= r.Nanos
+			m.apiKeys[r.APIKeyID].InFlight--
 			delete(m.reserv, k)
 		}
 	}
@@ -218,47 +215,15 @@ func (m *Store) SetAPIKeyQuota(_ context.Context, id uuid.UUID, change store.Quo
 		UsedAfter:   change.UsedNanos,
 		Actor:       change.Actor,
 	})
-	apiKey.QuotaLimit, apiKey.QuotaUsed, apiKey.Reserved = change.LimitNanos, change.UsedNanos, 0
+	apiKey.QuotaLimit, apiKey.QuotaUsed, apiKey.Reserved, apiKey.InFlight = change.LimitNanos, change.UsedNanos, 0, 0
 	apiKey.UpdatedAt = time.Now()
 	for rk, r := range m.reserv {
 		if r.APIKeyID == id {
+			m.accounts[r.AccountID].Reserved -= r.Nanos
+			m.accounts[r.AccountID].InFlight--
 			delete(m.reserv, rk)
 		}
 	}
-	return nil
-}
-
-// ReserveAccountQuota 见 store.Store。
-func (m *Store) ReserveAccountQuota(_ context.Context, id uuid.UUID, nanos int64) (store.QuotaState, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	a, ok := m.accounts[id]
-	if !ok {
-		return store.QuotaState{}, missingForReserve(nanos)
-	}
-	if nanos <= 0 {
-		return store.QuotaState{Limit: a.QuotaLimit, Used: a.QuotaUsed, Reserved: a.Reserved}, nil
-	}
-	if a.Status != store.StatusActive {
-		return store.QuotaState{}, store.ErrInsufficientQuota
-	}
-	q, ok := reserve(a.QuotaLimit, a.QuotaUsed, a.Reserved, nanos)
-	if !ok {
-		return store.QuotaState{}, store.ErrInsufficientQuota
-	}
-	a.Reserved = q.Reserved
-	return q, nil
-}
-
-// ReleaseAccountReservation 见 store.Store。
-func (m *Store) ReleaseAccountReservation(_ context.Context, id uuid.UUID, nanos int64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	a, ok := m.accounts[id]
-	if !ok {
-		return store.ErrNotFound
-	}
-	a.Reserved -= nanos
 	return nil
 }
 
@@ -347,50 +312,9 @@ func (m *Store) UpdateAPIKey(_ context.Context, id uuid.UUID, s store.APIKeySett
 	apiKey.ModelAllowlist = s.ModelAllowlist
 	apiKey.QuotaLimit = s.QuotaLimit
 	apiKey.ExpiresAt = s.ExpiresAt
+	apiKey.Limits = s.Limits
 	apiKey.UpdatedAt = time.Now()
 	return m.apiKeyLocked(id)
-}
-
-// ReserveAPIKeyQuota 见 store.Store。
-func (m *Store) ReserveAPIKeyQuota(_ context.Context, id uuid.UUID, nanos int64) (store.QuotaState, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	apiKey, ok := m.apiKeys[id]
-	if !ok {
-		return store.QuotaState{}, missingForReserve(nanos)
-	}
-	if nanos <= 0 {
-		return store.QuotaState{Limit: apiKey.QuotaLimit, Used: apiKey.QuotaUsed, Reserved: apiKey.Reserved}, nil
-	}
-	if apiKey.Status != store.StatusActive || (apiKey.ExpiresAt != nil && apiKey.ExpiresAt.Before(time.Now())) {
-		return store.QuotaState{}, store.ErrInsufficientQuota
-	}
-	q, ok := reserve(apiKey.QuotaLimit, apiKey.QuotaUsed, apiKey.Reserved, nanos)
-	if !ok {
-		return store.QuotaState{}, store.ErrInsufficientQuota
-	}
-	apiKey.Reserved, apiKey.LastUsedAt = q.Reserved, &[]time.Time{time.Now()}[0]
-	return q, nil
-}
-
-// ReleaseAPIKeyReservation 见 store.Store。
-func (m *Store) ReleaseAPIKeyReservation(_ context.Context, id uuid.UUID, nanos int64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	apiKey, ok := m.apiKeys[id]
-	if !ok {
-		return store.ErrNotFound
-	}
-	apiKey.Reserved -= nanos
-	return nil
-}
-
-// CreateReservation 见 store.Store。
-func (m *Store) CreateReservation(_ context.Context, r store.Reservation) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.reserv[r.RequestID] = r
-	return nil
 }
 
 // GetReservation 见 store.Store。
@@ -445,9 +369,9 @@ func (m *Store) SettleUsage(_ context.Context, ev store.UsageEvent) (bool, error
 		apiKey := m.apiKeys[*ev.APIKeyID]
 		account := m.accounts[apiKey.AccountID]
 		if r, ok := m.reserv[ev.RequestID]; ok {
-			apiKey.QuotaUsed, apiKey.Reserved = apiKey.QuotaUsed+ev.CostNanos, apiKey.Reserved-r.Nanos
-			account.QuotaUsed, account.Reserved = account.QuotaUsed+ev.CostNanos, account.Reserved-r.Nanos
-			delete(m.reserv, ev.RequestID)
+			apiKey.QuotaUsed += ev.CostNanos
+			account.QuotaUsed += ev.CostNanos
+			m.releaseLocked(r)
 		} else {
 			apiKey.QuotaUsed += ev.CostNanos
 			account.QuotaUsed += ev.CostNanos
@@ -489,9 +413,7 @@ func (m *Store) ReleaseExpiredReservations(_ context.Context, now time.Time, lim
 		expired = expired[:limit]
 	}
 	for _, r := range expired {
-		m.apiKeys[r.APIKeyID].Reserved -= r.Nanos
-		m.accounts[r.AccountID].Reserved -= r.Nanos
-		delete(m.reserv, r.RequestID)
+		m.releaseLocked(r)
 	}
 	return len(expired), nil
 }
@@ -744,8 +666,12 @@ func (m *Store) ListAdminAudit(_ context.Context, limit int) ([]store.AdminAudit
 	return out, nil
 }
 
-// ReserveQuota 见 store.Store：在同一把锁内检查两级条件，全部满足才同时生效。
-func (m *Store) ReserveQuota(ctx context.Context, r store.Reservation) (store.QuotaReservation, error) {
+// ReserveQuota 见 store.Store：在同一把锁内检查两级额度与并发，全部满足才同时生效。
+func (m *Store) ReserveQuota(
+	ctx context.Context,
+	r store.Reservation,
+	concurrency store.ConcurrencyLimits,
+) (store.QuotaReservation, error) {
 	if err := ctx.Err(); err != nil {
 		return store.QuotaReservation{}, err
 	}
@@ -762,17 +688,38 @@ func (m *Store) ReserveQuota(ctx context.Context, r store.Reservation) (store.Qu
 	}
 	keyState, keyOK := reserve(apiKey.QuotaLimit, apiKey.QuotaUsed, apiKey.Reserved, r.Nanos)
 	accountState, accountOK := reserve(account.QuotaLimit, account.QuotaUsed, account.Reserved, r.Nanos)
-	if !keyOK || !accountOK {
+	switch {
+	case concurrency.APIKey != nil && apiKey.InFlight >= *concurrency.APIKey:
+		return store.QuotaReservation{}, concurrencyLimited(store.RateScopeAPIKey)
+	case concurrency.Account != nil && account.InFlight >= *concurrency.Account:
+		return store.QuotaReservation{}, concurrencyLimited(store.RateScopeAccount)
+	case !keyOK || !accountOK:
 		return store.QuotaReservation{}, store.ErrInsufficientQuota
 	}
 	now := time.Now()
 	apiKey.Reserved, apiKey.LastUsedAt = keyState.Reserved, &now
 	account.Reserved = accountState.Reserved
+	apiKey.InFlight++
+	account.InFlight++
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = now
 	}
 	m.reserv[r.RequestID] = r
 	return store.QuotaReservation{APIKey: keyState, Account: accountState}, nil
+}
+
+func concurrencyLimited(scope store.RateScope) error {
+	return &store.RateLimitError{Scope: scope, Kind: store.RateLimitConcurrency}
+}
+
+// releaseLocked 删除一笔预扣并回退两级的 reserved 与 in_flight。
+func (m *Store) releaseLocked(r store.Reservation) {
+	apiKey, account := m.apiKeys[r.APIKeyID], m.accounts[r.AccountID]
+	apiKey.Reserved -= r.Nanos
+	apiKey.InFlight--
+	account.Reserved -= r.Nanos
+	account.InFlight--
+	delete(m.reserv, r.RequestID)
 }
 
 // ReleaseReservation 见 store.Store。
@@ -783,8 +730,88 @@ func (m *Store) ReleaseReservation(_ context.Context, requestID string) (bool, e
 	if !ok {
 		return false, nil
 	}
-	m.apiKeys[r.APIKeyID].Reserved -= r.Nanos
-	m.accounts[r.AccountID].Reserved -= r.Nanos
-	delete(m.reserv, requestID)
+	m.releaseLocked(r)
 	return true, nil
+}
+
+type rateKey struct {
+	subject uuid.UUID
+	window  time.Time
+}
+
+type rateCount struct {
+	requests, tokens int64
+}
+
+// AcquireRate 见 store.Store：先检查全部 claim，都不超限才一起计数。
+func (m *Store) AcquireRate(_ context.Context, window time.Time, claims []store.RateClaim) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, claim := range claims {
+		current := m.rates[rateKey{claim.Subject, window}]
+		var requests, tokens int64
+		if current != nil {
+			requests, tokens = current.requests, current.tokens
+		}
+		switch {
+		case claim.RPM != nil && requests >= *claim.RPM:
+			return &store.RateLimitError{Scope: claim.Scope, Kind: store.RateLimitRPM}
+		case claim.TPM != nil && tokens+claim.Tokens > *claim.TPM:
+			return &store.RateLimitError{Scope: claim.Scope, Kind: store.RateLimitTPM}
+		}
+	}
+	for _, claim := range claims {
+		count := m.rateLocked(claim.Subject, window)
+		count.requests++
+		count.tokens += claim.Tokens
+	}
+	return nil
+}
+
+// ReleaseRate 见 store.Store。
+func (m *Store) ReleaseRate(_ context.Context, window time.Time, claims []store.RateClaim) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, claim := range claims {
+		if count, ok := m.rates[rateKey{claim.Subject, window}]; ok {
+			count.requests = max(count.requests-1, 0)
+			count.tokens = max(count.tokens-claim.Tokens, 0)
+		}
+	}
+	return nil
+}
+
+// AddRateTokens 见 store.Store。
+func (m *Store) AddRateTokens(_ context.Context, window time.Time, claims []store.RateClaim) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, claim := range claims {
+		count := m.rateLocked(claim.Subject, window)
+		count.tokens = max(count.tokens+claim.Tokens, 0)
+	}
+	return nil
+}
+
+// DeleteRateWindows 见 store.Store。
+func (m *Store) DeleteRateWindows(_ context.Context, before time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for k := range m.rates {
+		if k.window.Before(before) {
+			delete(m.rates, k)
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (m *Store) rateLocked(subject uuid.UUID, window time.Time) *rateCount {
+	k := rateKey{subject, window}
+	count, ok := m.rates[k]
+	if !ok {
+		count = &rateCount{}
+		m.rates[k] = count
+	}
+	return count
 }

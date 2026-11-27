@@ -55,6 +55,7 @@ func (s *Service) Run(ctx context.Context) error {
 	for _, run := range []func(context.Context){
 		s.prices.Run,
 		s.ledger.RunReaper,
+		s.limiter.Run,
 		s.gate.RunAuditWriter,
 		s.queue.Run,
 		s.caches.Run,

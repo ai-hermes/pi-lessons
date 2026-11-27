@@ -13,6 +13,26 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const adjustRateTokens = `-- name: AdjustRateTokens :execrows
+UPDATE rate_counters
+SET tokens = greatest(tokens + $1::bigint, 0)
+WHERE subject = $2 AND window_start = $3
+`
+
+type AdjustRateTokensParams struct {
+	Tokens      int64
+	Subject     uuid.UUID
+	WindowStart time.Time
+}
+
+func (q *Queries) AdjustRateTokens(ctx context.Context, arg AdjustRateTokensParams) (int64, error) {
+	result, err := q.db.Exec(ctx, adjustRateTokens, arg.Tokens, arg.Subject, arg.WindowStart)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const backfillGatewayCost = `-- name: BackfillGatewayCost :execrows
 UPDATE usage_events
 SET gateway_cost_nanos = $2
@@ -43,29 +63,23 @@ func (q *Queries) CountReservations(ctx context.Context) (int64, error) {
 	return count, err
 }
 
-const createReservation = `-- name: CreateReservation :exec
-INSERT INTO reservations (request_id, key_id, account_id, model, nanos, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+const decrementRateCounter = `-- name: DecrementRateCounter :exec
+
+UPDATE rate_counters
+SET requests = greatest(requests - 1, 0),
+    tokens   = greatest(tokens - $1::bigint, 0)
+WHERE subject = $2 AND window_start = $3
 `
 
-type CreateReservationParams struct {
-	RequestID string
-	KeyID     uuid.UUID
-	AccountID uuid.UUID
-	Model     string
-	Nanos     int64
-	ExpiresAt time.Time
+type DecrementRateCounterParams struct {
+	Tokens      int64
+	Subject     uuid.UUID
+	WindowStart time.Time
 }
 
-func (q *Queries) CreateReservation(ctx context.Context, arg CreateReservationParams) error {
-	_, err := q.db.Exec(ctx, createReservation,
-		arg.RequestID,
-		arg.KeyID,
-		arg.AccountID,
-		arg.Model,
-		arg.Nanos,
-		arg.ExpiresAt,
-	)
+// 以下单行语句各自自动提交、一次只锁一行，与按 subject 顺序加锁的 IncrementRateCounters 不会形成死锁。
+func (q *Queries) DecrementRateCounter(ctx context.Context, arg DecrementRateCounterParams) error {
+	_, err := q.db.Exec(ctx, decrementRateCounter, arg.Tokens, arg.Subject, arg.WindowStart)
 	return err
 }
 
@@ -78,6 +92,18 @@ func (q *Queries) DeleteModelPricing(ctx context.Context, model string) error {
 	return err
 }
 
+const deleteRateWindows = `-- name: DeleteRateWindows :execrows
+DELETE FROM rate_counters WHERE window_start < $1
+`
+
+func (q *Queries) DeleteRateWindows(ctx context.Context, windowStart time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteRateWindows, windowStart)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteReservation = `-- name: DeleteReservation :exec
 DELETE FROM reservations WHERE request_id = $1
 `
@@ -85,6 +111,29 @@ DELETE FROM reservations WHERE request_id = $1
 func (q *Queries) DeleteReservation(ctx context.Context, requestID string) error {
 	_, err := q.db.Exec(ctx, deleteReservation, requestID)
 	return err
+}
+
+const getInFlight = `-- name: GetInFlight :one
+SELECT (SELECT in_flight FROM api_keys WHERE api_keys.id = $1)::bigint     AS key_in_flight,
+       (SELECT in_flight FROM accounts WHERE accounts.id = $2)::bigint AS account_in_flight
+`
+
+type GetInFlightParams struct {
+	KeyID     uuid.UUID
+	AccountID uuid.UUID
+}
+
+type GetInFlightRow struct {
+	KeyInFlight     int64
+	AccountInFlight int64
+}
+
+// 预扣失败后区分原因：并发已满还是额度不足。
+func (q *Queries) GetInFlight(ctx context.Context, arg GetInFlightParams) (GetInFlightRow, error) {
+	row := q.db.QueryRow(ctx, getInFlight, arg.KeyID, arg.AccountID)
+	var i GetInFlightRow
+	err := row.Scan(&i.KeyInFlight, &i.AccountInFlight)
+	return i, err
 }
 
 const getModelPricing = `-- name: GetModelPricing :one
@@ -125,6 +174,84 @@ func (q *Queries) GetReservation(ctx context.Context, requestID string) (Reserva
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const incrementRateCounters = `-- name: IncrementRateCounters :many
+INSERT INTO rate_counters (subject, window_start, scope, requests, tokens)
+SELECT c.subject, $1, c.scope, 1, c.tokens
+FROM (SELECT unnest($2::uuid[]) AS subject,
+             unnest($3::text[])   AS scope,
+             unnest($4::bigint[]) AS tokens) AS c
+ORDER BY c.subject
+ON CONFLICT (subject, window_start) DO UPDATE
+SET requests = rate_counters.requests + 1,
+    tokens   = rate_counters.tokens + EXCLUDED.tokens
+RETURNING subject, requests, tokens
+`
+
+type IncrementRateCountersParams struct {
+	WindowStart time.Time
+	Subjects    []uuid.UUID
+	Scopes      []string
+	Tokens      []int64
+}
+
+type IncrementRateCountersRow struct {
+	Subject  uuid.UUID
+	Requests int64
+	Tokens   int64
+}
+
+// 当前窗口内每个计数对象请求数 +1、token 数 +tokens；按 subject 排序加锁。单条语句自动提交，
+// 热点行的锁只在语句执行期间持有，不跨网络往返。
+func (q *Queries) IncrementRateCounters(ctx context.Context, arg IncrementRateCountersParams) ([]IncrementRateCountersRow, error) {
+	rows, err := q.db.Query(ctx, incrementRateCounters,
+		arg.WindowStart,
+		arg.Subjects,
+		arg.Scopes,
+		arg.Tokens,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []IncrementRateCountersRow
+	for rows.Next() {
+		var i IncrementRateCountersRow
+		if err := rows.Scan(&i.Subject, &i.Requests, &i.Tokens); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const insertRateTokens = `-- name: InsertRateTokens :exec
+INSERT INTO rate_counters (subject, window_start, scope, requests, tokens)
+VALUES ($1, $2, $3, 0, $4)
+ON CONFLICT (subject, window_start) DO UPDATE
+SET tokens = rate_counters.tokens + EXCLUDED.tokens
+`
+
+type InsertRateTokensParams struct {
+	Subject     uuid.UUID
+	WindowStart time.Time
+	Scope       string
+	Tokens      int64
+}
+
+// 窗口还不存在时为正的修正新建一行（与并发的新建冲突时累加）。
+func (q *Queries) InsertRateTokens(ctx context.Context, arg InsertRateTokensParams) error {
+	_, err := q.db.Exec(ctx, insertRateTokens,
+		arg.Subject,
+		arg.WindowStart,
+		arg.Scope,
+		arg.Tokens,
+	)
+	return err
 }
 
 const listAudit = `-- name: ListAudit :many
@@ -358,8 +485,11 @@ func (q *Queries) LockReservation(ctx context.Context, requestID string) (Reserv
 const reserveQuota = `-- name: ReserveQuota :one
 WITH api_key AS (
     UPDATE api_keys
-    SET reserved = api_keys.reserved + $1, last_used_at = now(), updated_at = now()
+    SET reserved = api_keys.reserved + $1, in_flight = api_keys.in_flight + 1,
+        last_used_at = now(), updated_at = now()
     WHERE api_keys.id = $2
+      AND ($3::bigint IS NULL
+           OR api_keys.in_flight < $3::bigint)
       AND api_keys.status = 'active'
       AND (api_keys.expires_at IS NULL OR api_keys.expires_at > now())
       AND (api_keys.quota_limit IS NULL
@@ -367,16 +497,18 @@ WITH api_key AS (
     RETURNING api_keys.quota_limit, api_keys.quota_used, api_keys.reserved
 ), account AS (
     UPDATE accounts
-    SET reserved = accounts.reserved + $1, updated_at = now()
-    WHERE accounts.id = $3
+    SET reserved = accounts.reserved + $1, in_flight = accounts.in_flight + 1, updated_at = now()
+    WHERE accounts.id = $4
+      AND ($5::bigint IS NULL
+           OR accounts.in_flight < $5::bigint)
       AND accounts.status = 'active'
       AND (accounts.quota_limit IS NULL
            OR accounts.quota_limit - accounts.quota_used - accounts.reserved >= $1)
     RETURNING accounts.quota_limit, accounts.quota_used, accounts.reserved
 ), reservation AS (
     INSERT INTO reservations (request_id, key_id, account_id, model, nanos, expires_at)
-    VALUES ($4, $2, $3, $5, $1,
-            $6)
+    VALUES ($6, $2, $4, $7, $1,
+            $8)
     RETURNING request_id
 )
 SELECT api_key.quota_limit AS key_quota_limit,
@@ -389,12 +521,14 @@ FROM api_key, account, reservation
 `
 
 type ReserveQuotaParams struct {
-	Nanos     int64
-	KeyID     uuid.UUID
-	AccountID uuid.UUID
-	RequestID string
-	Model     string
-	ExpiresAt time.Time
+	Nanos                 int64
+	KeyID                 uuid.UUID
+	KeyMaxConcurrency     *int64
+	AccountID             uuid.UUID
+	AccountMaxConcurrency *int64
+	RequestID             string
+	Model                 string
+	ExpiresAt             time.Time
 }
 
 type ReserveQuotaRow struct {
@@ -406,13 +540,15 @@ type ReserveQuotaRow struct {
 	AccountReserved   int64
 }
 
-// 一次往返完成两级预扣与预扣记录。数据修改 CTE 的每个子语句都会执行：
+// 一次往返完成两级预扣（额度与并发）与预扣记录。数据修改 CTE 的每个子语句都会执行：
 // 任一级不满足时结果为空行，调用方必须回滚事务以撤销已执行的部分。
 func (q *Queries) ReserveQuota(ctx context.Context, arg ReserveQuotaParams) (ReserveQuotaRow, error) {
 	row := q.db.QueryRow(ctx, reserveQuota,
 		arg.Nanos,
 		arg.KeyID,
+		arg.KeyMaxConcurrency,
 		arg.AccountID,
+		arg.AccountMaxConcurrency,
 		arg.RequestID,
 		arg.Model,
 		arg.ExpiresAt,

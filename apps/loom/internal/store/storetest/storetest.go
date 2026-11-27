@@ -28,6 +28,10 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"reserve rejects inactive key and account", testReserveRejectsInactive},
 		{"two-level reserve is all or nothing", testReserveQuotaIsAtomic},
 		{"release reservation by request id is idempotent", testReleaseReservation},
+		{"rate limit settings round trip", testRateLimitSettings},
+		{"concurrency limits count open reservations", testConcurrencyLimits},
+		{"quota reset keeps both levels consistent", testQuotaResetKeepsLevelsConsistent},
+		{"rate counters are shared and all or nothing", testRateCounters},
 		{"settle replaces reservation and is idempotent", testSettleIsIdempotent},
 		{"settle without reservation charges directly", testSettleWithoutReservation},
 		{"release expired reservations", testReleaseExpired},
@@ -145,32 +149,48 @@ func testAPIKeys(t *testing.T, s store.Store) {
 	require.ErrorIs(t, err, store.ErrNotFound)
 }
 
+// tryReserve 以 nanos 预扣一次（不限并发），返回请求号与错误。
+func tryReserve(s store.Store, apiKey store.APIKey, nanos int64) (string, store.QuotaReservation, error) {
+	requestID := unique("req")
+	reserved, err := s.ReserveQuota(ctx, store.Reservation{
+		RequestID: requestID,
+		APIKeyID:  apiKey.ID,
+		AccountID: apiKey.AccountID,
+		Model:     "m",
+		Nanos:     nanos,
+		ExpiresAt: time.Now().Add(time.Hour),
+	}, store.ConcurrencyLimits{})
+	return requestID, reserved, err
+}
+
 func testReserveRespectsLimit(t *testing.T, s store.Store) {
 	account := newAccount(t, s, new(int64(1000)))
 	apiKey := newAPIKey(t, s, account.ID, new(int64(100)))
 
-	state, err := s.ReserveAPIKeyQuota(ctx, apiKey.ID, 60)
+	first, reserved, err := tryReserve(s, apiKey, 60)
 	require.NoError(t, err)
-	remaining, bounded := state.Remaining()
+	remaining, bounded := reserved.APIKey.Remaining()
 	assert.True(t, bounded)
 	assert.Equal(t, int64(40), remaining)
 
-	_, err = s.ReserveAPIKeyQuota(ctx, apiKey.ID, 60)
+	_, _, err = tryReserve(s, apiKey, 60)
 	require.ErrorIs(t, err, store.ErrInsufficientQuota)
 
-	require.NoError(t, s.ReleaseAPIKeyReservation(ctx, apiKey.ID, 60))
-	_, err = s.ReserveAPIKeyQuota(ctx, apiKey.ID, 100)
+	_, err = s.ReleaseReservation(ctx, first)
+	require.NoError(t, err)
+	_, _, err = tryReserve(s, apiKey, 100)
 	require.NoError(t, err, "released quota is available again")
 
-	_, err = s.ReserveAccountQuota(ctx, account.ID, 1001)
-	require.ErrorIs(t, err, store.ErrInsufficientQuota)
-	_, err = s.ReserveAccountQuota(ctx, account.ID, 1000)
+	other := newAPIKey(t, s, account.ID, nil)
+	_, _, err = tryReserve(s, other, 901)
+	require.ErrorIs(t, err, store.ErrInsufficientQuota, "the account has 900 left")
+	_, _, err = tryReserve(s, other, 900)
 	require.NoError(t, err)
 
-	unlimited := newAccount(t, s, nil)
-	state, err = s.ReserveAccountQuota(ctx, unlimited.ID, 1<<40)
+	unlimited := newAPIKey(t, s, newAccount(t, s, nil).ID, nil)
+	_, reserved, err = tryReserve(s, unlimited, 1<<40)
 	require.NoError(t, err)
-	_, bounded = state.Remaining()
+	_, bounded = reserved.Account.Remaining()
 	assert.False(t, bounded)
 }
 
@@ -181,7 +201,7 @@ func testReserveRejectsInactive(t *testing.T, s store.Store) {
 	settings.Status = store.StatusDisabled
 	_, err := s.UpdateAPIKey(ctx, disabled.ID, settings)
 	require.NoError(t, err)
-	_, err = s.ReserveAPIKeyQuota(ctx, disabled.ID, 1)
+	_, _, err = tryReserve(s, disabled, 1)
 	require.ErrorIs(t, err, store.ErrInsufficientQuota)
 
 	expired := newAPIKey(t, s, account.ID, nil)
@@ -189,15 +209,16 @@ func testReserveRejectsInactive(t *testing.T, s store.Store) {
 	settings.ExpiresAt = new(time.Now().Add(-time.Minute))
 	_, err = s.UpdateAPIKey(ctx, expired.ID, settings)
 	require.NoError(t, err)
-	_, err = s.ReserveAPIKeyQuota(ctx, expired.ID, 1)
+	_, _, err = tryReserve(s, expired, 1)
 	require.ErrorIs(t, err, store.ErrInsufficientQuota)
 
+	active := newAPIKey(t, s, account.ID, nil)
 	_, err = s.UpdateAccount(ctx, account.ID, store.AccountSettings{Status: store.StatusDisabled, Group: "default"})
 	require.NoError(t, err)
-	_, err = s.ReserveAccountQuota(ctx, account.ID, 1)
-	require.ErrorIs(t, err, store.ErrInsufficientQuota)
+	_, _, err = tryReserve(s, active, 0)
+	require.ErrorIs(t, err, store.ErrInsufficientQuota, "a disabled account admits not even free requests")
 
-	_, err = s.ReserveAPIKeyQuota(ctx, uuid.New(), 1)
+	_, _, err = tryReserve(s, store.APIKey{ID: uuid.New(), AccountID: account.ID}, 1)
 	require.ErrorIs(t, err, store.ErrInsufficientQuota, "an unknown key reserves nothing")
 }
 
@@ -216,7 +237,7 @@ func testReserveQuotaIsAtomic(t *testing.T, s store.Store) {
 	}
 
 	ok := reservation(60)
-	reserved, err := s.ReserveQuota(ctx, ok)
+	reserved, err := s.ReserveQuota(ctx, ok, store.ConcurrencyLimits{})
 	require.NoError(t, err)
 	assert.Equal(t, int64(60), reserved.APIKey.Reserved)
 	assert.Equal(t, int64(60), reserved.Account.Reserved)
@@ -224,7 +245,7 @@ func testReserveQuotaIsAtomic(t *testing.T, s store.Store) {
 	require.NoError(t, err)
 
 	tooMuchForAccount := reservation(60) // API Key 还剩 940，账户只剩 40
-	_, err = s.ReserveQuota(ctx, tooMuchForAccount)
+	_, err = s.ReserveQuota(ctx, tooMuchForAccount, store.ConcurrencyLimits{})
 	require.ErrorIs(t, err, store.ErrInsufficientQuota)
 	_, keyReserved, _, accountReserved := quotaOf(t, s, apiKey.ID)
 	assert.Equal(t, [2]int64{60, 60}, [2]int64{keyReserved, accountReserved}, "the api key part is rolled back too")
@@ -233,7 +254,7 @@ func testReserveQuotaIsAtomic(t *testing.T, s store.Store) {
 
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
-	_, err = s.ReserveQuota(cancelled, reservation(10))
+	_, err = s.ReserveQuota(cancelled, reservation(10), store.ConcurrencyLimits{})
 	require.Error(t, err)
 	_, keyReserved, _, accountReserved = quotaOf(t, s, apiKey.ID)
 	assert.Equal(t, [2]int64{60, 60}, [2]int64{keyReserved, accountReserved}, "a cancelled reserve changes nothing")
@@ -250,7 +271,7 @@ func testReleaseReservation(t *testing.T, s store.Store) {
 		Nanos:     70,
 		ExpiresAt: time.Now().Add(time.Hour),
 	}
-	_, err := s.ReserveQuota(ctx, r)
+	_, err := s.ReserveQuota(ctx, r, store.ConcurrencyLimits{})
 	require.NoError(t, err)
 
 	released, err := s.ReleaseReservation(ctx, r.RequestID)
@@ -268,20 +289,16 @@ func testReleaseReservation(t *testing.T, s store.Store) {
 
 func reserveFor(t *testing.T, s store.Store, apiKey store.APIKey, nanos int64, expiresAt time.Time) string {
 	t.Helper()
-	_, err := s.ReserveAPIKeyQuota(ctx, apiKey.ID, nanos)
-	require.NoError(t, err)
-	_, err = s.ReserveAccountQuota(ctx, apiKey.AccountID, nanos)
-	require.NoError(t, err)
 	requestID := unique("req")
-	require.NoError(t, s.CreateReservation(ctx, store.Reservation{
+	_, err := s.ReserveQuota(ctx, store.Reservation{
 		RequestID: requestID,
 		APIKeyID:  apiKey.ID,
 		AccountID: apiKey.AccountID,
 		Model:     "m",
 		Nanos:     nanos,
 		ExpiresAt: expiresAt,
-		CreatedAt: time.Now(),
-	}))
+	}, store.ConcurrencyLimits{})
+	require.NoError(t, err)
 	return requestID
 }
 
@@ -552,4 +569,149 @@ func testAdminAudit(t *testing.T, s store.Store) {
 	assert.Equal(t, 201, got.Status)
 	assert.Equal(t, "/v1/accounts", got.Route)
 	assert.False(t, got.Time.IsZero())
+}
+
+func limits(rpm, tpm, concurrency int64) store.RateLimits {
+	return store.RateLimits{RPM: &rpm, TPM: &tpm, MaxConcurrency: &concurrency}
+}
+
+func testRateLimitSettings(t *testing.T, s store.Store) {
+	account, err := s.CreateAccount(ctx, store.Account{
+		ID:     uuid.New(),
+		Name:   unique("account"),
+		Group:  "default",
+		Status: store.StatusActive,
+		Limits: limits(60, 6000, 3),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, limits(60, 6000, 3), account.Limits)
+
+	apiKey := newAPIKey(t, s, account.ID, nil)
+	assert.True(t, apiKey.Limits.IsZero(), "a key without limits inherits nothing at the store level")
+	settings := apiKey.Settings()
+	settings.Limits = store.RateLimits{RPM: new(int64(10))}
+	_, err = s.UpdateAPIKey(ctx, apiKey.ID, settings)
+	require.NoError(t, err)
+
+	byHash, err := s.GetAPIKeyByHash(ctx, apiKey.KeyHash)
+	require.NoError(t, err)
+	assert.Equal(t, store.RateLimits{RPM: new(int64(10))}, byHash.Limits)
+	assert.Equal(t, limits(60, 6000, 3), byHash.Account.Limits, "the key carries its account's limits")
+
+	accountSettings := account.Settings()
+	accountSettings.Limits = store.RateLimits{}
+	updated, err := s.UpdateAccount(ctx, account.ID, accountSettings)
+	require.NoError(t, err)
+	assert.True(t, updated.Limits.IsZero(), "updating with empty limits removes them")
+}
+
+func testConcurrencyLimits(t *testing.T, s store.Store) {
+	account := newAccount(t, s, nil)
+	apiKey := newAPIKey(t, s, account.ID, nil)
+	other := newAPIKey(t, s, account.ID, nil)
+	reserveWithin := func(k store.APIKey, nanos int64, c store.ConcurrencyLimits) (string, error) {
+		requestID := unique("req")
+		_, err := s.ReserveQuota(ctx, store.Reservation{
+			RequestID: requestID,
+			APIKeyID:  k.ID,
+			AccountID: k.AccountID,
+			Model:     "m",
+			Nanos:     nanos,
+			ExpiresAt: time.Now().Add(time.Hour),
+		}, c)
+		return requestID, err
+	}
+	keyMax := store.ConcurrencyLimits{APIKey: new(int64(2)), Account: new(int64(3))}
+
+	first, err := reserveWithin(apiKey, 0, keyMax)
+	require.NoError(t, err, "free requests take a slot too")
+	_, err = reserveWithin(apiKey, 10, keyMax)
+	require.NoError(t, err)
+	_, err = reserveWithin(apiKey, 10, keyMax)
+	var limited *store.RateLimitError
+	require.ErrorAs(t, err, &limited)
+	assert.Equal(t, store.RateLimitError{Scope: store.RateScopeAPIKey, Kind: store.RateLimitConcurrency}, *limited)
+	require.ErrorIs(t, err, store.ErrRateLimited)
+
+	_, err = reserveWithin(other, 10, keyMax)
+	require.NoError(t, err, "the account has a third slot")
+	_, err = reserveWithin(other, 10, keyMax)
+	require.ErrorAs(t, err, &limited)
+	assert.Equal(t, store.RateScopeAccount, limited.Scope)
+
+	inserted, err := s.SettleUsage(ctx, store.UsageEvent{
+		RequestID: first,
+		APIKeyID:  &apiKey.ID,
+		AccountID: &account.ID,
+		Model:     "m",
+	})
+	require.NoError(t, err)
+	require.True(t, inserted)
+	_, err = reserveWithin(other, 10, keyMax)
+	require.NoError(t, err, "settlement frees the slot")
+
+	key, err := s.GetAPIKey(ctx, apiKey.ID)
+	require.NoError(t, err)
+	assert.Equal(t, [2]int64{1, 3}, [2]int64{key.InFlight, key.Account.InFlight})
+}
+
+func testQuotaResetKeepsLevelsConsistent(t *testing.T, s store.Store) {
+	account := newAccount(t, s, nil)
+	first := newAPIKey(t, s, account.ID, nil)
+	second := newAPIKey(t, s, account.ID, nil)
+	reserveFor(t, s, first, 30, time.Now().Add(time.Hour))
+	reserveFor(t, s, second, 70, time.Now().Add(time.Hour))
+
+	require.NoError(t, s.SetAPIKeyQuota(ctx, first.ID, store.QuotaChange{Actor: "test"}))
+	accountAfter, err := s.GetAccount(ctx, account.ID)
+	require.NoError(t, err)
+	assert.Equal(t, [2]int64{70, 1}, [2]int64{accountAfter.Reserved, accountAfter.InFlight},
+		"resetting a key takes its reservations off the account too")
+
+	require.NoError(t, s.SetAccountQuota(ctx, account.ID, store.QuotaChange{Actor: "test"}))
+	secondAfter, err := s.GetAPIKey(ctx, second.ID)
+	require.NoError(t, err)
+	assert.Equal(t, [2]int64{0, 0}, [2]int64{secondAfter.Reserved, secondAfter.InFlight},
+		"resetting the account takes its reservations off every key")
+	assert.Equal(t, [2]int64{0, 0}, [2]int64{secondAfter.Account.Reserved, secondAfter.Account.InFlight})
+}
+
+func testRateCounters(t *testing.T, s store.Store) {
+	window := time.Now().UTC().Truncate(time.Minute)
+	keyID, accountID := uuid.New(), uuid.New()
+	claims := func(tokens int64, keyRPM, accountTPM *int64) []store.RateClaim {
+		return []store.RateClaim{
+			{Scope: store.RateScopeAPIKey, Subject: keyID, Tokens: tokens, RPM: keyRPM},
+			{Scope: store.RateScopeAccount, Subject: accountID, Tokens: tokens, TPM: accountTPM},
+		}
+	}
+	rpm, tpm := new(int64(3)), new(int64(100))
+
+	require.NoError(t, s.AcquireRate(ctx, window, claims(40, rpm, tpm)))
+	require.NoError(t, s.AcquireRate(ctx, window, claims(40, rpm, tpm)))
+	err := s.AcquireRate(ctx, window, claims(40, rpm, tpm))
+	var limited *store.RateLimitError
+	require.ErrorAs(t, err, &limited)
+	assert.Equal(t, store.RateLimitError{Scope: store.RateScopeAccount, Kind: store.RateLimitTPM}, *limited)
+
+	require.NoError(t, s.AcquireRate(ctx, window, claims(20, rpm, tpm)),
+		"the denied attempt counted neither a request nor tokens, on either level")
+	err = s.AcquireRate(ctx, window, claims(0, rpm, nil))
+	require.ErrorAs(t, err, &limited)
+	assert.Equal(t, store.RateLimitError{Scope: store.RateScopeAPIKey, Kind: store.RateLimitRPM}, *limited)
+
+	require.NoError(t, s.ReleaseRate(ctx, window, claims(20, rpm, tpm)))
+	require.NoError(t, s.AcquireRate(ctx, window, claims(0, rpm, nil)), "released request is available again")
+
+	require.NoError(t, s.AddRateTokens(ctx, window, claims(-1000, nil, nil)), "corrections never go below zero")
+	require.NoError(t, s.AcquireRate(ctx, window, claims(100, nil, tpm)))
+
+	next := window.Add(time.Minute)
+	require.NoError(t, s.AcquireRate(ctx, next, claims(100, rpm, tpm)), "a new window starts from zero")
+
+	_, err = s.DeleteRateWindows(ctx, next)
+	require.NoError(t, err)
+	require.NoError(t, s.AcquireRate(ctx, window, claims(100, new(int64(1)), tpm)), "deleted windows start over")
+	err = s.AcquireRate(ctx, next, claims(1, rpm, tpm))
+	require.ErrorAs(t, err, &limited, "windows from before are kept")
 }

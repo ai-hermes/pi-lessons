@@ -130,6 +130,11 @@ func (t *PriceTable) PriceConfig() *PriceConfig {
 	return t.priceConfig
 }
 
+// GroupLimits 返回分组的账户级限流默认值（随 pricing.yaml 热加载）。
+func (t *PriceTable) GroupLimits(group string) store.RateLimits {
+	return t.PriceConfig().GroupLimits(group)
+}
+
 // Lookup 查找单价卡：先按 unknown_group 校验分组，再依次查 pricing.yaml → PG 兜底 → unknown_model 策略。
 func (t *PriceTable) Lookup(ctx context.Context, model, group string) (UnitPrice, error) {
 	if model == "" {

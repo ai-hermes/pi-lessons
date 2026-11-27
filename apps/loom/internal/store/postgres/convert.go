@@ -21,6 +21,8 @@ func toAccount(a sqlcgen.Account) store.Account {
 		QuotaLimit: a.QuotaLimit,
 		QuotaUsed:  a.QuotaUsed,
 		Reserved:   a.Reserved,
+		Limits:     store.RateLimits{RPM: a.Rpm, TPM: a.Tpm, MaxConcurrency: a.MaxConcurrency},
+		InFlight:   a.InFlight,
 		CreatedAt:  a.CreatedAt,
 		UpdatedAt:  a.UpdatedAt,
 	}
@@ -40,6 +42,8 @@ func toAPIKey(r sqlcgen.GetKeyByHashRow) store.APIKey {
 		QuotaLimit:     r.QuotaLimit,
 		QuotaUsed:      r.QuotaUsed,
 		Reserved:       r.Reserved,
+		Limits:         store.RateLimits{RPM: r.Rpm, TPM: r.Tpm, MaxConcurrency: r.MaxConcurrency},
+		InFlight:       r.InFlight,
 		ExpiresAt:      r.ExpiresAt,
 		LastUsedAt:     r.LastUsedAt,
 		CreatedAt:      r.CreatedAt,
@@ -53,6 +57,12 @@ func toAPIKey(r sqlcgen.GetKeyByHashRow) store.APIKey {
 			QuotaLimit: r.AccountQuotaLimit,
 			QuotaUsed:  r.AccountQuotaUsed,
 			Reserved:   r.AccountReserved,
+			Limits: store.RateLimits{
+				RPM:            r.AccountRpm,
+				TPM:            r.AccountTpm,
+				MaxConcurrency: r.AccountMaxConcurrency,
+			},
+			InFlight: r.AccountInFlight,
 		},
 	}
 }

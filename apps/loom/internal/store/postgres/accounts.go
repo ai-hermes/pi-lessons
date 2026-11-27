@@ -33,12 +33,15 @@ func (d *DB) ListAccounts(ctx context.Context, limit int) ([]store.Account, erro
 // CreateAccount 见 store.Store。
 func (d *DB) CreateAccount(ctx context.Context, a store.Account) (store.Account, error) {
 	row, err := d.q.CreateAccount(ctx, sqlcgen.CreateAccountParams{
-		ID:         a.ID,
-		Name:       a.Name,
-		Tenant:     a.Tenant,
-		Group:      a.Group,
-		Status:     string(a.Status),
-		QuotaLimit: a.QuotaLimit,
+		ID:             a.ID,
+		Name:           a.Name,
+		Tenant:         a.Tenant,
+		Group:          a.Group,
+		Status:         string(a.Status),
+		QuotaLimit:     a.QuotaLimit,
+		Rpm:            a.Limits.RPM,
+		Tpm:            a.Limits.TPM,
+		MaxConcurrency: a.Limits.MaxConcurrency,
 	})
 	return toAccount(row), d.fail("CreateAccount", err)
 }
@@ -46,10 +49,13 @@ func (d *DB) CreateAccount(ctx context.Context, a store.Account) (store.Account,
 // UpdateAccount 见 store.Store。
 func (d *DB) UpdateAccount(ctx context.Context, id uuid.UUID, s store.AccountSettings) (store.Account, error) {
 	row, err := d.q.UpdateAccount(ctx, sqlcgen.UpdateAccountParams{
-		ID:         id,
-		Status:     string(s.Status),
-		Group:      s.Group,
-		QuotaLimit: s.QuotaLimit,
+		ID:             id,
+		Status:         string(s.Status),
+		Group:          s.Group,
+		QuotaLimit:     s.QuotaLimit,
+		Rpm:            s.Limits.RPM,
+		Tpm:            s.Limits.TPM,
+		MaxConcurrency: s.Limits.MaxConcurrency,
 	})
 	return toAccount(row), d.fail("UpdateAccount", err)
 }
@@ -92,7 +98,7 @@ func (d *DB) SetAccountQuota(ctx context.Context, id uuid.UUID, change store.Quo
 		if err != nil {
 			return d.fail("SetAccountQuota.lock", err)
 		}
-		if _, err := q.DeleteAccountReservations(ctx, id); err != nil {
+		if err := q.DeleteAccountReservations(ctx, id); err != nil {
 			return d.fail("SetAccountQuota.deleteReservations", err)
 		}
 		params := sqlcgen.SetAccountQuotaParams{ID: id, QuotaLimit: change.LimitNanos, QuotaUsed: change.UsedNanos}

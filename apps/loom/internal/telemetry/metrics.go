@@ -36,6 +36,9 @@ type Metrics struct {
 	ReserveCompensations *prometheus.CounterVec // {result}
 	CostMismatch         *prometheus.CounterVec // {model}
 
+	// throttle
+	ThrottleRejections *prometheus.CounterVec // {scope, limit}
+
 	// transport
 	RateLimitCalls    *prometheus.CounterVec // {phase}
 	OTLPQueueDepth    prometheus.Gauge
@@ -124,6 +127,11 @@ func NewMetrics(version, commit string) *Metrics {
 			"loom_ledger_reservations_open",
 			"Reservations not yet settled.",
 		),
+		ThrottleRejections: counterVec(
+			"loom_throttle_rejections_total",
+			"Requests denied as rate_limited; scope=api_key|account, limit=rpm|tpm|concurrency.",
+			"scope", "limit",
+		),
 		ReserveCompensations: counterVec(
 			"loom_ledger_reserve_compensations_total",
 			"Releases of reservations whose commit outcome was unknown; result=released|absent|failed.",
@@ -184,6 +192,11 @@ func NewMetrics(version, commit string) *Metrics {
 	for _, result := range []string{"ok", "error"} {
 		m.PricingReload.WithLabelValues(result)
 	}
+	for _, scope := range []string{"api_key", "account"} {
+		for _, limit := range []string{"rpm", "tpm", "concurrency"} {
+			m.ThrottleRejections.WithLabelValues(scope, limit)
+		}
+	}
 	for _, result := range []string{"released", "absent", "failed"} {
 		m.ReserveCompensations.WithLabelValues(result)
 	}
@@ -213,6 +226,7 @@ func NewMetrics(version, commit string) *Metrics {
 		m.ReservationsOpen,
 		m.ReservationsExpired,
 		m.ReserveCompensations,
+		m.ThrottleRejections,
 		m.CostMismatch,
 		m.RateLimitCalls,
 		m.OTLPQueueDepth,

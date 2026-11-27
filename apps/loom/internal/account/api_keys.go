@@ -24,6 +24,8 @@ type CreateAPIKeyInput struct {
 	ExpiresAt      *time.Time `json:"expires_at"`
 	// Plaintext 指定明文（仅 seed 使用）；为空时随机生成。
 	Plaintext string `json:"-"`
+	// RateLimits API Key 级限流；不继承分组默认值。
+	RateLimits store.RateLimits `json:"rate_limits"`
 }
 
 // APIKeyUpdate 修改 Key 的参数；零值或 nil 字段保持不变。
@@ -33,6 +35,8 @@ type APIKeyUpdate struct {
 	QuotaNanos     *int64       `json:"quota_limit_nanos"`
 	ModelAllowlist *[]string    `json:"model_allowlist"`
 	ExpiresAt      *time.Time   `json:"expires_at"`
+	// RateLimits 非 nil 时整体替换三项（其中为 null 的项表示不限）。
+	RateLimits *store.RateLimits `json:"rate_limits"`
 }
 
 // IssuedAPIKey 新建 Key 的结果；Plaintext 只在创建时返回这一次。
@@ -48,6 +52,9 @@ func (s *Service) CreateAPIKey(ctx context.Context, in CreateAPIKeyInput) (Issue
 	}
 	if strings.TrimSpace(in.Name) == "" {
 		return IssuedAPIKey{}, fmt.Errorf("%w: name is required", ErrInvalidInput)
+	}
+	if err := validateRateLimits(in.RateLimits); err != nil {
+		return IssuedAPIKey{}, err
 	}
 	plaintext := in.Plaintext
 	if plaintext == "" {
@@ -66,6 +73,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, in CreateAPIKeyInput) (Issue
 		ModelAllowlist: in.ModelAllowlist,
 		QuotaLimit:     in.QuotaNanos,
 		ExpiresAt:      in.ExpiresAt,
+		Limits:         in.RateLimits,
 	})
 	if err != nil {
 		return IssuedAPIKey{}, err
@@ -90,6 +98,12 @@ func (s *Service) UpdateAPIKey(ctx context.Context, id uuid.UUID, in APIKeyUpdat
 	}
 	if in.ExpiresAt != nil {
 		settings.ExpiresAt = in.ExpiresAt
+	}
+	if in.RateLimits != nil {
+		settings.Limits = *in.RateLimits
+	}
+	if err := validateRateLimits(settings.Limits); err != nil {
+		return store.APIKey{}, err
 	}
 	apiKey, err := s.store.UpdateAPIKey(ctx, id, settings)
 	if err != nil {

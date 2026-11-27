@@ -42,6 +42,9 @@ func (d *DB) CreateAPIKey(ctx context.Context, k store.APIKey) (store.APIKey, er
 		ModelAllowlist: encodeAllowlist(k.ModelAllowlist),
 		QuotaLimit:     k.QuotaLimit,
 		ExpiresAt:      k.ExpiresAt,
+		Rpm:            k.Limits.RPM,
+		Tpm:            k.Limits.TPM,
+		MaxConcurrency: k.Limits.MaxConcurrency,
 	})
 	if err != nil {
 		return store.APIKey{}, d.fail("CreateAPIKey", err)
@@ -58,6 +61,9 @@ func (d *DB) UpdateAPIKey(ctx context.Context, id uuid.UUID, s store.APIKeySetti
 		ModelAllowlist: encodeAllowlist(s.ModelAllowlist),
 		QuotaLimit:     s.QuotaLimit,
 		ExpiresAt:      s.ExpiresAt,
+		Rpm:            s.Limits.RPM,
+		Tpm:            s.Limits.TPM,
+		MaxConcurrency: s.Limits.MaxConcurrency,
 	})
 	if err != nil {
 		return store.APIKey{}, d.fail("UpdateAPIKey", err)
@@ -72,7 +78,7 @@ func (d *DB) SetAPIKeyQuota(ctx context.Context, id uuid.UUID, change store.Quot
 		if err != nil {
 			return d.fail("SetAPIKeyQuota.lock", err)
 		}
-		if _, err := q.DeleteKeyReservations(ctx, id); err != nil {
+		if err := q.DeleteKeyReservations(ctx, id); err != nil {
 			return d.fail("SetAPIKeyQuota.deleteReservations", err)
 		}
 		params := sqlcgen.SetKeyQuotaParams{ID: id, QuotaLimit: change.LimitNanos, QuotaUsed: change.UsedNanos}

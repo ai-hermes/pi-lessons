@@ -29,9 +29,10 @@ func (q *Queries) AddKeyUsed(ctx context.Context, arg AddKeyUsedParams) error {
 }
 
 const createKey = `-- name: CreateKey :one
-INSERT INTO api_keys (id, account_id, name, key_hash, key_preview, status, model_allowlist, quota_limit, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING id, account_id, name, key_hash, key_preview, status, model_allowlist, quota_limit, quota_used, reserved, expires_at, last_used_at, created_at, updated_at
+INSERT INTO api_keys (id, account_id, name, key_hash, key_preview, status, model_allowlist, quota_limit, expires_at,
+                      rpm, tpm, max_concurrency)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+RETURNING id, account_id, name, key_hash, key_preview, status, model_allowlist, quota_limit, quota_used, reserved, expires_at, last_used_at, created_at, updated_at, rpm, tpm, max_concurrency, in_flight
 `
 
 type CreateKeyParams struct {
@@ -44,6 +45,9 @@ type CreateKeyParams struct {
 	ModelAllowlist []byte
 	QuotaLimit     *int64
 	ExpiresAt      *time.Time
+	Rpm            *int64
+	Tpm            *int64
+	MaxConcurrency *int64
 }
 
 func (q *Queries) CreateKey(ctx context.Context, arg CreateKeyParams) (ApiKey, error) {
@@ -57,6 +61,9 @@ func (q *Queries) CreateKey(ctx context.Context, arg CreateKeyParams) (ApiKey, e
 		arg.ModelAllowlist,
 		arg.QuotaLimit,
 		arg.ExpiresAt,
+		arg.Rpm,
+		arg.Tpm,
+		arg.MaxConcurrency,
 	)
 	var i ApiKey
 	err := row.Scan(
@@ -74,53 +81,73 @@ func (q *Queries) CreateKey(ctx context.Context, arg CreateKeyParams) (ApiKey, e
 		&i.LastUsedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Rpm,
+		&i.Tpm,
+		&i.MaxConcurrency,
+		&i.InFlight,
 	)
 	return i, err
 }
 
-const deleteKeyReservations = `-- name: DeleteKeyReservations :execrows
-DELETE FROM reservations WHERE key_id = $1
+const deleteKeyReservations = `-- name: DeleteKeyReservations :exec
+WITH gone AS (
+    DELETE FROM reservations WHERE reservations.key_id = $1 RETURNING reservations.account_id, reservations.nanos
+), totals AS (
+    SELECT account_id, sum(nanos)::bigint AS nanos, count(*) AS n FROM gone GROUP BY account_id
+)
+UPDATE accounts a
+SET reserved = a.reserved - totals.nanos, in_flight = a.in_flight - totals.n, updated_at = now()
+FROM totals
+WHERE a.id = totals.account_id
 `
 
-func (q *Queries) DeleteKeyReservations(ctx context.Context, keyID uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteKeyReservations, keyID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// 删除一把 Key 的全部预扣，并从所属账户扣回对应的 reserved 与 in_flight（Key 自身由 SetKeyQuota 清零）。
+func (q *Queries) DeleteKeyReservations(ctx context.Context, keyID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteKeyReservations, keyID)
+	return err
 }
 
 const getKey = `-- name: GetKey :one
-SELECT k.id, k.account_id, k.name, k.key_hash, k.key_preview, k.status, k.model_allowlist, k.quota_limit, k.quota_used, k.reserved, k.expires_at, k.last_used_at, k.created_at, k.updated_at, a.name AS account_name, a.tenant AS account_tenant, a."group" AS account_group,
+SELECT k.id, k.account_id, k.name, k.key_hash, k.key_preview, k.status, k.model_allowlist, k.quota_limit, k.quota_used, k.reserved, k.expires_at, k.last_used_at, k.created_at, k.updated_at, k.rpm, k.tpm, k.max_concurrency, k.in_flight, a.name AS account_name, a.tenant AS account_tenant, a."group" AS account_group,
        a.status AS account_status, a.quota_limit AS account_quota_limit,
-       a.quota_used AS account_quota_used, a.reserved AS account_reserved
+       a.quota_used AS account_quota_used, a.reserved AS account_reserved,
+       a.rpm AS account_rpm, a.tpm AS account_tpm, a.max_concurrency AS account_max_concurrency,
+       a.in_flight AS account_in_flight
 FROM api_keys k
 JOIN accounts a ON a.id = k.account_id
 WHERE k.id = $1
 `
 
 type GetKeyRow struct {
-	ID                uuid.UUID
-	AccountID         uuid.UUID
-	Name              string
-	KeyHash           string
-	KeyPreview        string
-	Status            string
-	ModelAllowlist    []byte
-	QuotaLimit        *int64
-	QuotaUsed         int64
-	Reserved          int64
-	ExpiresAt         *time.Time
-	LastUsedAt        *time.Time
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	AccountName       string
-	AccountTenant     string
-	AccountGroup      string
-	AccountStatus     string
-	AccountQuotaLimit *int64
-	AccountQuotaUsed  int64
-	AccountReserved   int64
+	ID                    uuid.UUID
+	AccountID             uuid.UUID
+	Name                  string
+	KeyHash               string
+	KeyPreview            string
+	Status                string
+	ModelAllowlist        []byte
+	QuotaLimit            *int64
+	QuotaUsed             int64
+	Reserved              int64
+	ExpiresAt             *time.Time
+	LastUsedAt            *time.Time
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	Rpm                   *int64
+	Tpm                   *int64
+	MaxConcurrency        *int64
+	InFlight              int64
+	AccountName           string
+	AccountTenant         string
+	AccountGroup          string
+	AccountStatus         string
+	AccountQuotaLimit     *int64
+	AccountQuotaUsed      int64
+	AccountReserved       int64
+	AccountRpm            *int64
+	AccountTpm            *int64
+	AccountMaxConcurrency *int64
+	AccountInFlight       int64
 }
 
 func (q *Queries) GetKey(ctx context.Context, id uuid.UUID) (GetKeyRow, error) {
@@ -141,6 +168,10 @@ func (q *Queries) GetKey(ctx context.Context, id uuid.UUID) (GetKeyRow, error) {
 		&i.LastUsedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Rpm,
+		&i.Tpm,
+		&i.MaxConcurrency,
+		&i.InFlight,
 		&i.AccountName,
 		&i.AccountTenant,
 		&i.AccountGroup,
@@ -148,41 +179,55 @@ func (q *Queries) GetKey(ctx context.Context, id uuid.UUID) (GetKeyRow, error) {
 		&i.AccountQuotaLimit,
 		&i.AccountQuotaUsed,
 		&i.AccountReserved,
+		&i.AccountRpm,
+		&i.AccountTpm,
+		&i.AccountMaxConcurrency,
+		&i.AccountInFlight,
 	)
 	return i, err
 }
 
 const getKeyByHash = `-- name: GetKeyByHash :one
-SELECT k.id, k.account_id, k.name, k.key_hash, k.key_preview, k.status, k.model_allowlist, k.quota_limit, k.quota_used, k.reserved, k.expires_at, k.last_used_at, k.created_at, k.updated_at, a.name AS account_name, a.tenant AS account_tenant, a."group" AS account_group,
+SELECT k.id, k.account_id, k.name, k.key_hash, k.key_preview, k.status, k.model_allowlist, k.quota_limit, k.quota_used, k.reserved, k.expires_at, k.last_used_at, k.created_at, k.updated_at, k.rpm, k.tpm, k.max_concurrency, k.in_flight, a.name AS account_name, a.tenant AS account_tenant, a."group" AS account_group,
        a.status AS account_status, a.quota_limit AS account_quota_limit,
-       a.quota_used AS account_quota_used, a.reserved AS account_reserved
+       a.quota_used AS account_quota_used, a.reserved AS account_reserved,
+       a.rpm AS account_rpm, a.tpm AS account_tpm, a.max_concurrency AS account_max_concurrency,
+       a.in_flight AS account_in_flight
 FROM api_keys k
 JOIN accounts a ON a.id = k.account_id
 WHERE k.key_hash = $1
 `
 
 type GetKeyByHashRow struct {
-	ID                uuid.UUID
-	AccountID         uuid.UUID
-	Name              string
-	KeyHash           string
-	KeyPreview        string
-	Status            string
-	ModelAllowlist    []byte
-	QuotaLimit        *int64
-	QuotaUsed         int64
-	Reserved          int64
-	ExpiresAt         *time.Time
-	LastUsedAt        *time.Time
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	AccountName       string
-	AccountTenant     string
-	AccountGroup      string
-	AccountStatus     string
-	AccountQuotaLimit *int64
-	AccountQuotaUsed  int64
-	AccountReserved   int64
+	ID                    uuid.UUID
+	AccountID             uuid.UUID
+	Name                  string
+	KeyHash               string
+	KeyPreview            string
+	Status                string
+	ModelAllowlist        []byte
+	QuotaLimit            *int64
+	QuotaUsed             int64
+	Reserved              int64
+	ExpiresAt             *time.Time
+	LastUsedAt            *time.Time
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	Rpm                   *int64
+	Tpm                   *int64
+	MaxConcurrency        *int64
+	InFlight              int64
+	AccountName           string
+	AccountTenant         string
+	AccountGroup          string
+	AccountStatus         string
+	AccountQuotaLimit     *int64
+	AccountQuotaUsed      int64
+	AccountReserved       int64
+	AccountRpm            *int64
+	AccountTpm            *int64
+	AccountMaxConcurrency *int64
+	AccountInFlight       int64
 }
 
 func (q *Queries) GetKeyByHash(ctx context.Context, keyHash string) (GetKeyByHashRow, error) {
@@ -203,6 +248,10 @@ func (q *Queries) GetKeyByHash(ctx context.Context, keyHash string) (GetKeyByHas
 		&i.LastUsedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Rpm,
+		&i.Tpm,
+		&i.MaxConcurrency,
+		&i.InFlight,
 		&i.AccountName,
 		&i.AccountTenant,
 		&i.AccountGroup,
@@ -210,14 +259,20 @@ func (q *Queries) GetKeyByHash(ctx context.Context, keyHash string) (GetKeyByHas
 		&i.AccountQuotaLimit,
 		&i.AccountQuotaUsed,
 		&i.AccountReserved,
+		&i.AccountRpm,
+		&i.AccountTpm,
+		&i.AccountMaxConcurrency,
+		&i.AccountInFlight,
 	)
 	return i, err
 }
 
 const listKeys = `-- name: ListKeys :many
-SELECT k.id, k.account_id, k.name, k.key_hash, k.key_preview, k.status, k.model_allowlist, k.quota_limit, k.quota_used, k.reserved, k.expires_at, k.last_used_at, k.created_at, k.updated_at, a.name AS account_name, a.tenant AS account_tenant, a."group" AS account_group,
+SELECT k.id, k.account_id, k.name, k.key_hash, k.key_preview, k.status, k.model_allowlist, k.quota_limit, k.quota_used, k.reserved, k.expires_at, k.last_used_at, k.created_at, k.updated_at, k.rpm, k.tpm, k.max_concurrency, k.in_flight, a.name AS account_name, a.tenant AS account_tenant, a."group" AS account_group,
        a.status AS account_status, a.quota_limit AS account_quota_limit,
-       a.quota_used AS account_quota_used, a.reserved AS account_reserved
+       a.quota_used AS account_quota_used, a.reserved AS account_reserved,
+       a.rpm AS account_rpm, a.tpm AS account_tpm, a.max_concurrency AS account_max_concurrency,
+       a.in_flight AS account_in_flight
 FROM api_keys k
 JOIN accounts a ON a.id = k.account_id
 WHERE $1::uuid IS NULL OR k.account_id = $1
@@ -231,27 +286,35 @@ type ListKeysParams struct {
 }
 
 type ListKeysRow struct {
-	ID                uuid.UUID
-	AccountID         uuid.UUID
-	Name              string
-	KeyHash           string
-	KeyPreview        string
-	Status            string
-	ModelAllowlist    []byte
-	QuotaLimit        *int64
-	QuotaUsed         int64
-	Reserved          int64
-	ExpiresAt         *time.Time
-	LastUsedAt        *time.Time
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	AccountName       string
-	AccountTenant     string
-	AccountGroup      string
-	AccountStatus     string
-	AccountQuotaLimit *int64
-	AccountQuotaUsed  int64
-	AccountReserved   int64
+	ID                    uuid.UUID
+	AccountID             uuid.UUID
+	Name                  string
+	KeyHash               string
+	KeyPreview            string
+	Status                string
+	ModelAllowlist        []byte
+	QuotaLimit            *int64
+	QuotaUsed             int64
+	Reserved              int64
+	ExpiresAt             *time.Time
+	LastUsedAt            *time.Time
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	Rpm                   *int64
+	Tpm                   *int64
+	MaxConcurrency        *int64
+	InFlight              int64
+	AccountName           string
+	AccountTenant         string
+	AccountGroup          string
+	AccountStatus         string
+	AccountQuotaLimit     *int64
+	AccountQuotaUsed      int64
+	AccountReserved       int64
+	AccountRpm            *int64
+	AccountTpm            *int64
+	AccountMaxConcurrency *int64
+	AccountInFlight       int64
 }
 
 func (q *Queries) ListKeys(ctx context.Context, arg ListKeysParams) ([]ListKeysRow, error) {
@@ -278,6 +341,10 @@ func (q *Queries) ListKeys(ctx context.Context, arg ListKeysParams) ([]ListKeysR
 			&i.LastUsedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Rpm,
+			&i.Tpm,
+			&i.MaxConcurrency,
+			&i.InFlight,
 			&i.AccountName,
 			&i.AccountTenant,
 			&i.AccountGroup,
@@ -285,6 +352,10 @@ func (q *Queries) ListKeys(ctx context.Context, arg ListKeysParams) ([]ListKeysR
 			&i.AccountQuotaLimit,
 			&i.AccountQuotaUsed,
 			&i.AccountReserved,
+			&i.AccountRpm,
+			&i.AccountTpm,
+			&i.AccountMaxConcurrency,
+			&i.AccountInFlight,
 		); err != nil {
 			return nil, err
 		}
@@ -298,7 +369,7 @@ func (q *Queries) ListKeys(ctx context.Context, arg ListKeysParams) ([]ListKeysR
 
 const releaseKeyReservation = `-- name: ReleaseKeyReservation :exec
 UPDATE api_keys
-SET reserved = reserved - $2, updated_at = now()
+SET reserved = reserved - $2, in_flight = in_flight - 1, updated_at = now()
 WHERE id = $1
 `
 
@@ -312,43 +383,9 @@ func (q *Queries) ReleaseKeyReservation(ctx context.Context, arg ReleaseKeyReser
 	return err
 }
 
-const reserveKeyQuota = `-- name: ReserveKeyQuota :one
-UPDATE api_keys
-SET reserved = reserved + $2, last_used_at = now(), updated_at = now()
-WHERE id = $1
-  AND status = 'active'
-  AND (expires_at IS NULL OR expires_at > now())
-  AND (quota_limit IS NULL OR quota_limit - quota_used - reserved >= $2)
-RETURNING id, quota_limit, quota_used, reserved
-`
-
-type ReserveKeyQuotaParams struct {
-	ID       uuid.UUID
-	Reserved int64
-}
-
-type ReserveKeyQuotaRow struct {
-	ID         uuid.UUID
-	QuotaLimit *int64
-	QuotaUsed  int64
-	Reserved   int64
-}
-
-func (q *Queries) ReserveKeyQuota(ctx context.Context, arg ReserveKeyQuotaParams) (ReserveKeyQuotaRow, error) {
-	row := q.db.QueryRow(ctx, reserveKeyQuota, arg.ID, arg.Reserved)
-	var i ReserveKeyQuotaRow
-	err := row.Scan(
-		&i.ID,
-		&i.QuotaLimit,
-		&i.QuotaUsed,
-		&i.Reserved,
-	)
-	return i, err
-}
-
 const setKeyQuota = `-- name: SetKeyQuota :exec
 UPDATE api_keys
-SET quota_limit = $2, quota_used = $3, reserved = 0, updated_at = now()
+SET quota_limit = $2, quota_used = $3, reserved = 0, in_flight = 0, updated_at = now()
 WHERE id = $1
 `
 
@@ -367,7 +404,8 @@ const settleKeyQuota = `-- name: SettleKeyQuota :exec
 UPDATE api_keys
 SET quota_used = quota_used + $3,
     reserved   = reserved - $2,
-    updated_at  = now()
+    in_flight  = in_flight - 1,
+    updated_at = now()
 WHERE id = $1
 `
 
@@ -389,9 +427,12 @@ SET status          = $2,
     quota_limit     = $4,
     expires_at      = $5,
     name            = $6,
+    rpm             = $7,
+    tpm             = $8,
+    max_concurrency = $9,
     updated_at      = now()
 WHERE id = $1
-RETURNING id, account_id, name, key_hash, key_preview, status, model_allowlist, quota_limit, quota_used, reserved, expires_at, last_used_at, created_at, updated_at
+RETURNING id, account_id, name, key_hash, key_preview, status, model_allowlist, quota_limit, quota_used, reserved, expires_at, last_used_at, created_at, updated_at, rpm, tpm, max_concurrency, in_flight
 `
 
 type UpdateKeyParams struct {
@@ -401,6 +442,9 @@ type UpdateKeyParams struct {
 	QuotaLimit     *int64
 	ExpiresAt      *time.Time
 	Name           string
+	Rpm            *int64
+	Tpm            *int64
+	MaxConcurrency *int64
 }
 
 func (q *Queries) UpdateKey(ctx context.Context, arg UpdateKeyParams) (ApiKey, error) {
@@ -411,6 +455,9 @@ func (q *Queries) UpdateKey(ctx context.Context, arg UpdateKeyParams) (ApiKey, e
 		arg.QuotaLimit,
 		arg.ExpiresAt,
 		arg.Name,
+		arg.Rpm,
+		arg.Tpm,
+		arg.MaxConcurrency,
 	)
 	var i ApiKey
 	err := row.Scan(
@@ -428,6 +475,10 @@ func (q *Queries) UpdateKey(ctx context.Context, arg UpdateKeyParams) (ApiKey, e
 		&i.LastUsedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Rpm,
+		&i.Tpm,
+		&i.MaxConcurrency,
+		&i.InFlight,
 	)
 	return i, err
 }

@@ -49,6 +49,8 @@ type UnitPrice struct {
 	PerCall      bool  `json:"per_call"`
 	PerCallNanos int64 `json:"per_call_nanos"`
 	ReserveNanos int64 `json:"reserve_nanos"` // 准入阶段预扣额
+	// ReserveTokens 准入阶段计入 TPM 的 token 估值（输入 + 输出）；按次计费的模型为 0。
+	ReserveTokens int64 `json:"reserve_tokens"`
 }
 
 // IsPerCall 是否按次计费。
@@ -97,6 +99,7 @@ func newUnitPrice(in unitPriceInput) UnitPrice {
 	unitPrice.OutputNanos = unitPrice.InputNanos * in.rate.CompletionRatio
 
 	reserve := mergeReserveEstimate(in.reserve, in.rate.Reserve)
+	unitPrice.ReserveTokens = reserve.Input + reserve.Output
 	unitPrice.ReserveNanos = roundNanos(
 		float64(reserve.Input)*unitPrice.InputNanos + float64(reserve.Output)*unitPrice.OutputNanos,
 	)

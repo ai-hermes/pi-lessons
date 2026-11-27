@@ -5,6 +5,7 @@ package extauth
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -28,6 +29,7 @@ type Headers struct {
 	RequestID      string // 出：loom 请求 ID（结算关联键）
 	QuotaRemaining string // 出：剩余额度（nano-USD）
 	DenyReason     string // 出：拒绝原因
+	RateLimit      string // 出：rate_limited 时触发的层级与限流项，如 account/rpm
 }
 
 // Options 门面参数。
@@ -62,10 +64,15 @@ func (o Options) admissionRequest(headers map[string]string, body []byte, protoc
 func (o Options) checkResponse(v admission.Verdict) checkResponse {
 	h := o.Headers
 	if !v.Allowed {
+		headers := map[string]string{h.DenyReason: string(v.Reason)}
+		if v.RateLimit != nil {
+			headers[h.RateLimit] = string(v.RateLimit.Scope) + "/" + string(v.RateLimit.Kind)
+			headers["retry-after"] = strconv.Itoa(int(math.Ceil(v.RetryAfter.Seconds())))
+		}
 		return checkResponse{
 			status:  o.statusFor(v.Reason),
-			headers: map[string]string{h.DenyReason: string(v.Reason)},
-			body:    errorBody(v.Reason),
+			headers: headers,
+			body:    errorBody(v),
 		}
 	}
 	headers := map[string]string{
@@ -108,26 +115,34 @@ var denyMessages = map[admission.Reason]string{
 	admission.ReasonUnknownKey:        "unknown API key",
 	admission.ReasonExpiredKey:        "API key expired",
 	admission.ReasonInactive:          "account or API key is disabled",
-	admission.ReasonModelNotAllowed:   "model not isAllowed for this API key",
+	admission.ReasonModelNotAllowed:   "model not allowed for this API key",
 	admission.ReasonModelNotPriced:    "model has no pricing configured",
 	admission.ReasonGroupNotPriced:    "account group has no pricing configured",
 	admission.ReasonInsufficientQuota: "insufficient quota",
+	admission.ReasonRateLimited:       "rate limit exceeded",
 	admission.ReasonInternalError:     "internal error",
 }
 
 // errorBody 生成 OpenAI 风格错误体，现有 SDK 可直接解析。
-func errorBody(r admission.Reason) []byte {
+func errorBody(v admission.Verdict) []byte {
+	r := v.Reason
+	message := denyMessages[r]
 	errType := "auth_error"
 	switch r {
 	case admission.ReasonInsufficientQuota:
 		errType = "quota_error"
+	case admission.ReasonRateLimited:
+		errType = "rate_limit_error"
+		if v.RateLimit != nil {
+			message += ": " + string(v.RateLimit.Scope) + " " + string(v.RateLimit.Kind)
+		}
 	case admission.ReasonModelNotAllowed, admission.ReasonModelNotPriced, admission.ReasonGroupNotPriced:
 		errType = "model_error"
 	case admission.ReasonInternalError:
 		errType = "server_error"
 	}
 	b, _ := json.Marshal(map[string]map[string]string{
-		"error": {"code": string(r), "message": denyMessages[r], "type": errType},
+		"error": {"code": string(r), "message": message, "type": errType},
 	})
 	return b
 }

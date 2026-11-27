@@ -609,7 +609,7 @@ OTLP access log 是遥测链路（批量、可丢），不适合做账本的数�
 
 ### 19.4 存储可替换性（云 PG 与 MySQL）
 
-- [x] 存储一致性测试：`internal/store/storetest` 的 15 组用例（账户与 API Key、条件预扣、两级预扣全有或全无、按请求释放预扣、结算幂等与冲正、过期释放、用量与计价快照、准入审计、兜底定价、额度变更流水、管理 token 与审计），`memstore` 在 `go test` 中运行，`postgres` 经 `deploy/conformance.sh` 在 st2-aii 的真实 PG 上（每次重建独立库 `loom_conformance`）运行，两者均通过；新增驱动以通过该测试为准入条件。统一后的语义：预扣金额大于 0 时，不存在的 API Key / 账户返回 `ErrInsufficientQuota`。
+- [x] 存储一致性测试：`internal/store/storetest` 的 19 组用例（账户与 API Key、条件预扣、两级预扣全有或全无、按请求释放预扣、限流配置读写、并发上限、额度重置两级一致、RPM / TPM 计数、结算幂等与冲正、过期释放、用量与计价快照、准入审计、兜底定价、额度变更流水、管理 token 与审计），`memstore` 在 `go test` 中运行，`postgres` 经 `deploy/conformance.sh` 在 st2-aii 的真实 PG 上（每次重建独立库 `loom_conformance`）运行，两者均通过；新增驱动以通过该测试为准入条件。统一后的语义：预扣金额大于 0 时，不存在的 API Key / 账户返回 `ErrInsufficientQuota`。限流的两个 PG 专有缺陷（在事务内读到本次未生效的递增、upsert 的 `EXCLUDED` 只能拿到截断后的值导致 TPM 负修正丢失）都是这套用例在真实 PG 上发现的，memstore 测不出来。
 - [x] 配置 `store.driver`（当前只接受 `postgres`，其他值在配置校验阶段报错）。
 - [x] `LISTEN` 使用可单独配置的直连 DSN（`postgres.listen_dsn`，为空时与主 DSN 相同），无法直连时退回 TTL 失效。
 - [ ] 连接经过事务模式连接池（PgBouncer 等）时，提供配置切换为简单查询协议。
@@ -624,16 +624,27 @@ OTLP access log 是遥测链路（批量、可丢），不适合做账本的数�
 
 本地计数（网关本地限流、loom 内存计数）的实际上限等于单实例上限 × 实例数，扩缩容后无法预估，因此限流计数必须放在共享存储中。
 
-- [ ] 判定位置：在准入阶段（extAuth）完成，超限返回新拒绝原因 `rate_limited`，`deny_status` 配置为 `429`；不使用远程限流的请求阶段调用，不受网关到 loom 的 gRPC 长连接分布影响。
-- [ ] 计数后端：定义 `RateCounter` 接口，第一版用 PG 计数表 `(scope, id, window)` 加 `INSERT … ON CONFLICT DO UPDATE SET n = n + 1 RETURNING n`；压测证明 PG 写入成为瓶颈后再换 Redis 或租约，业务代码不变。
-- [ ] 配置：API Key 与账户上配置 `rpm`、`tpm`、`max_concurrency`，分组提供默认值。
+- [x] 判定位置：在准入阶段（extAuth）完成，超限返回 `429 rate_limited`，响应头 `x-loom-rate-limit`（如 `account/rpm`）指出层级与限流项，`Retry-After` 给出重试等待（RPM / TPM 到窗口结束，并发 1 秒）；错误体 `type` 为 `rate_limit_error`。顺序为定价之后、预扣之前；随后被额度或并发拒绝时退回已计入的 RPM / TPM。
+- [x] 计数后端：`internal/throttle` 定义 `Counter` 接口，第一版由 `store.Store` 的 PG 计数表 `rate_counters (subject, window_start)` 实现（迁移 `0005_rate_limits.sql`），过期窗口每分钟清理。准入计数是一条自动提交的有序 upsert，超限时逐行撤销；撤销与结算修正都是单行语句。初版用显式事务、修正一次更新两行，压测中与准入计数死锁，且热点行的锁跨 BEGIN / COMMIT 往返持有，单账户吞吐跌到约 `20 rps`，已按上述方式改正。
+- [x] 配置：API Key 与账户上配置 `rate_limits {rpm, tpm, max_concurrency}`（管理 API、seed），未配置表示不限、配置值必须大于 0；账户未配置的项取 `pricing.yaml` 中所属分组的 `limits`，API Key 级不继承分组默认值。只有配置了 TPM 的层级才计 token，避免窗口中途开启 TPM 时带着未修正的估值起步。
 - [ ] 网关本地限流只作为保护上游的安全阀（按上游总容量 ÷ 网关最大副本数取保守值），不用于客户级限额。
 
 | 维度 | 实现 | 误差 |
 | --- | --- | --- |
 | RPM | PG 计数器，分钟窗口（需要更平滑时用双窗口加权） | 固定窗口边界处最多 2 倍，与副本数无关 |
 | TPM | 准入时按 `reserve_tokens` 预估计入，结算时按实际 token 修正 | 限于预估与实际的差值，与副本数无关 |
-| 并发数 | 统计该 Key 未结算的预扣记录；免费请求也需写预扣记录 | 精确，结算或过期时自动释放 |
+| 并发数 | `api_keys` / `accounts` 的 `in_flight` 列与 `reserved` 在同一条预扣 UPDATE 中条件递增；免费请求也写预扣记录 | 精确，结算、补偿或过期释放时递减 |
+
+验证：smoke 第 18 节（RPM 第 3 次 `429 api_key/rpm`；TPM 上限 4,000、每次估值 2,048、实际 1,500，第 2 次因结算修正得以放行、第 3 次 `429 api_key/tpm`；账户并发 2 时 3 路重叠流式请求为 `200 200 429`，结束后 `in_flight` 归零）；store 一致性新增 4 组（共 19 组）。
+
+开销（st2-aii，CloudNativePG 同步复制，限额设得足够大、不触发拒绝，两级都配 RPM / TPM / 并发）：
+
+| 场景 | 不限流 rps | 开启限流 rps | 每请求 PG 事务数 |
+| --- | --- | --- | --- |
+| 单账户，并发 8 / 32 / 64 | `338` / `531` / `537` | `246` / `272` / `293` | `3.8`～`6.9` → `6.6`～`10.0` |
+| 16 账户，并发 8 / 32 / 64 | `2,194` / `2,400` / `2,377` | `1,274` / `1,948` / `1,892` | `2.3`～`2.9` → `5.4`～`6.4` |
+
+多出的 PG 语句是每次准入 1 条计数、每次结算 2 条 TPM 修正（两级各一条）。单账户下账户计数行与账户额度行是两个热点，吞吐约降一半；多账户约降 20%，并发 64 的 p99 由 `65 ms` 到 `73 ms`。不配限额的账户没有任何额外开销。另：同步复制使单账户基线（约 `530 rps`）低于单实例 PG 时的约 `800 rps`。单账户若需要更高吞吐，下一步是额度与计数租约（19.5），或把计数后端换成 Redis（实现 `throttle.Counter` 即可）。
 
 ### 19.7 管理面安全
 
