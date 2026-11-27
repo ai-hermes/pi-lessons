@@ -1,0 +1,125 @@
+# yaml-language-server: $schema=https://golangci-lint.run/jsonschema/golangci.jsonschema.json
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+  allow-parallel-runners: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  default: none
+  enable:
+    # Correctness and error handling.
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - errcheck
+    - errorlint
+    - nilerr
+    - forcetypeassert
+    - durationcheck
+    - copyloopvar
+
+    # Resources, context and security.
+    - bodyclose
+    - noctx
+    - sqlclosecheck
+    - rowserrcheck
+    - containedctx
+    - fatcontext
+    - gosec
+    - bidichk
+
+    # API and code clarity.
+    - gocritic
+    - revive
+    - misspell
+    - dupword
+    - predeclared
+    - errname
+    - asciicheck
+    - whitespace
+    - unconvert
+    - perfsprint
+    - lll
+
+    # Structured logging.
+    - sloglint
+    - loggercheck
+
+    # Tests and suppressions.
+    - testifylint
+    - thelper
+    - usetesting
+    - nolintlint
+
+    # Modern Go.
+    - modernize
+    - intrange
+    - usestdlibvars
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+    gosec:
+      # Dedicated secret scanners are less noisy; G101 misidentifies telemetry attribute names.
+      excludes: [G101]
+    gocritic:
+      enabled-tags: [diagnostic, style, performance]
+      # hugeParam/rangeValCopy are profiling decisions, not correctness checks.
+      disabled-checks: [commentFormatting, unnamedResult, hugeParam, rangeValCopy]
+    lll:
+      line-length: 120
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: exported
+          arguments: [disableStutteringCheck]
+        - name: receiver-naming
+        - name: var-naming
+        - name: error-strings
+        - name: error-naming
+        - name: indent-error-flow
+        - name: unused-parameter
+    sloglint:
+      no-mixed-args: true
+      key-naming-case: snake
+      static-msg: true
+    testifylint:
+      enable-all: true
+
+  exclusions:
+    generated: strict
+    paths:
+      - internal/store/sqlcgen
+    rules:
+      # storetest 的 test* 函数是一致性用例的主体而不是辅助函数，标记 t.Helper() 会让失败定位到 Run 而不是用例内部。
+      - path: internal/store/storetest/
+        linters: [thelper]
+      # Tests may use long fixture strings and need not document every test-only exported helper.
+      - path: _test\.go
+        linters: [lll, revive]
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    gofumpt:
+      extra:
+        group-params: true
+        clothe-returns: true
+    goimports:
+      local-prefixes: [github.com/ai-hermes/pi-lessons/apps/loom]
+  exclusions:
+    generated: strict
+    paths:
+      - internal/store/sqlcgen

@@ -12,9 +12,8 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-ssh "${HOST}" 'bash -s' -- <<'REMOTE'
+cat "$(dirname "$0")/pg.sh" - <<'REMOTE' | ssh "${HOST}" "SKIP_FAILCLOSED=${SKIP_FAILCLOSED} SKIP_RELOAD=${SKIP_RELOAD} bash -s"
 set -u
-SKIP_FAILCLOSED=0; SKIP_RELOAD=0
 export PATH=/opt/agentgateway/k8s/bin:$PATH
 BASE=http://127.0.0.1:14001
 ADMIN_TOKEN=loom-admin-token-change-me
@@ -26,20 +25,19 @@ check() { # name expected actual
 }
 code()   { curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$@"; }
 reason() { curl -s -D - -o /dev/null --max-time 30 "$@" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-loom-deny-reason"{print $2}'; }
-q()      { kubectl -n loom exec deploy/loom-postgres -- psql -U loom -d loom -Atc "$1"; }
-admin()  { kubectl -n loom exec deploy/loom -- wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:9100$1"; }
+admin()  { kubectl -n loom exec deploy/loom -- wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:9090$1"; }
 chat()   { curl -s --max-time 60 -H "Authorization: Bearer $1" -H 'content-type: application/json' -d "{\"model\":\"$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" "$BASE$3"; }
 key() { case "$1" in
   alice) echo loom-demo-alice-0000000000000001;; bob) echo loom-demo-bob-000000000000000002;;
   carol) echo loom-demo-carol-000000000000000003;; dave) echo loom-demo-dave-000000000000000004;;
   dave-images) echo loom-demo-dave-images-only-0005;; erin) echo loom-demo-erin-000000000000000006;;
   vera) echo loom-demo-vera-000000000000000007;; frank) echo loom-demo-frank-000000000000000008;; esac; }
-admin_post() { kubectl -n loom exec deploy/loom -- wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN" --header='Content-Type: application/json' --post-data="$2" "http://127.0.0.1:9100$1"; }
+admin_post() { kubectl -n loom exec deploy/loom -- wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN" --header='Content-Type: application/json' --post-data="$2" "http://127.0.0.1:9090$1"; }
 wait_ready() { kubectl -n loom rollout status deploy/loom --timeout=120s >/dev/null; for i in $(seq 1 30); do [ "$(code $BASE/echo -H 'x-api-key: $(key dave)')" = 200 ] && break; sleep 2; done; }
 # reset <account> <key-name> <limit>：把账户与 Key 的额度上限/已用量复位，保证矩阵可重复执行
 reset() {
-  aid=$(admin /v1/accounts | grep -o "\"id\":\"[^\"]*\",\"name\":\"$1\"" | cut -d'"' -f4)
-  kid=$(admin "/v1/accounts/$aid/keys" | grep -o "\"id\":\"[^\"]*\",\"key_preview\":\"[^\"]*\",\"last_used_at\":[^,]*,\"model_allowlist\":[^,]*,\"name\":\"$2\"" | cut -d'"' -f4)
+  aid=$(admin /v1/accounts | python3 -c "import json,sys; print(next(a['id'] for a in json.load(sys.stdin)['accounts'] if a['name']=='$1'))")
+  kid=$(admin "/v1/accounts/$aid/keys" | python3 -c "import json,sys; print(next(k['id'] for k in json.load(sys.stdin)['keys'] if k['name']=='$2'))")
   admin_post "/v1/accounts/$aid/quota" "{\"quota_limit_nanos\":$3,\"quota_used_nanos\":0}" >/dev/null
   admin_post "/v1/keys/$kid/quota" "{\"quota_limit_nanos\":$3,\"quota_used_nanos\":0}" >/dev/null
 }
@@ -85,7 +83,8 @@ echo "### 3. 分组倍率：vera(vip 0.9) → 1,638,000"
 chat "$(key vera)" lab-model /v1/chat/completions >/dev/null
 sleep 4
 check "vera cost_nanos = 1,638,000" 1638000 "$(q "select cost_nanos from usage_events where account_id=(select id from accounts where name='vera') order by id desc limit 1")"
-check "vera gateway cost = 1,820,000 (catalog 无分组倍率，对账跳过)" 1820000 "$(q "select gateway_cost_nanos from usage_events where account_id=(select id from accounts where name='vera') order by id desc limit 1")"
+check "vera gateway cost = 1,820,000 (catalog 1 倍价，对账时 × 0.9)" 1820000 "$(q "select gateway_cost_nanos from usage_events where account_id=(select id from accounts where name='vera') order by id desc limit 1")"
+check "vera pricing snapshot = vip|0.9" "vip|0.9" "$(q "select pricing_group || '|' || group_ratio from usage_events where account_id=(select id from accounts where name='vera') order by id desc limit 1")"
 
 echo "### 4. 按次计费：图片模型 lab-image = \$0.04"
 check "dave images-only key lab-image → 200" 200 "$(code -X POST -H "x-api-key: $(key dave-images)" -H 'content-type: application/json' -d '{"model":"lab-image","prompt":"cat"}' $BASE/v1/images/generations)"
@@ -130,16 +129,17 @@ check "grpc route dave → 200" 200 "$(code -H "x-api-key: $(key dave)" $BASE/gr
 check "grpc route bogus → 401" 401 "$(code -H 'x-api-key: loom-bogus' $BASE/grpc)"
 
 echo "### 10. 管理 API 与指标"
-check "admin list accounts" 7 "$(admin /v1/accounts | sed 's/"id":/\n&id=/g' | grep -c '"name"')"
+check "admin rejects undefined group" "HTTP/1.1 400" "$(admin_post /v1/accounts '{"name":"smoke-ghost","group":"no-such-group"}' 2>&1 | grep -o 'HTTP/1.1 400' | head -1)"
+check "admin list accounts includes the 7 demo accounts" 7 "$(admin /v1/accounts | python3 -c 'import json,sys; names={a["name"] for a in json.load(sys.stdin)["accounts"]}; print(len(names & {"alice","bob","carol","dave","erin","vera","frank"}))')"
 check "admin usage summary has rows" yes "$(admin '/v1/usage/summary' | grep -q '"total"' && echo yes)"
 check "admin pricing view has pg row" 1 "$(admin /v1/pricing | grep -o '"model":"lab-pg-only"' | wc -l | tr -d ' ')"
 check "admin catalog has lab-model rate 1" '"input":"1"' "$(admin /v1/catalog | grep -o '"input":"1"' | head -1)"
-M=$(kubectl -n loom exec deploy/loom -- wget -qO- http://127.0.0.1:9102/metrics)
-for mname in loom_auth_decisions_total loom_auth_duration_seconds loom_pricing_lookups_total loom_quota_reserved_nanos_total loom_quota_settled_nanos_total loom_quota_remaining_nanos loom_reservations_open loom_reservations_expired_total loom_usage_events_ingested_total loom_ingest_queue_depth loom_rls_calls_total loom_usage_settled_total loom_pg_pool_acquires_total loom_build_info; do
+M=$(kubectl -n loom exec deploy/loom -- wget -qO- http://127.0.0.1:9090/metrics)
+for mname in loom_admission_decisions_total loom_admission_duration_seconds loom_pricing_lookups_total loom_ledger_reserved_nanos_total loom_ledger_settled_nanos_total loom_ledger_remaining_nanos loom_ledger_reservations_open loom_ledger_reservations_expired_total loom_ledger_settlements_total loom_otlp_queue_depth loom_ratelimit_calls_total loom_store_pool_acquires_total loom_build_info; do
   check "metric $mname" yes "$(echo "$M" | grep -q "^$mname" && echo yes)"
 done
 # 带标签的 counter 在首次自增前不会出现：只要求没有 mismatch 计数（下一行）
-check "no cost mismatch between loom and gateway" "" "$(echo "$M" | grep '^loom_cost_mismatch_total' | grep -v ' 0$' | sed 's/^/MISMATCH: /')"
+check "no cost mismatch between loom and gateway" "" "$(echo "$M" | grep '^loom_ledger_cost_mismatch_total' | grep -v ' 0$' | sed 's/^/MISMATCH: /')"
 check "auth audit rows > 0" yes "$(q "select case when count(*)>0 then 'yes' end from auth_audit")"
 
 if [ "$SKIP_RELOAD" = 0 ]; then
@@ -150,7 +150,7 @@ echo "### 11. ConfigMap 热加载：lab-image 价格 0.04 → 0.05，30s 内生�
   # kubelet 同步 ConfigMap 卷（最长 ~1min）+ loom 30s 轮询：逐个副本轮询管理 API，直到所有副本都看到新价
   all_pods_new_price() {
     for pod in $(kubectl -n loom get pods -l app=loom -o name); do
-      kubectl -n loom exec "$pod" -- wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:9100/v1/pricing 2>/dev/null | grep -q '"model_price":0.05' || return 1
+      kubectl -n loom exec "$pod" -- wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:9090/v1/pricing 2>/dev/null | grep -q '"model_price":0.05' || return 1
     done
     return 0
   }
@@ -160,11 +160,11 @@ echo "### 11. ConfigMap 热加载：lab-image 价格 0.04 → 0.05，30s 内生�
   sleep 4
   check "lab-image after reload = 50,000,000" 50000000 "$(q "select cost_nanos from usage_events where model='lab-image' order by id desc limit 1")"
   kubectl -n loom create configmap loom-pricing --from-file=pricing.yaml=/opt/agentgateway/loom/configs/pricing.yaml --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-  RELOADS=$(kubectl -n loom exec deploy/loom -- wget -qO- http://127.0.0.1:9102/metrics | awk -F' ' '/^loom_pricing_reload_total\{result="ok"\}/{s+=$2} END{print int(s)}')
+  RELOADS=$(kubectl -n loom exec deploy/loom -- wget -qO- http://127.0.0.1:9090/metrics | awk -F' ' '/^loom_pricing_reloads_total\{result="ok"\}/{s+=$2} END{print int(s)}')
   check "pricing reload counter ≥ 2" yes "$([ "${RELOADS:-0}" -ge 2 ] && echo yes || echo no:$RELOADS)"
 fi
 
-echo "### 13. RLS 同步结算通道：响应完成后网关 amend → loom :9004，先于 OTLP 入库"
+echo "### 13. RLS 同步结算通道：响应完成后网关 amend → loom data 端口，先于 OTLP 入库"
 dave_rows() { q "select count(*) from usage_events where model='lab-model' and account_id=(select id from accounts where name='dave')"; }
 BEFORE=$(dave_rows)
 curl -s -o /dev/null -m 60 -X POST -H "x-api-key: $(key dave)" -H 'content-type: application/json' -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' $BASE/v1/chat/completions
@@ -174,10 +174,10 @@ STREAM_USAGE=$(curl -s -N -m 60 -X POST -H "x-api-key: $(key dave)" -H 'content-
 check "stream response carries usage" 1000 "$STREAM_USAGE"
 sleep 1
 check "stream settled by rls within 1s" $((BEFORE+2)) "$(dave_rows)"
-M2=$(for pod in $(kubectl -n loom get pods -l app=loom -o name); do kubectl -n loom exec "$pod" -- wget -qO- http://127.0.0.1:9102/metrics 2>/dev/null; done)
-check "rls amend calls observed" yes "$(echo "$M2" | grep -q '^loom_rls_calls_total{type="amend"}' && echo yes)"
-check "rls channel inserted rows" yes "$(echo "$M2" | grep -E '^loom_usage_settled_total\{channel="rls",inserted="true"\} [1-9]' | grep -q . && echo yes)"
-check "otlp duplicates blocked by idempotency key" yes "$(echo "$M2" | grep -E '^loom_usage_settled_total\{channel="otlp",inserted="false"\} [1-9]' | grep -q . && echo yes)"
+M2=$(for pod in $(kubectl -n loom get pods -l app=loom -o name); do kubectl -n loom exec "$pod" -- wget -qO- http://127.0.0.1:9090/metrics 2>/dev/null; done)
+check "rls amend calls observed" yes "$(echo "$M2" | grep -q '^loom_ratelimit_calls_total{phase="amend"}' && echo yes)"
+check "rls channel inserted rows" yes "$(echo "$M2" | grep -E '^loom_ledger_settlements_total\{channel="rls",inserted="true"\} [1-9]' | grep -q . && echo yes)"
+check "otlp duplicates blocked by idempotency key" yes "$(echo "$M2" | grep -E '^loom_ledger_settlements_total\{channel="otlp",inserted="false"\} [1-9]' | grep -q . && echo yes)"
 echo "### 14. 单通道独立性：移除 OTLP access log 策略，仅靠 RLS 也能结算；恢复后两通道并存"
 kubectl -n loom delete agentgatewaypolicy gateway-access-log >/dev/null; sleep 3
 BEFORE=$(dave_rows)
@@ -193,7 +193,177 @@ sleep 4
 check "both channels: otlp backfills gateway cost on rls-settled row" 1820000 "$(q "select gateway_cost_nanos from usage_events where model='lab-model' and account_id=(select id from accounts where name='dave') order by id desc limit 1")"
 
 if [ "$SKIP_FAILCLOSED" = 0 ]; then
-echo "### 15. FailClosed：loom 副本缩到 0 → 拒绝；恢复 → 放行"
+echo "### 15. 多副本缓存失效：只在一个副本上停用 Key，所有副本立即拒绝（不等缓存 TTL）"
+SYNC_KEY=loom-cache-sync-000000000000001
+printf 'accounts:\n  - name: cache-sync\n    keys:\n      - name: default\n        plaintext: %s\n' "$SYNC_KEY" \
+  | kubectl -n loom exec -i deploy/loom -- loom seed --config /etc/loom/config.yaml --file /dev/stdin >/dev/null
+sleep 1 # seed 也会广播失效消息，等它送达后再取指标基线
+SYNC_AID=$(admin /v1/accounts | python3 -c "import json,sys; print(next(a['id'] for a in json.load(sys.stdin)['accounts'] if a['name']=='cache-sync'))")
+SYNC_KID=$(admin "/v1/accounts/$SYNC_AID/keys" | python3 -c "import json,sys; print(json.load(sys.stdin)['keys'][0]['id'])")
+# invalidations <origin>：所有副本上 kind=api_key、指定 origin 的失效次数之和
+invalidations() {
+  for pod in $(kubectl -n loom get pods -l app=loom -o name); do
+    kubectl -n loom exec "$pod" -- wget -qO- http://127.0.0.1:9090/metrics 2>/dev/null
+  done | awk -v o="$1" '$1 ~ "^loom_cache_invalidations_total\\{" && $1 ~ "kind=\"api_key\"" && $1 ~ "origin=\""o"\"" {s+=$2} END {printf "%d", s}'
+}
+# patch_key_on <pod> <status>：经 port-forward 只在指定副本上调用管理 API
+patch_key_on() {
+  kubectl -n loom port-forward "$1" 19090:9090 >/dev/null 2>&1 & local pf=$!
+  sleep 2
+  curl -s -o /dev/null -w '%{http_code}' -X PATCH -H "Authorization: Bearer $ADMIN_TOKEN" \
+    -H 'Content-Type: application/json' -d "{\"status\":\"$2\"}" "http://127.0.0.1:19090/v1/keys/$SYNC_KID"
+  kill "$pf" 2>/dev/null; wait "$pf" 2>/dev/null
+}
+REPLICAS=$(kubectl -n loom get pods -l app=loom --no-headers | wc -l | tr -d ' ')
+POD_A=$(kubectl -n loom get pods -l app=loom -o name | head -1)
+for i in 1 2 3 4; do code -H "x-api-key: $SYNC_KEY" $BASE/echo >/dev/null; done   # 让 Key 进入缓存
+LOCAL0=$(invalidations local); REMOTE0=$(invalidations remote)
+check "disable key via one replica" 200 "$(patch_key_on "$POD_A" disabled)"
+DENIED=0
+for i in $(seq 1 10); do [ "$(code -H "x-api-key: $SYNC_KEY" $BASE/echo)" = 403 ] && DENIED=$((DENIED+1)); done
+check "all 10 immediate requests denied on every replica" 10 "$DENIED"
+check "publisher replica invalidated locally once" 1 $(( $(invalidations local) - LOCAL0 ))
+check "other replicas invalidated remotely" $((REPLICAS - 1)) $(( $(invalidations remote) - REMOTE0 ))
+check "re-enable key" 200 "$(patch_key_on "$POD_A" active)"
+check "re-enabled key accepted immediately" 200 "$(code -H "x-api-key: $SYNC_KEY" $BASE/echo)"
+
+echo "### 16. 管理面：分角色 token、即时吊销、额度变更流水、操作审计、pprof 默认关闭"
+kubectl -n loom port-forward deploy/loom 19091:9090 >/dev/null 2>&1 & OPS_PF=$!
+sleep 2
+OPS=http://127.0.0.1:19091
+# ops <token> <method> <path> [json]：返回 "<http_code> <body>"
+ops() {
+  curl -s -w ' %{http_code}' -X "$2" -H "Authorization: Bearer $1" -H 'Content-Type: application/json' \
+    ${4:+-d "$4"} "$OPS$3"
+}
+status_of() { echo "${1##* }"; }
+SUFFIX=$(date +%s)
+issue() { # issue <name> <role> → "<id> <plaintext>"
+  ops "$ADMIN_TOKEN" POST /v1/admin/tokens "{\"name\":\"$1-$SUFFIX\",\"role\":\"$2\"}" \
+    | sed 's/ [0-9]*$//' | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["token"]["id"], d["plaintext"])'
+}
+read -r READER_ID READER <<<"$(issue smoke-reader read)"
+read -r WRITER_ID WRITER <<<"$(issue smoke-writer write)"
+check "read token can list accounts" 200 "$(status_of "$(ops "$READER" GET /v1/accounts)")"
+check "read token cannot write" 403 "$(status_of "$(ops "$READER" POST /v1/accounts '{"name":"x"}')")"
+check "revoke read token" 204 "$(status_of "$(ops "$ADMIN_TOKEN" DELETE "/v1/admin/tokens/$READER_ID")")"
+check "revoked token rejected immediately" 401 "$(status_of "$(ops "$READER" GET /v1/accounts)")"
+LIMIT_BEFORE=$(q "select coalesce(quota_limit, 0) from accounts where name='cache-sync'")
+check "top up with write token" 200 "$(status_of "$(ops "$WRITER" POST "/v1/accounts/$SYNC_AID/topup" '{"nanos":7}')")"
+check "quota ledger records actor and before/after" "top_up|smoke-writer-$SUFFIX|$((LIMIT_BEFORE + 7))" \
+  "$(q "select kind || '|' || actor || '|' || limit_after from quota_adjustments where account_id='$SYNC_AID' order by id desc limit 1")"
+check "admin audit records the top-up" "smoke-writer-$SUFFIX|/v1/accounts/:id/topup|200" \
+  "$(q "select actor || '|' || route || '|' || status from admin_audit order by id desc limit 1")"
+check "smoke resets are in the quota ledger" yes \
+  "$(q "select count(*) from quota_adjustments a join accounts c on c.id = a.account_id where c.name = 'alice' and a.kind = 'reset' and a.actor = 'bootstrap'" | awk '{print ($1 > 0) ? "yes" : "no"}')"
+check "pprof is off by default" 404 "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ADMIN_TOKEN" "$OPS/debug/pprof/")"
+ops "$ADMIN_TOKEN" DELETE "/v1/admin/tokens/$WRITER_ID" >/dev/null
+kill "$OPS_PF" 2>/dev/null; wait "$OPS_PF" 2>/dev/null
+
+echo "### 17. 超时预算：PG 行锁时准入在自己的截止时间（1.5s）内拒绝，预扣整体回滚"
+# 第 16 节的充值让 cache-sync 有了上限；复位为不限额并清空预扣，保证请求真的走到被锁的行
+admin_post "/v1/accounts/$SYNC_AID/quota" '{"quota_limit_nanos":null,"quota_used_nanos":0}' >/dev/null
+admin_post "/v1/keys/$SYNC_KID/quota" '{"quota_limit_nanos":null,"quota_used_nanos":0}' >/dev/null
+pg_psql loom -qc \
+  "BEGIN; SELECT 1 FROM accounts WHERE name = 'cache-sync' FOR UPDATE; SELECT pg_sleep(6); COMMIT;" >/dev/null 2>&1 &
+LOCK=$!
+sleep 1.5
+OUT=$(curl -s -o /dev/null -D - -w 'time=%{time_total}\n' --max-time 30 -H "x-api-key: $SYNC_KEY" -H 'content-type: application/json' \
+  -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' "$BASE/v1/chat/completions" | tr -d '\r')
+check "locked account row → 500" 500 "$(echo "$OUT" | awk 'NR==1{print $2}')"
+check "deny reason internal_error" internal_error "$(echo "$OUT" | awk -F': ' 'tolower($1)=="x-loom-deny-reason"{print $2}')"
+check "answered before the gateway's 2s extAuth timeout" yes "$(echo "$OUT" | sed -n 's/^time=//p' | awk '{print ($1 < 2.0) ? "yes" : "no"}')"
+wait "$LOCK"
+check "no reservation leaked after the timeout" "0|0|0" "$(q "select k.reserved || '|' || a.reserved || '|' || (select count(*) from reservations r where r.account_id = a.id) from accounts a join api_keys k on k.account_id = a.id where a.name = 'cache-sync'")"
+check "requests succeed once the lock is gone" 200 "$(code -H "x-api-key: $SYNC_KEY" -H 'content-type: application/json' -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' $BASE/v1/chat/completions)"
+
+echo "### 18. 客户级限流：RPM / TPM / 并发，超限 429 rate_limited；被拒请求不占计数，TPM 按实际用量修正"
+THR_KEY=loom-throttle-00000000000000001
+# throttle_limits <account-limits> <key-limits>：经 seed 设置两级限流（seed 每次对齐限流并广播缓存失效）
+throttle_limits() {
+  printf 'accounts:\n  - name: throttle\n    rate_limits: %s\n    keys:\n      - name: default\n        plaintext: %s\n        rate_limits: %s\n' \
+    "$1" "$THR_KEY" "$2" | kubectl -n loom exec -i deploy/loom -- loom seed --config /etc/loom/config.yaml --file /dev/stdin >/dev/null
+  sleep 1
+}
+# fresh_window：离分钟窗口结束不足 20s 时等到下一个窗口，保证一组断言落在同一窗口内
+fresh_window() { s=$(date +%-S); [ "$s" -gt 40 ] && sleep $((61 - s)); true; }
+thr_chat() { curl -s -o /dev/null -D - -w 'code=%{http_code}\n' --max-time 30 -H "x-api-key: $THR_KEY" -H 'content-type: application/json' \
+  -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' "$BASE/v1/chat/completions" | tr -d '\r'; }
+thr_code()  { echo "$1" | sed -n 's/^code=//p'; }
+thr_head()  { echo "$1" | awk -F': ' -v h="$2" 'tolower($1)==h{print $2}'; }
+throttle_limits '{}' '{rpm: 2}'
+fresh_window
+check "rpm: 1st request" 200 "$(thr_code "$(thr_chat)")"
+check "rpm: 2nd request" 200 "$(thr_code "$(thr_chat)")"
+R=$(thr_chat)
+check "rpm: 3rd request → 429" 429 "$(thr_code "$R")"
+check "rpm: deny reason" rate_limited "$(thr_head "$R" x-loom-deny-reason)"
+check "rpm: which limit" api_key/rpm "$(thr_head "$R" x-loom-rate-limit)"
+check "rpm: retry-after within the window" yes "$(thr_head "$R" retry-after | awk '{print ($1 >= 1 && $1 <= 60) ? "yes" : "no"}')"
+
+throttle_limits '{}' '{tpm: 4000}'
+fresh_window
+# 每次准入按 2,048 token 估值计入，结算后修正为实际 1,500；不修正的话第 2 次就会超过 4,000
+check "tpm: 1st request" 200 "$(thr_code "$(thr_chat)")"
+sleep 1
+check "tpm: 2nd request fits after the correction" 200 "$(thr_code "$(thr_chat)")"
+sleep 1
+R=$(thr_chat)
+check "tpm: 3rd request → api_key/tpm" api_key/tpm "$(thr_head "$R" x-loom-rate-limit)"
+
+throttle_limits '{max_concurrency: 2}' '{}'
+for i in 1 2 3; do
+  curl -s -o /dev/null -w '%{http_code}\n' --max-time 30 -H "x-api-key: $THR_KEY" -H 'content-type: application/json' \
+    -H 'x-mock-stream-chunks: 6' -H 'x-mock-stream-delay-ms: 300' \
+    -d '{"model":"lab-model","stream":true,"messages":[{"role":"user","content":"hi"}]}' "$BASE/v1/chat/completions" > "/tmp/loom-thr-$i" &
+  sleep 0.2
+done
+wait
+check "concurrency: 3 overlapping streams under max 2" "200 200 429" "$(cat /tmp/loom-thr-1 /tmp/loom-thr-2 /tmp/loom-thr-3 | sort | xargs)"
+sleep 1
+check "concurrency: slots are released after settlement" "0|0" "$(q "select k.in_flight || '|' || a.in_flight from accounts a join api_keys k on k.account_id = a.id where a.name = 'throttle'")"
+THR_REJECTED=$(for pod in $(kubectl -n loom get pods -l app=loom -o name); do kubectl -n loom exec "$pod" -- wget -qO- http://127.0.0.1:9090/metrics 2>/dev/null; done \
+  | awk '$1 == "loom_throttle_rejections_total{limit=\"concurrency\",scope=\"account\"}" {s += $2} END {print int(s)}')
+check "concurrency: rejections counted by scope" yes "$([ "$THR_REJECTED" -ge 1 ] && echo yes || echo no)"
+
+throttle_limits '{}' '{}'
+check "no limits → 200" 200 "$(thr_code "$(thr_chat)")"
+
+echo "### 19. 数据增长：按月分区、结算幂等表、日汇总（明细删除后汇总仍在）、准入审计聚合"
+AHEAD=$(date -u -d "$(date -u +%Y-%m-01) +3 month" +y%Ym%m)
+check "usage_events partitioned 3 months ahead" t "$(q "select to_regclass('usage_events_$AHEAD') is not null")"
+check "auth_audit partitioned 3 months ahead" t "$(q "select to_regclass('auth_audit_$AHEAD') is not null")"
+check "settlements are recorded for idempotency" t "$(q "select count(*) > 0 from settled_requests where settled_at > now() - interval '1 hour'")"
+
+PROBE_KEY=loom-retention-probe-0000000001
+printf 'accounts:\n  - name: retention-probe\n    keys:\n      - name: default\n        plaintext: %s\n' "$PROBE_KEY" \
+  | kubectl -n loom exec -i deploy/loom -- loom seed --config /etc/loom/config.yaml --file /dev/stdin >/dev/null
+PROBE_AID=$(q "select id from accounts where name = 'retention-probe'")
+PROBE_KID=$(q "select id from api_keys where account_id = '$PROBE_AID'")
+q "delete from usage_daily where account_id = '$PROBE_AID'" >/dev/null
+q "delete from usage_events where account_id = '$PROBE_AID'" >/dev/null
+# 昨天（UTC）的一条明细：每轮维护都会重算水位线前一天，立即执行一轮即可汇总进 usage_daily
+q "insert into usage_events (time, request_id, account_id, key_id, model, input_tokens, output_tokens, cost_nanos, settled)
+   values (date_trunc('day', now() at time zone 'utc') at time zone 'utc' - interval '12 hours',
+           'retention-probe-' || extract(epoch from now())::bigint, '$PROBE_AID', '$PROBE_KID', 'lab-model', 10, 5, 777, true)" >/dev/null
+MAINT=$(admin_post /v1/admin/maintenance '{}')
+check "on-demand maintenance: rollup" ok "$(echo "$MAINT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tasks"]["rollup"])')"
+check "on-demand maintenance: partitions" ok "$(echo "$MAINT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tasks"]["partitions"])')"
+check "yesterday rolled up into usage_daily" 777 "$(q "select cost_nanos from usage_daily where account_id = '$PROBE_AID' and day = (now() at time zone 'utc')::date - 1")"
+probe_cost() { admin "/v1/usage/summary?account_id=$PROBE_AID" | python3 -c 'import json,sys; print(json.load(sys.stdin)["total"]["cost_nanos"])'; }
+check "summary before details are pruned" 777 "$(probe_cost)"
+q "delete from usage_events where account_id = '$PROBE_AID'" >/dev/null
+check "summary after details are pruned (served by usage_daily)" 777 "$(probe_cost)"
+
+# 未识别出 Key 的拒绝按分钟聚合成一行；等这一分钟结束、写入协程刷新后再查
+fresh_window
+for i in $(seq 1 20); do curl -s -o /dev/null --max-time 5 -H "x-api-key: flood-xyz-$i-unknown-key" "$BASE/echo"; done
+sleep $((62 - $(date +%-S)))
+# 每个副本各自聚合：一分钟内最多“副本数”行，合计仍是 20
+REPLICAS=$(kubectl -n loom get deploy loom -o jsonpath='{.spec.replicas}')
+check "20 unknown-key denials folded into at most one row per replica" "yes|20" "$(q "select (count(*) <= $REPLICAS)::text || '|' || coalesce(sum(count), 0) from auth_audit where credential_preview = 'flood-xy' and time > now() - interval '5 minutes'" | sed 's/^true/yes/; s/^false/no/')"
+
+echo "### 20. FailClosed：loom 副本缩到 0 → 拒绝；恢复 → 放行"
   kubectl -n loom scale deploy/loom --replicas=0 >/dev/null
   sleep 8
   C=$(code -H "x-api-key: $(key dave)" $BASE/echo)

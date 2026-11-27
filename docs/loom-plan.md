@@ -498,8 +498,8 @@ kubectl -n agentgateway get deploy           # 预期 controller 仍 1/1
 
 - [ ] loom 启动及每次热加载时，把 `RenderCatalog(spec)` 与挂载进来的 `loom-catalog` 逐模型比对，不一致则设置指标 `loom_catalog_drift{model}` = 1 并打 WARN 日志；需要把 `loom-catalog` 以只读方式挂进 loom Pod。
 - [ ] `deploy/smoke.sh` 增加一项：对比 `kubectl get configmap loom-pricing` 的 sha256 与 `loom-pricing` 注解，以及 `loom-catalog` 与本地 `render-catalog` 输出是否一致。
-- [ ] PrometheusRule：`loom_catalog_drift > 0` 持续 5 分钟告警；`loom_cost_mismatch_total` 增长率 > 0 告警（当前指标只在 `group_ratio = 1` 的账户上比较，告警文案需说明）。
-- [ ] 为 `loom_cost_mismatch_total` 增加按 `pricing_source` 的拆分，区分「ConfigMap 漂移」与「PG 兜底模型本来就不在 catalog 里」两类情况。
+- [ ] PrometheusRule：`loom_catalog_drift > 0` 持续 5 分钟告警；`loom_ledger_cost_mismatch_total` 增长率 > 0 告警（对账前网关金额已乘账户分组倍率，覆盖所有分组）。
+- [ ] 为 `loom_ledger_cost_mismatch_total` 增加按 `pricing_source` 的拆分，区分「ConfigMap 漂移」与「PG 兜底模型本来就不在 catalog 里」两类情况。
 
 ## 十五、TODO：记账单位从 USD 改为 credit
 
@@ -514,7 +514,7 @@ kubectl -n agentgateway get deploy           # 预期 controller 仍 1/1
 | 预扣 1024/1024 | `3,072,000` | `1,536,000` |
 | 按次 `model_price` | USD / 次 | credit / 次 |
 
-- [ ] `pkg/loom`：`NanoUSDPerUSD` → `NanoPerCredit`（仍为 `1e9`），`RatioBaseNanoPerToken` `2000` → `1000`；全仓库文案与字段注释从 USD 改为 credit（`*_nanos` 字段名可保留）。
+- [ ] `internal/pricing`：`NanosPerUSD` → `NanosPerCredit`（仍为 `1e9`），`nanosPerRatioToken` `2000` → `1000`；全仓库文案与字段注释从 USD 改为 credit（`*_nanos` 字段名可保留）。
 - [ ] 管理 API 响应增加 `credits`（`nanos / 1e9`）便于阅读；`x-loom-quota-remaining` 头仍用 nano 整数。
 - [ ] `render-catalog`（若保留网关 `modelCatalog`）需要 `credit_usd_price` 配置把 credit 换算成网关认的 `$/1M`；若按 14.1 方案 A 去掉 `modelCatalog`，此项作废。
 - [ ] `configs/seed.yaml`、`deploy/smoke.sh` 的期望值按上表重算（alice 额度、erin 并发、vera 分组、lab-image 按次）。
@@ -530,3 +530,167 @@ OTLP access log 是遥测链路（批量、可丢），不适合做账本的数�
 - OTLP 保留为补账：同一 `request_id` 先到先结算；后到者只补写 `gateway_cost_nanos` 用于对账（`loom_usage_settled_total{channel,inserted}`）。
 - 源码确认的边界：amend 由 `tokio::spawn` 发出且忽略结果，无重试；流式响应由 `AmendOnDrop` 保证客户端断连也会上报。纯 HTTP 路由（按次计费）没有 `llm.*`，仍只走 OTLP。
 - 验收：`deploy/smoke.sh` 83 项全绿，新增 RLS 同步入库（≤1s）、单通道独立性、双通道幂等与网关金额补写。并发预扣用例因同步结算释放预扣更快，断言改为「不超额且每笔金额正确」。
+
+## 十七、实施结果：按能力分包与端口收敛（2026-11-26）
+
+- 包结构：`auth / quota / billing / admin / server / cache / pkg/loom` 重组为 `admission`（准入）、`ledger`（预扣 / 结算 / 过期释放）、`pricing`、`account`（管理操作）、`transport/{extauth,ratelimit,otlp,adminapi}`（协议适配）、`app`（装配与生命周期）；业务包只依赖自己声明的窄接口。术语见 `apps/loom/GLOSSARY.md`。
+- 端口：6 个收敛为 2 个——`8080` 数据面（h2c，gRPC 与 HTTP 按 Content-Type 分流，仅供网关）、`9090` 运维面（管理 API、指标、探针、pprof）。网关策略的 `backendRef` 全部指向 `loom:8080`。
+- 修复的问题：管理 API 参数错误返回 500（改为 400/404/409）；memstore 账户重名返回 NotFound；`loom_pg_pool_acquires_total` 从未递增（改为读取 pgxpool 实时统计）；环境变量映射无法覆盖带下划线的键；`SetAccountQuota` / `SetKeyQuota` 清预扣与改额度不在同一事务。
+- 数据库：迁移 `0002` 删除 `auth_audit.status`（可由 reason 推出）、`source` 改名 `protocol`。
+- 指标统一按能力命名：`loom_admission_*`、`loom_ledger_*`、`loom_pricing_*`、`loom_ratelimit_*`、`loom_otlp_*`、`loom_store_*`。
+- 质量门：`make test`（`-race`）、`make lint`（golangci-lint v2，0 issues）、staticcheck、deadcode 清零；非生成代码行宽 ≤ 120。
+- 验收：滚动升级与 `--fresh` 清库重建两条路径，`deploy/smoke.sh` 均为 `PASS=82 FAIL=0`（指标清单合并掉重复的 `loom_usage_events_ingested_total`，其余 70 项检查不变）。
+
+## 十八、实施结果：计价口径、分组与账单快照（2026-11-27）
+
+- 取值口径与 one-api / new-api 对齐：`pricing.yaml`、PG `model_pricing`、管理 API `PUT /v1/pricing/:model` 中，倍率与 `model_price` 未填写取默认值，`0` 表示免费（免费请求不预扣），负数让配置加载失败或返回 `400`。`UnitPrice` 用 `PerCall` 显式标记按次计费，`model_price: 0` 表示按次免费。
+- 分组：`default` 分组总是存在；新增 `defaults.unknown_group: deny | default`（与 `unknown_model` 共用 `UnknownPolicy`，默认 `deny`）。账户分组在管理 API 与 `seed` 写入时校验；准入时未定义的分组返回 `403 group_not_priced`；结算时遇到已被删除的分组按 `default` 分组结算。
+- `cost_source: gateway_prefer` 改为网关金额 × 分组倍率；对账同样先乘分组倍率，`loom_ledger_cost_mismatch_total` 不再跳过非 `default` 分组。
+- 精度：单 token 单价保留小数（`float64`），整笔请求算完只取整一次，预扣同理。
+- 账单快照：迁移 `0003` 为 `usage_events` 增加 `pricing_group`、`group_ratio`、`model_ratio`、`completion_ratio`、`cache_ratio`、`model_price`（`store.PricingSnapshot`），模型未定价时为 `NULL`。
+- 缓存：账户更新后清理当前副本的准入缓存（API Key 带账户快照）与结算归属缓存（`account.CacheInvalidator`），其他副本仍依赖 TTL，见 19.8。
+- 工程：命名按领域统一（`APIKey`、`UnitPrice`、`PriceTable`、`ModelRate`、`ReservationHold`、`UsageReport`、`AgentGateway*`），golangci-lint 规则扩充为 40 个、版本固定为 `v2.15.0`，CLI 的配置加载统一在根命令 `PersistentPreRunE`。
+- 验收：滚动升级（自动执行迁移 `0003`）与 `--fresh` 清库重建两条路径，`deploy/smoke.sh` 均为 `PASS=84 FAIL=0`（新增账单快照与管理 API 拒绝未定义分组两项）。
+
+## 十九、生产化路线
+
+前提：loom 以开源 + 咨询为主、自用为主。PG 不可用时准入全部拒绝（extAuth 保持 `FailClosed`）；商业化外围（门户、充值、发票）只保证扩展性，不实现；合规由运营方自行解决，不在本路线范围；计费漏洞类问题（流式断开、透支、双通道丢失）后续参考 new-api 处理。
+
+### 19.1 推进顺序
+
+| 阶段 | 内容 | 依赖 |
+| --- | --- | --- |
+| A 先测量 | 压测基线、AgentGateway 契约测试、告警与看板 | 无 |
+| B 地基 | 存储一致性测试与驱动配置、跨副本缓存失效、管理面加固、上游报错时立即释放预扣 | 无 |
+| C 可用性 | CloudNativePG 清单与备份恢复演练、云 PG 兼容、Pod 反亲和、超时预算 | B |
+| D 性能与限流 | 合并 SQL 往返、准入限流、按压测结果决定是否做额度租约 | A |
+| E 数据增长 | 拆出幂等表、按月分区、保留期清理、日汇总表 | B |
+
+### 19.2 阶段 A：先测量
+
+- [x] 压测：`deploy/bench.sh`（压测程序 `cmd/loom-bench`）经网关跑完整链路（准入 → mock 上游 → amend 结算），按并发分档记录端到端延迟、loom 准入耗时（`loom_admission_duration_seconds` 改为亚毫秒级桶）与每请求的 PG 写入。
+- [x] AgentGateway 契约测试：`deploy/contract.sh` 覆盖正常、流式、上游 `503` / `400`、流式上游报错、客户端在结束 chunk 前断开 6 个场景，断言返回码、用量记录、金额、预扣释放与完成结算的通道（30 项）；`loom-mock` 通过请求头 `x-mock-status`、`x-mock-stream-chunks`、`x-mock-stream-delay-ms` 模拟异常。
+- [x] 告警：`deploy/monitoring/loom-alerts.yaml`（11 条，覆盖可用性、PG、准入延迟与拒绝率、结算失败、预扣过期、OTLP 丢弃、对账不一致、价目热加载失败）；`deploy/monitoring/check.sh` 用 `promtool` 校验，并在 kind 中部署可选的最小 Prometheus（`deploy/monitoring/prometheus.yaml`）验证规则加载、指标存在与告警进入 `pending`（15 项）。标签取值固定的计数器（`loom_ledger_settle_errors_total{channel}`、`loom_pricing_reloads_total{result}`）启动时预建 0 值序列。
+- [ ] 看板：Grafana 面板待有 Grafana 的环境再补。
+
+压测基线（2026-11-27，st2-aii 单机 16 核，kind 中网关、loom 2 副本、PG 单实例与压测程序同机，mock 上游即时返回；数值只用于前后对比）：
+
+| 场景 | 吞吐上限 | 端到端 p99（并发 8 / 32 / 64） | 准入 p99 上界（并发 8 / 32 / 64） |
+| --- | --- | --- | --- |
+| 单账户（1 个 Key） | 约 `800 rps` | `35` / `135` / `197` ms | `50` / `250` / `250` ms |
+| 16 个账户轮询 | 约 `2,500 rps` | `29` / `53` / `73` ms | `25` / `50` / `100` ms |
+
+- 并发 1 时两种场景都是约 `510 rps`、端到端 p50 `1.9 ms`、准入 ≤ `2 ms`。
+- 每个模型请求约 `5`～`7` 个 PG 事务、`8`～`11` 行写入（含 OTLP 补账与准入审计）。
+- 单账户吞吐只有多账户的三分之一，随并发上升的延迟主要在准入阶段，即账户行锁排队，对应 19.5。
+- `2,500 rps` 时 OTLP 补账队列丢弃约一半上报；正常请求由 RLS 结算不受影响，但上游报错请求的预扣释放依赖 OTLP，见 19.9。
+- 无效 Key 请求可达约 `18,800 rps`、准入 ≤ `0.5 ms`（负缓存生效），但每个被拒请求写一行 `auth_audit`，见 19.10。
+
+### 19.3 可用性
+
+- [x] PG 形态：`deploy/deploy.sh --pg single|cnpg`，不指定时沿用集群现有形态。`cnpg` 为 CloudNativePG `1.30.2` 集群 `loom-pg`：PostgreSQL 18 一主两从，`ANY 1` 法定人数同步复制（`dataDurability: preferred`，从库全部不可用时降级为异步），loom 连 `loom-pg-rw`；Barman Cloud 插件 `v0.16.0`（依赖 cert-manager `v1.20.5`）向对象存储持续归档 WAL 并每日基础备份，保留 7 天。平台组件由 `deploy/cnpg/install.sh` 安装一次；7 个镜像已归档到网盘 `bd://deploy/images/`（`manifest.tsv` 含 digest 与 SHA-256），宿主机拉取 ghcr.io 超时时离线导入。也允许直接使用云厂商 PG，只改 DSN。在 `cnpg` 形态下 smoke `104` 项、契约 `30` 项、store 一致性 `15` 组、监控 `16` 项全部通过。
+- [x] 故障切换演练（`deploy/cnpg/drill.sh failover|switchover`，4 路并发持续请求中删除主库 Pod）：
+
+| 场景 | 提升新主库 | 错误窗口 | 失败请求 | 账本校验 |
+|------|-----------|---------|---------|---------|
+| 强制删除（模拟节点宕机） | `20.4 s` | `20.7 s` | `65 / 8,064`，均为 `500 internal_error` | 通过 |
+| 正常删除（模拟滚动升级、节点排空） | `18.1 s` | `9.4 s` | `40 / 13,451` | 通过 |
+
+账本校验：每个成功请求恰好一条用量记录，`quota_used` 等于已结算用量之和，`reserved` 等于未结算预扣之和，无残留预扣。演练中的三个发现均已处理：
+
+1. 强制删除时约 `16 s` 花在等待旧主库的 Kubernetes 租约过期（`primaryLease.leaseDurationSeconds` 默认 `15`），这是防脑裂的必要代价，保持默认。
+2. 正常删除时 smart shutdown 会等所有客户端断开，而 loom 的连接池与 `LISTEN` 长连接不会主动断开，默认 `smartShutdownTimeout: 180` 使切换拖到 `185 s`；改为 `15` 后为 `18 s`。
+3. 提交结果未知：预扣事务已在 PG 提交，但确认返回前准入截止时间已到，请求被拒绝而预扣留存，额度冻结到 `reservation_ttl`（`15 min`）。现在 `inTx` 把提交阶段的非服务端错误标记为 `store.ErrCommitOutcomeUnknown`，账本据此在后台按 `request_id` 幂等释放（`ReleaseReservation`，最长重试 `30 s` 以覆盖故障切换）；演练中补偿释放 `2` 笔，无残留。新增指标 `loom_ledger_reserve_compensations_total{result}` 与告警 `LoomReserveCompensationFailed`（共 13 条）。
+
+- [x] 备份恢复演练（`deploy/cnpg/drill.sh restore`）：按需基础备份 `10 s`（ObjectStore 开启 `immediateCheckpoint`，否则要等下一次定时检查点，实测 `246 s`）；在目标时间点前后各写一个标记账户，按时间点恢复到独立集群 `loom-pg-restore` 用时 `50 s`，前一个标记存在、后一个不存在，账户数与源库在目标时间点一致。
+- [x] loom 部署：`topologySpreadConstraints` 按节点打散；保留现有 PDB 与 `/readyz`（PG 不可用时摘除流量）。PG 实例开启 Pod 反亲和（演练集群只有一个节点，用 `preferred`；生产多节点改为 `required`）。
+- [x] 超时预算：AgentGateway 对 extAuth 默认 `2s` 超时（`BackendRequestTimeout`）；loom 准入截止时间 `admission.timeout` 默认 `1500ms`，到期按 `500 internal_error` 拒绝并释放 PG 连接。
+- [x] 预扣原子化：两级预扣与预扣记录合为一个事务（`ReserveQuota`，一条数据修改 CTE，任一级不满足时回滚）。修复前实测：PG 行锁使准入拖到网关 `2s` 超时，被取消的账户级预扣之后，API Key 级预扣的补偿撤销也因 context 已取消而失败，`3,072,000` nano 永久冻结（此时尚无预扣记录，reaper 无法释放）。`deploy/smoke.sh` 第 17 节在行锁下验证 `<2s` 返回 `500 internal_error` 且无残留冻结；store 一致性用例增加"两级预扣全有或全无"（含已取消的 context）。
+
+### 19.4 存储可替换性（云 PG 与 MySQL）
+
+- [x] 存储一致性测试：`internal/store/storetest` 的 22 组用例（账户与 API Key、条件预扣、两级预扣全有或全无、按请求释放预扣、限流配置读写、并发上限、额度重置两级一致、RPM / TPM 计数、结算幂等与冲正、过期释放、用量与计价快照、准入审计、兜底定价、额度变更流水、管理 token 与审计、幂等记录保留期、审计聚合行与清理、日汇总在明细删除后仍覆盖），`memstore` 在 `go test` 中运行，`postgres` 经 `deploy/conformance.sh` 在 st2-aii 的真实 PG 上（每次重建独立库 `loom_conformance`）运行，两者均通过；新增驱动以通过该测试为准入条件。统一后的语义：预扣金额大于 0 时，不存在的 API Key / 账户返回 `ErrInsufficientQuota`。限流的两个 PG 专有缺陷（在事务内读到本次未生效的递增、upsert 的 `EXCLUDED` 只能拿到截断后的值导致 TPM 负修正丢失）都是这套用例在真实 PG 上发现的，memstore 测不出来。
+- [x] 配置 `store.driver`（当前只接受 `postgres`，其他值在配置校验阶段报错）。
+- [x] `LISTEN` 使用可单独配置的直连 DSN（`postgres.listen_dsn`，为空时与主 DSN 相同），无法直连时退回 TTL 失效。
+- [ ] 连接经过事务模式连接池（PgBouncer 等）时，提供配置切换为简单查询协议。
+- [ ] PG 专有能力只出现在 `postgres` 实现内部，不改变 `store.Store` 方法语义：`RETURNING` / `ON CONFLICT`、带写操作的 CTE、`FOR UPDATE SKIP LOCKED`、`LISTEN` / `NOTIFY`、advisory lock、原生分区。MySQL 实现以多语句事务、`ON DUPLICATE KEY`、`GET_LOCK` 与轮询替代。
+
+### 19.5 性能
+
+- [x] 合并往返：准入的两级预扣与预扣记录合为一条 SQL（见 19.3）。复测：每请求 PG 事务数在 16 账户、并发 `8` / `32` / `64` 时由 `5.9` / `4.9` / `4.7` 降至 `3.7` / `2.9` / `2.5`，吞吐 `2,287` / `2,536` / `2,544 rps`（基线 `2,097` / `2,453` / `2,502`），并发 64 的 p99 由 `73 ms` 降至 `66 ms`；单账户吞吐仍约 `750`～`840 rps`，瓶颈是同一账户行的锁排队而不是往返次数。
+- [ ] 额度租约（视压测结果）：每个副本向 PG 预领一段账户额度在内存扣减，用完再领、结算批量落库，用于缓解大账户的行锁热点。
+
+### 19.6 限流
+
+本地计数（网关本地限流、loom 内存计数）的实际上限等于单实例上限 × 实例数，扩缩容后无法预估，因此限流计数必须放在共享存储中。
+
+- [x] 判定位置：在准入阶段（extAuth）完成，超限返回 `429 rate_limited`，响应头 `x-loom-rate-limit`（如 `account/rpm`）指出层级与限流项，`Retry-After` 给出重试等待（RPM / TPM 到窗口结束，并发 1 秒）；错误体 `type` 为 `rate_limit_error`。顺序为定价之后、预扣之前；随后被额度或并发拒绝时退回已计入的 RPM / TPM。
+- [x] 计数后端：`internal/throttle` 定义 `Counter` 接口，第一版由 `store.Store` 的 PG 计数表 `rate_counters (subject, window_start)` 实现（迁移 `0005_rate_limits.sql`），过期窗口每分钟清理。准入计数是一条自动提交的有序 upsert，超限时逐行撤销；撤销与结算修正都是单行语句。初版用显式事务、修正一次更新两行，压测中与准入计数死锁，且热点行的锁跨 BEGIN / COMMIT 往返持有，单账户吞吐跌到约 `20 rps`，已按上述方式改正。
+- [x] 配置：API Key 与账户上配置 `rate_limits {rpm, tpm, max_concurrency}`（管理 API、seed），未配置表示不限、配置值必须大于 0；账户未配置的项取 `pricing.yaml` 中所属分组的 `limits`，API Key 级不继承分组默认值。只有配置了 TPM 的层级才计 token，避免窗口中途开启 TPM 时带着未修正的估值起步。
+- [ ] 网关本地限流只作为保护上游的安全阀（按上游总容量 ÷ 网关最大副本数取保守值），不用于客户级限额。
+
+| 维度 | 实现 | 误差 |
+| --- | --- | --- |
+| RPM | PG 计数器，分钟窗口（需要更平滑时用双窗口加权） | 固定窗口边界处最多 2 倍，与副本数无关 |
+| TPM | 准入时按 `reserve_tokens` 预估计入，结算时按实际 token 修正 | 限于预估与实际的差值，与副本数无关 |
+| 并发数 | `api_keys` / `accounts` 的 `in_flight` 列与 `reserved` 在同一条预扣 UPDATE 中条件递增；免费请求也写预扣记录 | 精确，结算、补偿或过期释放时递减 |
+
+验证：smoke 第 18 节（RPM 第 3 次 `429 api_key/rpm`；TPM 上限 4,000、每次估值 2,048、实际 1,500，第 2 次因结算修正得以放行、第 3 次 `429 api_key/tpm`；账户并发 2 时 3 路重叠流式请求为 `200 200 429`，结束后 `in_flight` 归零）；store 一致性新增 4 组（共 19 组）。
+
+开销（st2-aii，CloudNativePG 同步复制，限额设得足够大、不触发拒绝，两级都配 RPM / TPM / 并发）：
+
+| 场景 | 不限流 rps | 开启限流 rps | 每请求 PG 事务数 |
+| --- | --- | --- | --- |
+| 单账户，并发 8 / 32 / 64 | `338` / `531` / `537` | `246` / `272` / `293` | `3.8`～`6.9` → `6.6`～`10.0` |
+| 16 账户，并发 8 / 32 / 64 | `2,194` / `2,400` / `2,377` | `1,274` / `1,948` / `1,892` | `2.3`～`2.9` → `5.4`～`6.4` |
+
+多出的 PG 语句是每次准入 1 条计数、每次结算 2 条 TPM 修正（两级各一条）。单账户下账户计数行与账户额度行是两个热点，吞吐约降一半；多账户约降 20%，并发 64 的 p99 由 `65 ms` 到 `73 ms`。不配限额的账户没有任何额外开销。另：同步复制使单账户基线（约 `530 rps`）低于单实例 PG 时的约 `800 rps`。单账户若需要更高吞吐，下一步是额度与计数租约（19.5），或把计数后端换成 Redis（实现 `throttle.Counter` 即可）。
+
+### 19.7 管理面安全
+
+- [x] 管理 token（`internal/operator`，表 `admin_tokens`）：配置中的 `admin.token` 为引导 token（`write`）；其余 token 经 `POST /v1/admin/tokens` 签发，库中只存哈希，分 `read` / `write` 两种角色，`DELETE /v1/admin/tokens/:id` 吊销后立即生效（认证不缓存）。OIDC 暂不接入。
+- [x] 管理操作审计（表 `admin_audit`，`GET /v1/admin/audit`）：每个写请求记录操作者、方法、路由、目标、脱敏后的请求体与响应码。
+- [x] 额度变更流水（表 `quota_adjustments`，`GET /v1/quota-adjustments`）：`TopUp`、`ResetAccountQuota`、`ResetAPIKeyQuota` 在同一事务中锁行读取变更前的值、修改额度并写入流水（操作者、变更前后的上限与已用量），作为以后充值、退款、对账的基础。
+- [x] pprof 默认关闭（`server.pprof`），开启后挂在管理 API 认证之后，需要 `read` 角色。
+- [x] 验收：迁移 `0004` 在滚动升级中自动执行；`deploy/smoke.sh` 第 16 节验证读写角色、即时吊销、流水与审计中的操作者、pprof 默认关闭（smoke 共 99 项）。
+- [ ] API Key 支持可选的 IP 白名单。
+
+### 19.8 多副本一致性
+
+- [x] `internal/cachesync`：管理操作（含 `seed`）写入成功后，先清理本副本缓存，再经 `Broadcast` 接口广播；PG 实现用 `LISTEN` / `NOTIFY`（频道 `loom_invalidate`，载荷 `{kind, id, origin}`，忽略自己发出的消息），覆盖 API Key、账户与兜底价格三类缓存。监听连接断开后指数退避重连（`1s`～`30s`），断开期间退回 TTL（准入 `5s`、结算归属 `60s`、兜底价格 `30s`）。指标 `loom_cache_invalidations_total{kind,origin}`、`loom_cache_sync_reconnects_total`，告警 `LoomCacheSyncReconnecting`。
+- [x] 验收：`deploy/smoke.sh` 第 15 节在 2 副本上只经一个副本停用 Key，紧接着的 10 个请求全部 `403`，发起副本记 1 次 `local`、另一副本记 1 次 `remote`。
+
+### 19.9 上游依赖（AgentGateway）
+
+- [ ] 部署清单固定 AgentGateway 版本，升级前跑 19.2 的契约测试。
+- [ ] 在运维手册中列出依赖的网关行为及源码出处（`crates/agentgateway/src/llm/mod.rs`、`http/remoteratelimit.rs`）。
+- [x] 上游报错与客户端中途断开不依赖 OTLP：契约测试实测，这两类请求的 RLS amend 用量全为 `0`，loom 视同请求阶段忽略，由 OTLP 在 `1`～`2` s 内结算为 `0` 并释放预扣；OTLP 丢失时预扣冻结到 `reservation_ttl`（`15m`），而压测中高负载下 OTLP 会大量丢弃。已实施：网关策略增加 `kind=completion`、`cost: '1'` 的描述符，amend 时必然非 0，loom 据此由 RLS 立即按实际用量（失败时为 `0`）结算；契约测试中上游报错与客户端断开 4 个场景均由 `rls` 结算。
+
+### 19.10 数据增长
+
+- [x] 幂等改造：新表 `settled_requests (request_id PK, usage_time, settled_at)` 承担结算幂等，结算时先登记再写明细（一条 CTE）；`usage_time` 用于补写网关金额时定位分区（执行期剪枝）。超出保留期（默认 7 天）的重复上报不再能识别，保留期须大于 OTLP 补账的最大延迟。
+- [x] 按月分区：`usage_events`、`auth_audit` 改为 `PARTITION BY RANGE (time)`，主键 `(id, time)`；分区由迁移中的 PL/pgSQL 函数 `loom_ensure_month_partitions` / `loom_drop_month_partitions` 建与删（PG 专有能力只在 `postgres` 实现内部），删除时当月及以后的分区永不删除。迁移 `0006_data_growth.sql` 把现有数据复制进分区表：st2-aii 上约 31 万 × 2 行用时约 20 秒，回滚约 12 秒，均在真实数据副本上演练过。超期明细导出到对象存储（Parquet）暂未实现。
+- [x] 保留期清理：`internal/maintenance` 每 `retention.interval`（默认 10 分钟）按顺序执行建分区（提前 3 个月）→ 日汇总 → 删过期明细 → 删过期审计 → 清理幂等记录；多副本时每个任务用 `pg_try_advisory_xact_lock` 保证只有一个副本执行，其余记为 `skipped`。明细只删除已汇总过的部分（截止时间取保留期与汇总水位线中较早者），首次汇总覆盖全部历史明细。`POST /v1/admin/maintenance`（write 角色）可立即执行一轮。指标 `loom_maintenance_runs_total{task,result}`、`loom_maintenance_last_success_timestamp_seconds{task}`，告警 `LoomMaintenanceFailing`、`LoomMaintenanceStale`（共 15 条）。
+- [x] 日汇总表 `usage_daily (day, account_id, key_id, model)` 永久保留；汇总接口改为“水位线之前查 `usage_daily`（`since` 按 UTC 日对齐），之后查明细”，汇总滞后也不漏数；每轮重算水位线前一天以吸收迟到的结算与补写。结算时间与当前时刻相差超过 1 小时（或超前 5 分钟）时按结算时刻记账，避免落进已汇总、不再重算的日子或不存在的分区。
+- [x] 准入审计降噪：未识别出 Key 的拒绝（缺凭据、未知 Key、查 Key 出错）按“分钟 + 原因 + 凭据前 8 位 + 协议”在各副本内存中聚合成一行（`auth_audit.count`、`credential_preview`），每分钟最多 100 组，其余并入 `*` 溢出组；无效 Key 洪水因此最多放大为每副本每分钟 101 行。指标 `loom_audit_aggregated_requests_total`。
+
+验证：smoke 第 19 节（3 个月后的分区已建好；结算登记了幂等记录；昨天的一条明细经立即维护汇总进 `usage_daily`，删除明细后汇总接口仍返回 `777`；20 次未知 Key 请求合计 `count` 为 20、每个副本至多一行）；store 一致性新增 3 组（共 22 组）；维护任务单测覆盖“先汇总后清理”“未汇总不清理”“其他副本执行时记为 skipped”。真实 PG 发现并修复两个问题：分区名后缀少取了一位（`right(name, 7)`），解析出错误的年份，所有分区都会被当作过期删除；结算时间为零值时写成公元 1 年（旧表一直如此，分区表直接报错）。
+
+开销（st2-aii，16 账户）：吞吐由约 `2,400` 到约 `2,280 rps`（约 −4%），每请求多写 1 行（幂等记录）；单账户基本不变。
+
+| 数据 | 保留期 | 说明 |
+| --- | --- | --- |
+| `usage_events` | `180` 天 | 覆盖月度对账与争议期；每行含索引约 `0.5 KB`（估算），每日 100 万请求约 `0.5 GB/天` |
+| `usage_daily` | 永久 | 体积小，用于长期报表 |
+| `auth_audit` | `90` 天，可配置 | 由第三方对公众运营时按日志留存要求调为 `180` 天 |
+| 已结算请求表 | `7` 天 | 大于 OTLP 补账的最大延迟 |
+| `reservations` | 不设 | 结算或过期即删除 |
+| 管理操作审计、额度变更流水 | 永久 | 涉及资金，量小 |
+| 应用日志 | `30` 天 | 由集群日志系统管理 |
+
+### 19.11 商业化扩展点
+
+- [ ] 额度变更流水（见 19.7）作为充值、退款、对账的地基。
+- [ ] 金额统一经过一层单位换算，不在业务代码中写死 nano-USD，与第十五章 credit 方案衔接。
+- [ ] 管理 API 是唯一集成面：门户等外部系统只通过管理 API 读写，不直接访问数据库。
+- [ ] 结算成功后输出结构化事件（先写日志或 `NOTIFY`），以后接计费系统时不改账本。

@@ -6,6 +6,7 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -14,38 +15,75 @@ type Querier interface {
 	AddAccountQuotaLimit(ctx context.Context, arg AddAccountQuotaLimitParams) (Account, error)
 	AddAccountUsed(ctx context.Context, arg AddAccountUsedParams) error
 	AddKeyUsed(ctx context.Context, arg AddKeyUsedParams) error
+	AdjustRateTokens(ctx context.Context, arg AdjustRateTokensParams) (int64, error)
+	AdvanceUsageRollup(ctx context.Context, through time.Time) error
+	// 按 settled_requests 记下的 usage_time 定位分区（执行期剪枝）；超出幂等保留期的请求不再补写。
 	BackfillGatewayCost(ctx context.Context, arg BackfillGatewayCostParams) (int64, error)
 	CountReservations(ctx context.Context) (int64, error)
 	CreateAccount(ctx context.Context, arg CreateAccountParams) (Account, error)
+	CreateAdminToken(ctx context.Context, arg CreateAdminTokenParams) (AdminToken, error)
 	CreateKey(ctx context.Context, arg CreateKeyParams) (ApiKey, error)
-	CreateReservation(ctx context.Context, arg CreateReservationParams) error
-	DeleteAccountReservations(ctx context.Context, accountID uuid.UUID) (int64, error)
-	DeleteKeyReservations(ctx context.Context, keyID uuid.UUID) (int64, error)
+	// 以下单行语句各自自动提交、一次只锁一行，与按 subject 顺序加锁的 IncrementRateCounters 不会形成死锁。
+	DecrementRateCounter(ctx context.Context, arg DecrementRateCounterParams) error
+	// 删除一个账户的全部预扣，并从各 Key 扣回对应的 reserved 与 in_flight（账户自身由 SetAccountQuota 清零）。
+	DeleteAccountReservations(ctx context.Context, accountID uuid.UUID) error
+	// 删除一把 Key 的全部预扣，并从所属账户扣回对应的 reserved 与 in_flight（Key 自身由 SetKeyQuota 清零）。
+	DeleteKeyReservations(ctx context.Context, keyID uuid.UUID) error
 	DeleteModelPricing(ctx context.Context, model string) error
+	DeleteRateWindows(ctx context.Context, windowStart time.Time) (int64, error)
 	DeleteReservation(ctx context.Context, requestID string) error
+	DeleteSettledRequests(ctx context.Context, settledAt time.Time) (int64, error)
+	DropMonthPartitions(ctx context.Context, arg DropMonthPartitionsParams) (int32, error)
+	EnsureMonthPartitions(ctx context.Context, arg EnsureMonthPartitionsParams) (int32, error)
 	GetAccount(ctx context.Context, id uuid.UUID) (Account, error)
 	GetAccountByName(ctx context.Context, name string) (Account, error)
+	GetAdminTokenByHash(ctx context.Context, tokenHash string) (AdminToken, error)
+	// 预扣失败后区分原因：并发已满还是额度不足。
+	GetInFlight(ctx context.Context, arg GetInFlightParams) (GetInFlightRow, error)
 	GetKey(ctx context.Context, id uuid.UUID) (GetKeyRow, error)
 	GetKeyByHash(ctx context.Context, keyHash string) (GetKeyByHashRow, error)
 	GetModelPricing(ctx context.Context, model string) (ModelPricing, error)
 	GetReservation(ctx context.Context, requestID string) (Reservation, error)
+	GetUsageRollup(ctx context.Context) (time.Time, error)
+	// 当前窗口内每个计数对象请求数 +1、token 数 +tokens；按 subject 排序加锁。单条语句自动提交，
+	// 热点行的锁只在语句执行期间持有，不跨网络往返。
+	IncrementRateCounters(ctx context.Context, arg IncrementRateCountersParams) ([]IncrementRateCountersRow, error)
+	InsertAdminAudit(ctx context.Context, arg InsertAdminAuditParams) error
+	InsertQuotaAdjustment(ctx context.Context, arg InsertQuotaAdjustmentParams) error
+	// 窗口还不存在时为正的修正新建一行（与并发的新建冲突时累加）。
+	InsertRateTokens(ctx context.Context, arg InsertRateTokensParams) error
 	ListAccounts(ctx context.Context, lim int32) ([]Account, error)
+	ListAdminAudit(ctx context.Context, limit int32) ([]AdminAudit, error)
+	ListAdminTokens(ctx context.Context) ([]AdminToken, error)
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuthAudit, error)
 	ListKeys(ctx context.Context, arg ListKeysParams) ([]ListKeysRow, error)
 	ListModelPricing(ctx context.Context) ([]ModelPricing, error)
+	ListQuotaAdjustments(ctx context.Context, arg ListQuotaAdjustmentsParams) ([]QuotaAdjustment, error)
 	ListReservations(ctx context.Context, lim int32) ([]Reservation, error)
 	ListUsage(ctx context.Context, arg ListUsageParams) ([]UsageEvent, error)
+	LockAccountQuota(ctx context.Context, id uuid.UUID) (LockAccountQuotaRow, error)
 	LockExpiredReservations(ctx context.Context, arg LockExpiredReservationsParams) ([]Reservation, error)
+	LockKeyQuota(ctx context.Context, id uuid.UUID) (LockKeyQuotaRow, error)
+	LockReservation(ctx context.Context, requestID string) (Reservation, error)
 	ReleaseAccountReservation(ctx context.Context, arg ReleaseAccountReservationParams) error
 	ReleaseKeyReservation(ctx context.Context, arg ReleaseKeyReservationParams) error
-	ReserveAccountQuota(ctx context.Context, arg ReserveAccountQuotaParams) (ReserveAccountQuotaRow, error)
-	ReserveKeyQuota(ctx context.Context, arg ReserveKeyQuotaParams) (ReserveKeyQuotaRow, error)
+	// 一次往返完成两级预扣（额度与并发）与预扣记录。数据修改 CTE 的每个子语句都会执行：
+	// 任一级不满足时结果为空行，调用方必须回滚事务以撤销已执行的部分。
+	ReserveQuota(ctx context.Context, arg ReserveQuotaParams) (ReserveQuotaRow, error)
+	RevokeAdminToken(ctx context.Context, id uuid.UUID) (int64, error)
+	// 重算 [from_time, to_time) 内各 UTC 日的汇总（整日覆盖写入，可重复执行）。
+	RollupUsageDaily(ctx context.Context, arg RollupUsageDailyParams) error
 	SetAccountQuota(ctx context.Context, arg SetAccountQuotaParams) error
 	SetKeyQuota(ctx context.Context, arg SetKeyQuotaParams) error
 	SettleAccountQuota(ctx context.Context, arg SettleAccountQuotaParams) error
 	SettleKeyQuota(ctx context.Context, arg SettleKeyQuotaParams) error
+	// 幂等：先在 settled_requests 登记 request_id，主键冲突说明另一通道已结算；登记成功或没有 request_id 时才写明细。
 	SettleUsage(ctx context.Context, arg SettleUsageParams) (int64, error)
+	// 汇总水位线之前的日子查 usage_daily（since 早于水位线时按 UTC 日对齐），水位线之后查 usage_events 明细，
+	// 汇总任务滞后也不会漏数。
 	SummaryUsage(ctx context.Context, arg SummaryUsageParams) ([]SummaryUsageRow, error)
+	// 多副本时同一维护任务只由一个副本执行；事务结束自动释放。
+	TryMaintenanceLock(ctx context.Context, task string) (bool, error)
 	UpdateAccount(ctx context.Context, arg UpdateAccountParams) (Account, error)
 	UpdateKey(ctx context.Context, arg UpdateKeyParams) (ApiKey, error)
 	UpsertModelPricing(ctx context.Context, arg UpsertModelPricingParams) error

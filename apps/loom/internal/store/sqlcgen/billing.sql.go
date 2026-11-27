@@ -13,10 +13,42 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const adjustRateTokens = `-- name: AdjustRateTokens :execrows
+UPDATE rate_counters
+SET tokens = greatest(tokens + $1::bigint, 0)
+WHERE subject = $2 AND window_start = $3
+`
+
+type AdjustRateTokensParams struct {
+	Tokens      int64
+	Subject     uuid.UUID
+	WindowStart time.Time
+}
+
+func (q *Queries) AdjustRateTokens(ctx context.Context, arg AdjustRateTokensParams) (int64, error) {
+	result, err := q.db.Exec(ctx, adjustRateTokens, arg.Tokens, arg.Subject, arg.WindowStart)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const advanceUsageRollup = `-- name: AdvanceUsageRollup :exec
+INSERT INTO usage_rollup (singleton, through) VALUES (true, $1)
+ON CONFLICT (singleton) DO UPDATE SET through = greatest(usage_rollup.through, EXCLUDED.through)
+`
+
+func (q *Queries) AdvanceUsageRollup(ctx context.Context, through time.Time) error {
+	_, err := q.db.Exec(ctx, advanceUsageRollup, through)
+	return err
+}
+
 const backfillGatewayCost = `-- name: BackfillGatewayCost :execrows
 UPDATE usage_events
 SET gateway_cost_nanos = $2
-WHERE request_id = $1 AND gateway_cost_nanos IS NULL
+WHERE usage_events.request_id = $1
+  AND usage_events.gateway_cost_nanos IS NULL
+  AND usage_events.time = (SELECT s.usage_time FROM settled_requests s WHERE s.request_id = $1)
 `
 
 type BackfillGatewayCostParams struct {
@@ -24,6 +56,7 @@ type BackfillGatewayCostParams struct {
 	GatewayCostNanos *int64
 }
 
+// 按 settled_requests 记下的 usage_time 定位分区（执行期剪枝）；超出幂等保留期的请求不再补写。
 func (q *Queries) BackfillGatewayCost(ctx context.Context, arg BackfillGatewayCostParams) (int64, error) {
 	result, err := q.db.Exec(ctx, backfillGatewayCost, arg.RequestID, arg.GatewayCostNanos)
 	if err != nil {
@@ -43,29 +76,23 @@ func (q *Queries) CountReservations(ctx context.Context) (int64, error) {
 	return count, err
 }
 
-const createReservation = `-- name: CreateReservation :exec
-INSERT INTO reservations (request_id, key_id, account_id, model, nanos, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+const decrementRateCounter = `-- name: DecrementRateCounter :exec
+
+UPDATE rate_counters
+SET requests = greatest(requests - 1, 0),
+    tokens   = greatest(tokens - $1::bigint, 0)
+WHERE subject = $2 AND window_start = $3
 `
 
-type CreateReservationParams struct {
-	RequestID string
-	KeyID     uuid.UUID
-	AccountID uuid.UUID
-	Model     string
-	Nanos     int64
-	ExpiresAt time.Time
+type DecrementRateCounterParams struct {
+	Tokens      int64
+	Subject     uuid.UUID
+	WindowStart time.Time
 }
 
-func (q *Queries) CreateReservation(ctx context.Context, arg CreateReservationParams) error {
-	_, err := q.db.Exec(ctx, createReservation,
-		arg.RequestID,
-		arg.KeyID,
-		arg.AccountID,
-		arg.Model,
-		arg.Nanos,
-		arg.ExpiresAt,
-	)
+// 以下单行语句各自自动提交、一次只锁一行，与按 subject 顺序加锁的 IncrementRateCounters 不会形成死锁。
+func (q *Queries) DecrementRateCounter(ctx context.Context, arg DecrementRateCounterParams) error {
+	_, err := q.db.Exec(ctx, decrementRateCounter, arg.Tokens, arg.Subject, arg.WindowStart)
 	return err
 }
 
@@ -78,6 +105,18 @@ func (q *Queries) DeleteModelPricing(ctx context.Context, model string) error {
 	return err
 }
 
+const deleteRateWindows = `-- name: DeleteRateWindows :execrows
+DELETE FROM rate_counters WHERE window_start < $1
+`
+
+func (q *Queries) DeleteRateWindows(ctx context.Context, windowStart time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteRateWindows, windowStart)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteReservation = `-- name: DeleteReservation :exec
 DELETE FROM reservations WHERE request_id = $1
 `
@@ -85,6 +124,75 @@ DELETE FROM reservations WHERE request_id = $1
 func (q *Queries) DeleteReservation(ctx context.Context, requestID string) error {
 	_, err := q.db.Exec(ctx, deleteReservation, requestID)
 	return err
+}
+
+const deleteSettledRequests = `-- name: DeleteSettledRequests :execrows
+DELETE FROM settled_requests WHERE settled_at < $1
+`
+
+func (q *Queries) DeleteSettledRequests(ctx context.Context, settledAt time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteSettledRequests, settledAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const dropMonthPartitions = `-- name: DropMonthPartitions :one
+SELECT loom_drop_month_partitions($1::text, $2::timestamptz)::int AS dropped
+`
+
+type DropMonthPartitionsParams struct {
+	Parent string
+	Before time.Time
+}
+
+func (q *Queries) DropMonthPartitions(ctx context.Context, arg DropMonthPartitionsParams) (int32, error) {
+	row := q.db.QueryRow(ctx, dropMonthPartitions, arg.Parent, arg.Before)
+	var dropped int32
+	err := row.Scan(&dropped)
+	return dropped, err
+}
+
+const ensureMonthPartitions = `-- name: EnsureMonthPartitions :one
+SELECT loom_ensure_month_partitions($1::text, $2::timestamptz,
+                                    $3::timestamptz)::int AS created
+`
+
+type EnsureMonthPartitionsParams struct {
+	Parent     string
+	FirstMonth time.Time
+	LastMonth  time.Time
+}
+
+func (q *Queries) EnsureMonthPartitions(ctx context.Context, arg EnsureMonthPartitionsParams) (int32, error) {
+	row := q.db.QueryRow(ctx, ensureMonthPartitions, arg.Parent, arg.FirstMonth, arg.LastMonth)
+	var created int32
+	err := row.Scan(&created)
+	return created, err
+}
+
+const getInFlight = `-- name: GetInFlight :one
+SELECT (SELECT in_flight FROM api_keys WHERE api_keys.id = $1)::bigint     AS key_in_flight,
+       (SELECT in_flight FROM accounts WHERE accounts.id = $2)::bigint AS account_in_flight
+`
+
+type GetInFlightParams struct {
+	KeyID     uuid.UUID
+	AccountID uuid.UUID
+}
+
+type GetInFlightRow struct {
+	KeyInFlight     int64
+	AccountInFlight int64
+}
+
+// 预扣失败后区分原因：并发已满还是额度不足。
+func (q *Queries) GetInFlight(ctx context.Context, arg GetInFlightParams) (GetInFlightRow, error) {
+	row := q.db.QueryRow(ctx, getInFlight, arg.KeyID, arg.AccountID)
+	var i GetInFlightRow
+	err := row.Scan(&i.KeyInFlight, &i.AccountInFlight)
+	return i, err
 }
 
 const getModelPricing = `-- name: GetModelPricing :one
@@ -127,8 +235,97 @@ func (q *Queries) GetReservation(ctx context.Context, requestID string) (Reserva
 	return i, err
 }
 
+const getUsageRollup = `-- name: GetUsageRollup :one
+SELECT through FROM usage_rollup
+`
+
+func (q *Queries) GetUsageRollup(ctx context.Context) (time.Time, error) {
+	row := q.db.QueryRow(ctx, getUsageRollup)
+	var through time.Time
+	err := row.Scan(&through)
+	return through, err
+}
+
+const incrementRateCounters = `-- name: IncrementRateCounters :many
+INSERT INTO rate_counters (subject, window_start, scope, requests, tokens)
+SELECT c.subject, $1, c.scope, 1, c.tokens
+FROM (SELECT unnest($2::uuid[]) AS subject,
+             unnest($3::text[])   AS scope,
+             unnest($4::bigint[]) AS tokens) AS c
+ORDER BY c.subject
+ON CONFLICT (subject, window_start) DO UPDATE
+SET requests = rate_counters.requests + 1,
+    tokens   = rate_counters.tokens + EXCLUDED.tokens
+RETURNING subject, requests, tokens
+`
+
+type IncrementRateCountersParams struct {
+	WindowStart time.Time
+	Subjects    []uuid.UUID
+	Scopes      []string
+	Tokens      []int64
+}
+
+type IncrementRateCountersRow struct {
+	Subject  uuid.UUID
+	Requests int64
+	Tokens   int64
+}
+
+// 当前窗口内每个计数对象请求数 +1、token 数 +tokens；按 subject 排序加锁。单条语句自动提交，
+// 热点行的锁只在语句执行期间持有，不跨网络往返。
+func (q *Queries) IncrementRateCounters(ctx context.Context, arg IncrementRateCountersParams) ([]IncrementRateCountersRow, error) {
+	rows, err := q.db.Query(ctx, incrementRateCounters,
+		arg.WindowStart,
+		arg.Subjects,
+		arg.Scopes,
+		arg.Tokens,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []IncrementRateCountersRow
+	for rows.Next() {
+		var i IncrementRateCountersRow
+		if err := rows.Scan(&i.Subject, &i.Requests, &i.Tokens); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const insertRateTokens = `-- name: InsertRateTokens :exec
+INSERT INTO rate_counters (subject, window_start, scope, requests, tokens)
+VALUES ($1, $2, $3, 0, $4)
+ON CONFLICT (subject, window_start) DO UPDATE
+SET tokens = rate_counters.tokens + EXCLUDED.tokens
+`
+
+type InsertRateTokensParams struct {
+	Subject     uuid.UUID
+	WindowStart time.Time
+	Scope       string
+	Tokens      int64
+}
+
+// 窗口还不存在时为正的修正新建一行（与并发的新建冲突时累加）。
+func (q *Queries) InsertRateTokens(ctx context.Context, arg InsertRateTokensParams) error {
+	_, err := q.db.Exec(ctx, insertRateTokens,
+		arg.Subject,
+		arg.WindowStart,
+		arg.Scope,
+		arg.Tokens,
+	)
+	return err
+}
+
 const listAudit = `-- name: ListAudit :many
-SELECT id, time, request_id, client_request_id, key_id, account_id, source, model, allowed, status, reason FROM auth_audit
+SELECT id, time, request_id, client_request_id, key_id, account_id, protocol, model, allowed, reason, credential_preview, count FROM auth_audit
 WHERE ($1::uuid IS NULL OR key_id = $1)
 ORDER BY time DESC
 LIMIT $2
@@ -155,11 +352,12 @@ func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]AuthAud
 			&i.ClientRequestID,
 			&i.KeyID,
 			&i.AccountID,
-			&i.Source,
+			&i.Protocol,
 			&i.Model,
 			&i.Allowed,
-			&i.Status,
 			&i.Reason,
+			&i.CredentialPreview,
+			&i.Count,
 		); err != nil {
 			return nil, err
 		}
@@ -238,7 +436,7 @@ func (q *Queries) ListReservations(ctx context.Context, lim int32) ([]Reservatio
 }
 
 const listUsage = `-- name: ListUsage :many
-SELECT id, time, request_id, trace_id, span_id, account_id, key_id, model, provider, route, gateway, input_tokens, output_tokens, cached_tokens, cost_nanos, gateway_cost_nanos, pricing_source, settled FROM usage_events
+SELECT id, time, request_id, trace_id, span_id, account_id, key_id, model, provider, route, gateway, input_tokens, output_tokens, cached_tokens, cost_nanos, gateway_cost_nanos, pricing_source, settled, pricing_group, group_ratio, model_ratio, completion_ratio, cache_ratio, model_price FROM usage_events
 WHERE ($1::uuid IS NULL OR key_id = $1)
   AND ($2::timestamptz IS NULL OR time >= $2)
 ORDER BY time DESC
@@ -279,6 +477,12 @@ func (q *Queries) ListUsage(ctx context.Context, arg ListUsageParams) ([]UsageEv
 			&i.GatewayCostNanos,
 			&i.PricingSource,
 			&i.Settled,
+			&i.PricingGroup,
+			&i.GroupRatio,
+			&i.ModelRatio,
+			&i.CompletionRatio,
+			&i.CacheRatio,
+			&i.ModelPrice,
 		); err != nil {
 			return nil, err
 		}
@@ -331,23 +535,178 @@ func (q *Queries) LockExpiredReservations(ctx context.Context, arg LockExpiredRe
 	return items, nil
 }
 
+const lockReservation = `-- name: LockReservation :one
+SELECT request_id, key_id, account_id, model, nanos, expires_at, created_at FROM reservations WHERE request_id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockReservation(ctx context.Context, requestID string) (Reservation, error) {
+	row := q.db.QueryRow(ctx, lockReservation, requestID)
+	var i Reservation
+	err := row.Scan(
+		&i.RequestID,
+		&i.KeyID,
+		&i.AccountID,
+		&i.Model,
+		&i.Nanos,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const reserveQuota = `-- name: ReserveQuota :one
+WITH api_key AS (
+    UPDATE api_keys
+    SET reserved = api_keys.reserved + $1, in_flight = api_keys.in_flight + 1,
+        last_used_at = now(), updated_at = now()
+    WHERE api_keys.id = $2
+      AND ($3::bigint IS NULL
+           OR api_keys.in_flight < $3::bigint)
+      AND api_keys.status = 'active'
+      AND (api_keys.expires_at IS NULL OR api_keys.expires_at > now())
+      AND (api_keys.quota_limit IS NULL
+           OR api_keys.quota_limit - api_keys.quota_used - api_keys.reserved >= $1)
+    RETURNING api_keys.quota_limit, api_keys.quota_used, api_keys.reserved
+), account AS (
+    UPDATE accounts
+    SET reserved = accounts.reserved + $1, in_flight = accounts.in_flight + 1, updated_at = now()
+    WHERE accounts.id = $4
+      AND ($5::bigint IS NULL
+           OR accounts.in_flight < $5::bigint)
+      AND accounts.status = 'active'
+      AND (accounts.quota_limit IS NULL
+           OR accounts.quota_limit - accounts.quota_used - accounts.reserved >= $1)
+    RETURNING accounts.quota_limit, accounts.quota_used, accounts.reserved
+), reservation AS (
+    INSERT INTO reservations (request_id, key_id, account_id, model, nanos, expires_at)
+    VALUES ($6, $2, $4, $7, $1,
+            $8)
+    RETURNING request_id
+)
+SELECT api_key.quota_limit AS key_quota_limit,
+       api_key.quota_used  AS key_quota_used,
+       api_key.reserved    AS key_reserved,
+       account.quota_limit AS account_quota_limit,
+       account.quota_used  AS account_quota_used,
+       account.reserved    AS account_reserved
+FROM api_key, account, reservation
+`
+
+type ReserveQuotaParams struct {
+	Nanos                 int64
+	KeyID                 uuid.UUID
+	KeyMaxConcurrency     *int64
+	AccountID             uuid.UUID
+	AccountMaxConcurrency *int64
+	RequestID             string
+	Model                 string
+	ExpiresAt             time.Time
+}
+
+type ReserveQuotaRow struct {
+	KeyQuotaLimit     *int64
+	KeyQuotaUsed      int64
+	KeyReserved       int64
+	AccountQuotaLimit *int64
+	AccountQuotaUsed  int64
+	AccountReserved   int64
+}
+
+// 一次往返完成两级预扣（额度与并发）与预扣记录。数据修改 CTE 的每个子语句都会执行：
+// 任一级不满足时结果为空行，调用方必须回滚事务以撤销已执行的部分。
+func (q *Queries) ReserveQuota(ctx context.Context, arg ReserveQuotaParams) (ReserveQuotaRow, error) {
+	row := q.db.QueryRow(ctx, reserveQuota,
+		arg.Nanos,
+		arg.KeyID,
+		arg.KeyMaxConcurrency,
+		arg.AccountID,
+		arg.AccountMaxConcurrency,
+		arg.RequestID,
+		arg.Model,
+		arg.ExpiresAt,
+	)
+	var i ReserveQuotaRow
+	err := row.Scan(
+		&i.KeyQuotaLimit,
+		&i.KeyQuotaUsed,
+		&i.KeyReserved,
+		&i.AccountQuotaLimit,
+		&i.AccountQuotaUsed,
+		&i.AccountReserved,
+	)
+	return i, err
+}
+
+const rollupUsageDaily = `-- name: RollupUsageDaily :exec
+INSERT INTO usage_daily (day, account_id, key_id, model, requests, input_tokens, output_tokens, cached_tokens,
+                         cost_nanos, gateway_cost_nanos)
+SELECT (e.time AT TIME ZONE 'UTC')::date,
+       COALESCE(e.account_id, '00000000-0000-0000-0000-000000000000'::uuid),
+       COALESCE(e.key_id, '00000000-0000-0000-0000-000000000000'::uuid),
+       e.model,
+       count(*),
+       sum(e.input_tokens)::bigint,
+       sum(e.output_tokens)::bigint,
+       sum(e.cached_tokens)::bigint,
+       sum(e.cost_nanos)::bigint,
+       COALESCE(sum(e.gateway_cost_nanos), 0)::bigint
+FROM usage_events e
+WHERE e.time >= $1::timestamptz AND e.time < $2::timestamptz
+GROUP BY 1, 2, 3, 4
+ON CONFLICT (day, account_id, key_id, model) DO UPDATE
+SET requests           = EXCLUDED.requests,
+    input_tokens       = EXCLUDED.input_tokens,
+    output_tokens      = EXCLUDED.output_tokens,
+    cached_tokens      = EXCLUDED.cached_tokens,
+    cost_nanos         = EXCLUDED.cost_nanos,
+    gateway_cost_nanos = EXCLUDED.gateway_cost_nanos
+`
+
+type RollupUsageDailyParams struct {
+	FromTime time.Time
+	ToTime   time.Time
+}
+
+// 重算 [from_time, to_time) 内各 UTC 日的汇总（整日覆盖写入，可重复执行）。
+func (q *Queries) RollupUsageDaily(ctx context.Context, arg RollupUsageDailyParams) error {
+	_, err := q.db.Exec(ctx, rollupUsageDaily, arg.FromTime, arg.ToTime)
+	return err
+}
+
 const settleUsage = `-- name: SettleUsage :one
-WITH ins AS (
+WITH claim AS (
+    INSERT INTO settled_requests (request_id, usage_time)
+    SELECT $1::text, $2::timestamptz
+    WHERE $1::text IS NOT NULL
+    ON CONFLICT (request_id) DO NOTHING
+    RETURNING request_id
+), ins AS (
     INSERT INTO usage_events (time, request_id, trace_id, span_id, account_id, key_id, model, provider,
                                route, gateway, input_tokens, output_tokens, cached_tokens,
-                               cost_nanos, gateway_cost_nanos, pricing_source, settled)
-    VALUES ($1, $13, $2, $3, $14, $15, $4, $5,
-            $6, $7, $8, $9, $10, $11, $16, $12, true)
-    ON CONFLICT (request_id) DO NOTHING
+                               cost_nanos, gateway_cost_nanos, pricing_source,
+                               pricing_group, group_ratio, model_ratio, completion_ratio, cache_ratio, model_price,
+                               settled)
+    SELECT $2::timestamptz, $1::text, $3::text,
+           $4::text, $5::uuid, $6::uuid, $7::text,
+           $8::text, $9::text, $10::text,
+           $11::bigint, $12::bigint, $13::bigint,
+           $14::bigint, $15::bigint, $16::text,
+           $17::text, $18::double precision, $19::double precision,
+           $20::double precision, $21::double precision, $22::double precision,
+           true
+    WHERE $1::text IS NULL OR EXISTS (SELECT 1 FROM claim)
     RETURNING id
 )
 SELECT id FROM ins
 `
 
 type SettleUsageParams struct {
+	RequestID        pgtype.Text
 	Time             time.Time
 	TraceID          string
 	SpanID           string
+	AccountID        *uuid.UUID
+	KeyID            *uuid.UUID
 	Model            string
 	Provider         string
 	Route            string
@@ -356,18 +715,25 @@ type SettleUsageParams struct {
 	OutputTokens     int64
 	CachedTokens     int64
 	CostNanos        int64
-	PricingSource    string
-	RequestID        pgtype.Text
-	AccountID        *uuid.UUID
-	KeyID            *uuid.UUID
 	GatewayCostNanos *int64
+	PricingSource    string
+	PricingGroup     pgtype.Text
+	GroupRatio       *float64
+	ModelRatio       *float64
+	CompletionRatio  *float64
+	CacheRatio       *float64
+	ModelPrice       *float64
 }
 
+// 幂等：先在 settled_requests 登记 request_id，主键冲突说明另一通道已结算；登记成功或没有 request_id 时才写明细。
 func (q *Queries) SettleUsage(ctx context.Context, arg SettleUsageParams) (int64, error) {
 	row := q.db.QueryRow(ctx, settleUsage,
+		arg.RequestID,
 		arg.Time,
 		arg.TraceID,
 		arg.SpanID,
+		arg.AccountID,
+		arg.KeyID,
 		arg.Model,
 		arg.Provider,
 		arg.Route,
@@ -376,11 +742,14 @@ func (q *Queries) SettleUsage(ctx context.Context, arg SettleUsageParams) (int64
 		arg.OutputTokens,
 		arg.CachedTokens,
 		arg.CostNanos,
-		arg.PricingSource,
-		arg.RequestID,
-		arg.AccountID,
-		arg.KeyID,
 		arg.GatewayCostNanos,
+		arg.PricingSource,
+		arg.PricingGroup,
+		arg.GroupRatio,
+		arg.ModelRatio,
+		arg.CompletionRatio,
+		arg.CacheRatio,
+		arg.ModelPrice,
 	)
 	var id int64
 	err := row.Scan(&id)
@@ -388,20 +757,43 @@ func (q *Queries) SettleUsage(ctx context.Context, arg SettleUsageParams) (int64
 }
 
 const summaryUsage = `-- name: SummaryUsage :many
-SELECT
-    COALESCE(account_id, '00000000-0000-0000-0000-000000000000'::uuid) AS account_id,
-    COALESCE(key_id, '00000000-0000-0000-0000-000000000000'::uuid)     AS key_id,
-    model,
-    count(*)                              AS requests,
-    sum(input_tokens)                      AS input_tokens,
-    sum(output_tokens)                     AS output_tokens,
-    sum(cached_tokens)                     AS cached_tokens,
-    sum(cost_nanos)                        AS cost_nanos,
-    COALESCE(sum(gateway_cost_nanos), 0)::bigint AS gateway_cost_nanos
-FROM usage_events
-WHERE ($1::uuid IS NULL OR account_id = $1)
-  AND ($2::uuid IS NULL OR key_id = $2)
-  AND ($3::timestamptz IS NULL OR time >= $3)
+WITH mark AS (
+    SELECT coalesce((SELECT through FROM usage_rollup), '-infinity'::timestamptz) AS through
+), live AS (
+    SELECT COALESCE(e.account_id, '00000000-0000-0000-0000-000000000000'::uuid) AS account_id,
+           COALESCE(e.key_id, '00000000-0000-0000-0000-000000000000'::uuid)     AS key_id,
+           e.model,
+           count(*)::bigint                            AS requests,
+           sum(e.input_tokens)::bigint                 AS input_tokens,
+           sum(e.output_tokens)::bigint                AS output_tokens,
+           sum(e.cached_tokens)::bigint                AS cached_tokens,
+           sum(e.cost_nanos)::bigint                   AS cost_nanos,
+           COALESCE(sum(e.gateway_cost_nanos), 0)::bigint AS gateway_cost_nanos
+    FROM usage_events e, mark
+    WHERE ($1::uuid IS NULL OR e.account_id = $1)
+      AND ($2::uuid IS NULL OR e.key_id = $2)
+      AND ($3::timestamptz IS NULL OR e.time >= $3)
+      AND e.time >= mark.through
+    GROUP BY 1, 2, 3
+), daily AS (
+    SELECT d.account_id, d.key_id, d.model, d.requests, d.input_tokens, d.output_tokens, d.cached_tokens,
+           d.cost_nanos, d.gateway_cost_nanos
+    FROM usage_daily d, mark
+    WHERE ($1::uuid IS NULL OR d.account_id = $1)
+      AND ($2::uuid IS NULL OR d.key_id = $2)
+      AND ($3::timestamptz IS NULL OR d.day >= ($3::timestamptz AT TIME ZONE 'UTC')::date)
+      AND d.day < (mark.through AT TIME ZONE 'UTC')::date
+)
+SELECT u.account_id::uuid                  AS account_id,
+       u.key_id::uuid                      AS key_id,
+       u.model::text                       AS model,
+       sum(u.requests)::bigint             AS requests,
+       sum(u.input_tokens)::bigint         AS input_tokens,
+       sum(u.output_tokens)::bigint        AS output_tokens,
+       sum(u.cached_tokens)::bigint        AS cached_tokens,
+       sum(u.cost_nanos)::bigint           AS cost_nanos,
+       sum(u.gateway_cost_nanos)::bigint   AS gateway_cost_nanos
+FROM (SELECT account_id, key_id, model, requests, input_tokens, output_tokens, cached_tokens, cost_nanos, gateway_cost_nanos FROM live UNION ALL SELECT account_id, key_id, model, requests, input_tokens, output_tokens, cached_tokens, cost_nanos, gateway_cost_nanos FROM daily) u
 GROUP BY 1, 2, 3
 ORDER BY cost_nanos DESC
 `
@@ -413,8 +805,8 @@ type SummaryUsageParams struct {
 }
 
 type SummaryUsageRow struct {
-	AccountID        *uuid.UUID
-	KeyID            *uuid.UUID
+	AccountID        uuid.UUID
+	KeyID            uuid.UUID
 	Model            string
 	Requests         int64
 	InputTokens      int64
@@ -424,6 +816,8 @@ type SummaryUsageRow struct {
 	GatewayCostNanos int64
 }
 
+// 汇总水位线之前的日子查 usage_daily（since 早于水位线时按 UTC 日对齐），水位线之后查 usage_events 明细，
+// 汇总任务滞后也不会漏数。
 func (q *Queries) SummaryUsage(ctx context.Context, arg SummaryUsageParams) ([]SummaryUsageRow, error) {
 	rows, err := q.db.Query(ctx, summaryUsage, arg.AccountID, arg.KeyID, arg.Since)
 	if err != nil {
@@ -452,6 +846,18 @@ func (q *Queries) SummaryUsage(ctx context.Context, arg SummaryUsageParams) ([]S
 		return nil, err
 	}
 	return items, nil
+}
+
+const tryMaintenanceLock = `-- name: TryMaintenanceLock :one
+SELECT pg_try_advisory_xact_lock(hashtext('loom:maintenance:' || $1::text))
+`
+
+// 多副本时同一维护任务只由一个副本执行；事务结束自动释放。
+func (q *Queries) TryMaintenanceLock(ctx context.Context, task string) (bool, error) {
+	row := q.db.QueryRow(ctx, tryMaintenanceLock, task)
+	var pg_try_advisory_xact_lock bool
+	err := row.Scan(&pg_try_advisory_xact_lock)
+	return pg_try_advisory_xact_lock, err
 }
 
 const upsertModelPricing = `-- name: UpsertModelPricing :exec

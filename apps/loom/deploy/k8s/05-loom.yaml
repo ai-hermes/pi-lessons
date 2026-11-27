@@ -1,4 +1,6 @@
-# loom 本体：2 副本 + PDB。一个进程同时承载 extAuth HTTP(:9001)/gRPC(:9002)、RLS 结算(:9004)、管理 API(:9100)、OTLP ingest(:9101)、metrics(:9102)。
+# loom 本体：2 副本 + PDB。两个端口：
+#   data :8080（h2c）— 网关调用的 extauth HTTP /check 与 gRPC ext_authz、RateLimitService 结算、OTLP 补账
+#   ops  :9090       — 管理 API /v1、/metrics、/healthz、/readyz、pprof（不对网关开放）
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,7 +19,7 @@ spec:
         app: loom
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "9102"
+        prometheus.io/port: "9090"
     spec:
       serviceAccountName: loom
       securityContext:
@@ -38,12 +40,8 @@ spec:
         imagePullPolicy: IfNotPresent
         args: ["serve", "--config", "/etc/loom/config.yaml"]
         ports:
-        - {name: extauth-http, containerPort: 9001}
-        - {name: extauth-grpc, containerPort: 9002}
-        - {name: admin, containerPort: 9100}
-        - {name: otlp, containerPort: 9101}
-        - {name: rls, containerPort: 9004}
-        - {name: metrics, containerPort: 9102}
+        - {name: data, containerPort: 8080}
+        - {name: ops, containerPort: 9090}
         env:
         - name: LOOM_LOG_LEVEL
           value: info
@@ -51,13 +49,13 @@ spec:
           requests: {cpu: 100m, memory: 128Mi}
           limits: {cpu: "1", memory: 512Mi}
         readinessProbe:
-          httpGet: {path: /readyz, port: 9001}
+          httpGet: {path: /readyz, port: ops}
           periodSeconds: 5
         livenessProbe:
-          httpGet: {path: /healthz, port: 9001}
+          httpGet: {path: /healthz, port: ops}
           periodSeconds: 10
         startupProbe:
-          httpGet: {path: /healthz, port: 9001}
+          httpGet: {path: /healthz, port: ops}
           failureThreshold: 20
           periodSeconds: 3
         volumeMounts:
@@ -83,12 +81,8 @@ spec:
   selector:
     app: loom
   ports:
-  - {name: extauth-http, port: 9001, targetPort: 9001}
-  - {name: extauth-grpc, port: 9002, targetPort: 9002}
-  - {name: admin, port: 9100, targetPort: 9100}
-  - {name: otlp, port: 9101, targetPort: 9101}
-  - {name: rls, port: 9004, targetPort: 9004}
-  - {name: metrics, port: 9102, targetPort: 9102}
+  - {name: data, port: 8080, targetPort: data}
+  - {name: ops, port: 9090, targetPort: ops}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

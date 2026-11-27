@@ -6,6 +6,9 @@
 #   model_price       按次计费（USD/次），设置后优先于倍率（图片、视频）
 #   groups.<g>.ratio  分组倍率，账户 group 字段决定
 #
+# 取值口径（与 one-api / new-api 一致）：未填写取 defaults（分组取 1）；0 表示免费，免费请求不预扣；
+# 负数是配置错误，pricing.yaml 加载失败（热加载时保留上一版价目表）。
+#
 # 下面除 lab-* 外均为示例数值，上线前替换为真实价格。
 
 defaults:
@@ -13,10 +16,15 @@ defaults:
   completion_ratio: 1
   cache_ratio: 1
   unknown_model: deny            # deny | default：未定价模型拒绝，还是按 defaults 计价
+  unknown_group: deny            # deny | default：groups 未定义的账户分组拒绝，还是按 default 分组计价
 
+# 分组：ratio 为计价倍率；limits 为该分组账户的限流默认值（账户自身未配置的项取这里的值，不填表示不限）。
+#   rpm 每分钟请求数；tpm 每分钟 token 数（准入按 reserve_tokens 估值计入，结算按实际值修正，不应小于单次估值）；
+#   max_concurrency 同时进行中的模型请求数。API Key 级的限流在管理 API 中单独配置，不继承这里的值。
 groups:
   default: {ratio: 1}
   vip: {ratio: 0.9}
+  # trial: {ratio: 1, limits: {rpm: 60, tpm: 100000, max_concurrency: 4}}
 
 catalog:
   provider: openai               # 渲染 agentgateway modelCatalog 时的 provider 名

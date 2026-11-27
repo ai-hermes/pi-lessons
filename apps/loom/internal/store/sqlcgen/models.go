@@ -12,16 +12,41 @@ import (
 )
 
 type Account struct {
-	ID         uuid.UUID
-	Name       string
-	Tenant     string
-	Group      string
-	Status     string
-	QuotaLimit *int64
-	QuotaUsed  int64
-	Reserved   int64
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID             uuid.UUID
+	Name           string
+	Tenant         string
+	Group          string
+	Status         string
+	QuotaLimit     *int64
+	QuotaUsed      int64
+	Reserved       int64
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Rpm            *int64
+	Tpm            *int64
+	MaxConcurrency *int64
+	InFlight       int64
+}
+
+type AdminAudit struct {
+	ID      int64
+	Time    time.Time
+	Actor   string
+	Method  string
+	Route   string
+	Target  string
+	Request string
+	Status  int32
+}
+
+type AdminToken struct {
+	ID           uuid.UUID
+	Name         string
+	TokenHash    string
+	TokenPreview string
+	Role         string
+	CreatedAt    time.Time
+	RevokedAt    *time.Time
 }
 
 type ApiKey struct {
@@ -39,20 +64,25 @@ type ApiKey struct {
 	LastUsedAt     *time.Time
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	Rpm            *int64
+	Tpm            *int64
+	MaxConcurrency *int64
+	InFlight       int64
 }
 
 type AuthAudit struct {
-	ID              int64
-	Time            time.Time
-	RequestID       string
-	ClientRequestID string
-	KeyID           *uuid.UUID
-	AccountID       *uuid.UUID
-	Source          string
-	Model           string
-	Allowed         bool
-	Status          int32
-	Reason          string
+	ID                int64
+	Time              time.Time
+	RequestID         string
+	ClientRequestID   string
+	KeyID             *uuid.UUID
+	AccountID         *uuid.UUID
+	Protocol          string
+	Model             string
+	Allowed           bool
+	Reason            string
+	CredentialPreview string
+	Count             int32
 }
 
 type ModelPricing struct {
@@ -67,6 +97,27 @@ type ModelPricing struct {
 	UpdatedAt           time.Time
 }
 
+type QuotaAdjustment struct {
+	ID          int64
+	Time        time.Time
+	AccountID   uuid.UUID
+	KeyID       *uuid.UUID
+	Kind        string
+	LimitBefore *int64
+	LimitAfter  *int64
+	UsedBefore  int64
+	UsedAfter   int64
+	Actor       string
+}
+
+type RateCounter struct {
+	Subject     uuid.UUID
+	WindowStart time.Time
+	Scope       string
+	Requests    int64
+	Tokens      int64
+}
+
 type Reservation struct {
 	RequestID string
 	KeyID     uuid.UUID
@@ -75,6 +126,25 @@ type Reservation struct {
 	Nanos     int64
 	ExpiresAt time.Time
 	CreatedAt time.Time
+}
+
+type SettledRequest struct {
+	RequestID string
+	UsageTime time.Time
+	SettledAt time.Time
+}
+
+type UsageDaily struct {
+	Day              pgtype.Date
+	AccountID        uuid.UUID
+	KeyID            uuid.UUID
+	Model            string
+	Requests         int64
+	InputTokens      int64
+	OutputTokens     int64
+	CachedTokens     int64
+	CostNanos        int64
+	GatewayCostNanos int64
 }
 
 type UsageEvent struct {
@@ -96,4 +166,15 @@ type UsageEvent struct {
 	GatewayCostNanos *int64
 	PricingSource    string
 	Settled          bool
+	PricingGroup     pgtype.Text
+	GroupRatio       *float64
+	ModelRatio       *float64
+	CompletionRatio  *float64
+	CacheRatio       *float64
+	ModelPrice       *float64
+}
+
+type UsageRollup struct {
+	Singleton bool
+	Through   time.Time
 }

@@ -3,9 +3,38 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
+)
+
+// ErrNotFound 记录不存在。
+var ErrNotFound = errors.New("store: not found")
+
+// ErrConflict 唯一约束冲突（账户名、API Key 摘要等已存在）。
+var ErrConflict = errors.New("store: already exists")
+
+// ErrInsufficientQuota 条件预扣失败：剩余额度不足，或 API Key / 账户已停用、已过期。
+var ErrInsufficientQuota = errors.New("store: insufficient quota")
+
+// ErrMaintenanceBusy 另一个副本正在执行同一维护任务。
+var ErrMaintenanceBusy = errors.New("store: maintenance task is running elsewhere")
+
+// ErrCommitOutcomeUnknown 提交请求已发出但没收到确认（连接断开、context 到期）：事务可能已提交，也可能没有。
+// 调用方需要按幂等键核对或补偿，不能当作“未生效”。
+var ErrCommitOutcomeUnknown = errors.New("store: commit outcome unknown")
+
+// Status 账户与 API Key 的启用状态。
+type Status string
+
+// 账户与 API Key 的状态取值。
+const (
+	StatusActive   Status = "active"
+	StatusDisabled Status = "disabled"
 )
 
 // Account 额度第一级。
@@ -14,10 +43,12 @@ type Account struct {
 	Name       string
 	Tenant     string
 	Group      string
-	Status     string
+	Status     Status
 	QuotaLimit *int64 // nil = 不限
 	QuotaUsed  int64
 	Reserved   int64
+	Limits     RateLimits // nil 项取分组默认值
+	InFlight   int64      // 未结算的预扣记录数
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }
@@ -30,18 +61,38 @@ func (a Account) Remaining() (int64, bool) {
 	return *a.QuotaLimit - a.QuotaUsed - a.Reserved, true
 }
 
-// Key 额度第二级，附带所属账户快照。
-type Key struct {
+// AccountSettings 是账户可修改的属性，更新时整体替换。
+type AccountSettings struct {
+	Status     Status
+	Group      string
+	QuotaLimit *int64 // nil = 不限
+	Limits     RateLimits
+}
+
+// Settings 返回账户当前的可修改属性。
+func (a Account) Settings() AccountSettings {
+	return AccountSettings{
+		Status:     a.Status,
+		Group:      a.Group,
+		QuotaLimit: a.QuotaLimit,
+		Limits:     a.Limits,
+	}
+}
+
+// APIKey 表示一把调用 AgentGateway 的 API Key，并附带所属账户快照。
+type APIKey struct {
 	ID             uuid.UUID
 	AccountID      uuid.UUID
 	Name           string
 	KeyHash        string
 	KeyPreview     string
-	Status         string
+	Status         Status
 	ModelAllowlist []string // nil = 全部模型
 	QuotaLimit     *int64   // nil = 跟随账户
 	QuotaUsed      int64
 	Reserved       int64
+	Limits         RateLimits // nil 项不限（API Key 级不继承分组默认值）
+	InFlight       int64
 	ExpiresAt      *time.Time
 	LastUsedAt     *time.Time
 	CreatedAt      time.Time
@@ -50,16 +101,33 @@ type Key struct {
 }
 
 // AllowsModel 判断模型是否在白名单内。
-func (k Key) AllowsModel(model string) bool {
+func (k APIKey) AllowsModel(model string) bool {
 	if len(k.ModelAllowlist) == 0 {
 		return true
 	}
-	for _, m := range k.ModelAllowlist {
-		if m == model {
-			return true
-		}
+	return slices.Contains(k.ModelAllowlist, model)
+}
+
+// APIKeySettings 是 API Key 可修改的属性，更新时整体替换。
+type APIKeySettings struct {
+	Name           string
+	Status         Status
+	ModelAllowlist []string   // nil = 全部模型
+	QuotaLimit     *int64     // nil = 跟随账户
+	ExpiresAt      *time.Time // nil = 不过期
+	Limits         RateLimits
+}
+
+// Settings 返回 API Key 当前的可修改属性。
+func (k APIKey) Settings() APIKeySettings {
+	return APIKeySettings{
+		Name:           k.Name,
+		Status:         k.Status,
+		ModelAllowlist: k.ModelAllowlist,
+		QuotaLimit:     k.QuotaLimit,
+		ExpiresAt:      k.ExpiresAt,
+		Limits:         k.Limits,
 	}
-	return false
 }
 
 // QuotaState 预扣/结算后的额度快照。
@@ -77,10 +145,16 @@ func (q QuotaState) Remaining() (int64, bool) {
 	return *q.Limit - q.Used - q.Reserved, true
 }
 
+// QuotaReservation 是一次成功预扣后两级额度的快照。
+type QuotaReservation struct {
+	APIKey  QuotaState
+	Account QuotaState
+}
+
 // Reservation 鉴权阶段写入的预扣记录。
 type Reservation struct {
 	RequestID string    `json:"request_id"`
-	KeyID     uuid.UUID `json:"key_id"`
+	APIKeyID  uuid.UUID `json:"key_id"`
 	AccountID uuid.UUID `json:"account_id"`
 	Model     string    `json:"model"`
 	Nanos     int64     `json:"nanos"`
@@ -90,24 +164,36 @@ type Reservation struct {
 
 // UsageEvent 计费明细。
 type UsageEvent struct {
-	ID               int64      `json:"id"`
-	Time             time.Time  `json:"time"`
-	RequestID        string     `json:"request_id"`
-	TraceID          string     `json:"trace_id"`
-	SpanID           string     `json:"span_id"`
-	AccountID        *uuid.UUID `json:"account_id"`
-	KeyID            *uuid.UUID `json:"key_id"`
-	Model            string     `json:"model"`
-	Provider         string     `json:"provider"`
-	Route            string     `json:"route"`
-	Gateway          string     `json:"gateway"`
-	InputTokens      int64      `json:"input_tokens"`
-	OutputTokens     int64      `json:"output_tokens"`
-	CachedTokens     int64      `json:"cached_tokens"`
-	CostNanos        int64      `json:"cost_nanos"`
-	GatewayCostNanos *int64     `json:"gateway_cost_nanos"`
-	PricingSource    string     `json:"pricing_source"`
-	Settled          bool       `json:"settled"`
+	ID                    int64      `json:"id"`
+	Time                  time.Time  `json:"time"`
+	RequestID             string     `json:"request_id"`
+	TraceID               string     `json:"trace_id"`
+	SpanID                string     `json:"span_id"`
+	AccountID             *uuid.UUID `json:"account_id"`
+	APIKeyID              *uuid.UUID `json:"key_id"`
+	Model                 string     `json:"model"`
+	Provider              string     `json:"provider"`
+	Route                 string     `json:"route"`
+	AgentGateway          string     `json:"gateway"`
+	InputTokens           int64      `json:"input_tokens"`
+	OutputTokens          int64      `json:"output_tokens"`
+	CachedTokens          int64      `json:"cached_tokens"`
+	CostNanos             int64      `json:"cost_nanos"`
+	AgentGatewayCostNanos *int64     `json:"gateway_cost_nanos"`
+	PricingSource         string     `json:"pricing_source"`
+	// Pricing 是结算时的计价快照；模型未定价（金额为 0）时为 nil。
+	Pricing *PricingSnapshot `json:"pricing"`
+	Settled bool             `json:"settled"`
+}
+
+// PricingSnapshot 记录一笔用量按什么分组与倍率计价，用于事后复核金额。
+type PricingSnapshot struct {
+	Group           string   `json:"group"`
+	GroupRatio      float64  `json:"group_ratio"`
+	ModelRatio      float64  `json:"model_ratio"`
+	CompletionRatio float64  `json:"completion_ratio"`
+	CacheRatio      float64  `json:"cache_ratio"`
+	ModelPrice      *float64 `json:"model_price"` // 按次计费时的 USD/次
 }
 
 // Audit 鉴权审计。
@@ -115,13 +201,15 @@ type Audit struct {
 	Time            time.Time  `json:"time"`
 	RequestID       string     `json:"request_id"`
 	ClientRequestID string     `json:"client_request_id"`
-	KeyID           *uuid.UUID `json:"key_id"`
+	APIKeyID        *uuid.UUID `json:"key_id"`
 	AccountID       *uuid.UUID `json:"account_id"`
-	Source          string     `json:"source"`
+	Protocol        string     `json:"protocol"` // 门面协议：http | grpc
 	Model           string     `json:"model"`
 	Allowed         bool       `json:"allowed"`
-	Status          int        `json:"status"`
 	Reason          string     `json:"reason"`
+	// 未识别出 Key 的拒绝按凭据前缀与分钟聚合成一行：CredentialPreview 是凭据前缀（溢出组为 *），Count 是合并的请求数。
+	CredentialPreview string `json:"credential_preview,omitempty"`
+	Count             int    `json:"count"`
 }
 
 // ModelPrice PG 兜底定价行。
@@ -137,78 +225,200 @@ type ModelPrice struct {
 	UpdatedAt           time.Time `json:"updated_at"`
 }
 
-// UsageSummaryRow 聚合结果；AccountID/KeyID 为 uuid.Nil 表示未归属。
+// UsageSummaryRow 聚合结果；AccountID/APIKeyID 为 uuid.Nil 表示未归属。
 type UsageSummaryRow struct {
-	AccountID        uuid.UUID
-	KeyID            uuid.UUID
-	Model            string
-	Requests         int64
-	InputTokens      int64
-	OutputTokens     int64
-	CachedTokens     int64
-	CostNanos        int64
-	GatewayCostNanos int64
+	AccountID             uuid.UUID
+	APIKeyID              uuid.UUID
+	Model                 string
+	Requests              int64
+	InputTokens           int64
+	OutputTokens          int64
+	CachedTokens          int64
+	CostNanos             int64
+	AgentGatewayCostNanos int64
 }
 
 // UsageFilter 聚合过滤条件。
 type UsageFilter struct {
 	AccountID *uuid.UUID
-	KeyID     *uuid.UUID
+	APIKeyID  *uuid.UUID
 	Since     *time.Time
 }
 
-// Store 持久化接口。
+// Matches 判断一行汇总的归属是否满足过滤条件（不含时间）。
+func (f UsageFilter) Matches(accountID, apiKeyID uuid.UUID) bool {
+	if f.AccountID != nil && accountID != *f.AccountID {
+		return false
+	}
+	return f.APIKeyID == nil || apiKeyID == *f.APIKeyID
+}
+
+// QuotaAdjustmentKind 是额度变更的类型。
+type QuotaAdjustmentKind string
+
+// 额度变更类型取值。
+const (
+	QuotaTopUp QuotaAdjustmentKind = "top_up" // 增加上限
+	QuotaReset QuotaAdjustmentKind = "reset"  // 直接设置上限与已用量，并清空预扣
+)
+
+// QuotaChange 是管理员对额度的一次直接设置；与修改在同一事务中写入额度变更流水。
+type QuotaChange struct {
+	LimitNanos *int64 // 新上限；nil 表示不限
+	UsedNanos  int64
+	Actor      string
+}
+
+// QuotaAdjustment 是一条额度变更流水（只追加）。API Key 的变更同时记录所属账户。
+type QuotaAdjustment struct {
+	ID          int64               `json:"id"`
+	Time        time.Time           `json:"time"`
+	AccountID   uuid.UUID           `json:"account_id"`
+	APIKeyID    *uuid.UUID          `json:"key_id"`
+	Kind        QuotaAdjustmentKind `json:"kind"`
+	LimitBefore *int64              `json:"limit_before_nanos"`
+	LimitAfter  *int64              `json:"limit_after_nanos"`
+	UsedBefore  int64               `json:"used_before_nanos"`
+	UsedAfter   int64               `json:"used_after_nanos"`
+	Actor       string              `json:"actor"`
+}
+
+// QuotaAdjustmentFilter 额度变更流水的查询条件。
+type QuotaAdjustmentFilter struct {
+	AccountID *uuid.UUID
+	APIKeyID  *uuid.UUID
+}
+
+// AdminToken 是一把管理 token；库中只存哈希，明文只在签发时返回一次。
+type AdminToken struct {
+	ID           uuid.UUID  `json:"id"`
+	Name         string     `json:"name"`
+	TokenHash    string     `json:"-"`
+	TokenPreview string     `json:"token_preview"`
+	Role         string     `json:"role"`
+	CreatedAt    time.Time  `json:"created_at"`
+	RevokedAt    *time.Time `json:"revoked_at"`
+}
+
+// AdminAudit 是一条管理操作审计。
+type AdminAudit struct {
+	ID      int64     `json:"id"`
+	Time    time.Time `json:"time"`
+	Actor   string    `json:"actor"`
+	Method  string    `json:"method"`
+	Route   string    `json:"route"`
+	Target  string    `json:"target"`
+	Request string    `json:"request"` // 已脱敏
+	Status  int       `json:"status"`
+}
+
+// HashAPIKey 返回 API Key 明文的存储形式；数据库只保存摘要。
+func HashAPIKey(plaintext string) string { return HashSecret(plaintext) }
+
+// HashSecret 返回高熵随机凭据（API Key、管理 token）的存储形式：sha256 十六进制。
+func HashSecret(plaintext string) string {
+	sum := sha256.Sum256([]byte(plaintext))
+	return hex.EncodeToString(sum[:])
+}
+
+// IsActive 判断状态是否为启用。
+func (s Status) IsActive() bool { return s == StatusActive }
+
+// Store 持久化接口，由 postgres（生产）与 memstore（单测）实现。
+// 业务包不直接依赖它的全部方法，而是在各自包内声明所需的窄接口。
+//
+// 按主键或其他键取单条记录的方法保留 Get 前缀（GetAccount、GetAccountByName），
+// 与 List*、Create* 并列时语义最清楚；这是查询而不是字段取值器，不适用"省略 Get"的命名规则。
 type Store interface {
 	// accounts
 	GetAccount(ctx context.Context, id uuid.UUID) (Account, error)
 	GetAccountByName(ctx context.Context, name string) (Account, error)
 	ListAccounts(ctx context.Context, limit int) ([]Account, error)
 	CreateAccount(ctx context.Context, a Account) (Account, error)
-	UpdateAccount(ctx context.Context, id uuid.UUID, status string, quotaLimit *int64, group string) (Account, error)
-	AddAccountQuotaLimit(ctx context.Context, id uuid.UUID, delta int64) (Account, error)
-	// SetAccountQuota 管理用：直接设置额度上限与已用量，清空预扣。
-	SetAccountQuota(ctx context.Context, id uuid.UUID, limit *int64, used int64) error
+	UpdateAccount(ctx context.Context, id uuid.UUID, s AccountSettings) (Account, error)
+	// AddAccountQuotaLimit 增加账户额度上限，并在同一事务中写入额度变更流水。
+	AddAccountQuotaLimit(ctx context.Context, id uuid.UUID, delta int64, actor string) (Account, error)
+	// SetAccountQuota 管理用：直接设置额度上限与已用量，清空预扣，并写入额度变更流水。
+	SetAccountQuota(ctx context.Context, id uuid.UUID, change QuotaChange) error
 
 	// keys
-	GetKeyByHash(ctx context.Context, hash string) (Key, error)
-	GetKey(ctx context.Context, id uuid.UUID) (Key, error)
-	ListKeys(ctx context.Context, accountID *uuid.UUID, limit int) ([]Key, error)
-	CreateKey(ctx context.Context, k Key, allowlist []string) (Key, error)
-	UpdateKey(ctx context.Context, id uuid.UUID, status string, allowlist []string, quotaLimit *int64, expiresAt *time.Time, name string) (Key, error)
-	// SetKeyQuota 管理用：直接设置额度上限与已用量，清空预扣。
-	SetKeyQuota(ctx context.Context, id uuid.UUID, limit *int64, used int64) error
+	GetAPIKeyByHash(ctx context.Context, hash string) (APIKey, error)
+	GetAPIKey(ctx context.Context, id uuid.UUID) (APIKey, error)
+	ListAPIKeys(ctx context.Context, accountID *uuid.UUID, limit int) ([]APIKey, error)
+	CreateAPIKey(ctx context.Context, k APIKey) (APIKey, error)
+	UpdateAPIKey(ctx context.Context, id uuid.UUID, s APIKeySettings) (APIKey, error)
+	// SetAPIKeyQuota 管理用：直接设置额度上限与已用量，清空预扣，并写入额度变更流水。
+	SetAPIKeyQuota(ctx context.Context, id uuid.UUID, change QuotaChange) error
 
-	// quota（原子操作）
-	ReserveKeyQuota(ctx context.Context, keyID uuid.UUID, nanos int64) (QuotaState, error)
-	ReleaseKeyReservation(ctx context.Context, keyID uuid.UUID, nanos int64) error
-	ReserveAccountQuota(ctx context.Context, accountID uuid.UUID, nanos int64) (QuotaState, error)
-	ReleaseAccountReservation(ctx context.Context, accountID uuid.UUID, nanos int64) error
+	// ReserveQuota 单事务：API Key 与账户两级条件预扣（额度与并发），并写入预扣记录；r.Nanos 可以为 0（免费请求也占并发）。
+	// 并发已满时返回 *RateLimitError（Kind 为 concurrency）；其余不满足（额度不足、已停用、已过期、不存在）
+	// 返回 ErrInsufficientQuota。失败时整体回滚，不留下任何冻结。
+	ReserveQuota(ctx context.Context, r Reservation, concurrency ConcurrencyLimits) (QuotaReservation, error)
 
 	// reservations
-	CreateReservation(ctx context.Context, r Reservation) error
 	GetReservation(ctx context.Context, requestID string) (Reservation, error)
 	ListReservations(ctx context.Context, limit int) ([]Reservation, error)
 	CountReservations(ctx context.Context) (int64, error)
 	// SettleUsage 单事务：幂等插入 usage_event → 按预扣记录结算或直接累加 → 删除预扣。返回是否真正插入。
 	SettleUsage(ctx context.Context, ev UsageEvent) (bool, error)
-	// BackfillGatewayCost 在另一条通道已先结算时补写网关金额（只填空值），返回是否更新。
-	BackfillGatewayCost(ctx context.Context, requestID string, nanos int64) (bool, error)
+	// BackfillAgentGatewayCost 在另一条通道已先结算时补写网关金额（只填空值），返回是否更新。
+	BackfillAgentGatewayCost(ctx context.Context, requestID string, nanos int64) (bool, error)
+	// ReleaseReservation 单事务：释放 requestID 的预扣（两级额度回退并删除记录）；记录不存在时什么也不做，返回 false。
+	// 用于预扣提交结果未知（提交时连接断开或超时）的补偿，可重复调用。
+	ReleaseReservation(ctx context.Context, requestID string) (released bool, err error)
 	// ReleaseExpiredReservations 单事务：锁定过期的预扣、释放两级额度、删除记录，返回释放条数。
 	ReleaseExpiredReservations(ctx context.Context, now time.Time, limit int) (int, error)
 
+	// rate counters（RPM / TPM 的分钟窗口）
+	// AcquireRate 在 window 内为每个 claim 计 1 次请求与 Tokens 个 token；任一超出上限时撤销本次计数并返回
+	// *RateLimitError，被拒绝的请求不占用计数（实现可以先计后撤，但不得放行超限请求）。
+	AcquireRate(ctx context.Context, window time.Time, claims []RateClaim) error
+	// ReleaseRate 撤销一次成功的 AcquireRate（请求随后被额度或并发拒绝）；计数不低于 0。
+	ReleaseRate(ctx context.Context, window time.Time, claims []RateClaim) error
+	// AddRateTokens 在 window 内按 claim.Tokens 增减 token 计数（结算时用实际值修正估值）；计数不低于 0。
+	AddRateTokens(ctx context.Context, window time.Time, claims []RateClaim) error
+	// DeleteRateWindows 删除 before 之前开始的窗口，返回删除条数。
+	DeleteRateWindows(ctx context.Context, before time.Time) (int64, error)
+
+	// data growth（由 maintenance 包定期调用；多副本时同一任务同一时刻只有一个副本执行，其余返回 ErrMaintenanceBusy）
+	// EnsurePartitions 为按月分区的表（usage_events、auth_audit）建好 [from, to] 覆盖的月份分区，返回新建数；无分区的实现为空操作。
+	EnsurePartitions(ctx context.Context, from, to time.Time) (int, error)
+	// RollupUsageDaily 重算 [from, to) 内各 UTC 日的日汇总（可重复执行），并把汇总水位线推进到 to。
+	// SummaryUsage 在水位线之前查日汇总，之后查明细。
+	RollupUsageDaily(ctx context.Context, from, to time.Time) error
+	// UsageRollupWatermark 返回汇总水位线；从未汇总过时 ok 为 false。
+	UsageRollupWatermark(ctx context.Context) (through time.Time, ok bool, err error)
+	// PruneUsageEvents / PruneAudit 删除 before 之前的明细；按月分区的实现只删除整月都早于 before 的分区。
+	// 返回删除的单位数（分区数或行数，取决于实现），仅用于日志。
+	PruneUsageEvents(ctx context.Context, before time.Time) (int64, error)
+	PruneAudit(ctx context.Context, before time.Time) (int64, error)
+	// PruneSettledRequests 删除 before 之前结算的幂等记录；此后同一 request_id 的重复上报不再能识别。
+	PruneSettledRequests(ctx context.Context, before time.Time) (int64, error)
+
 	// usage
-	ListUsage(ctx context.Context, keyID *uuid.UUID, since *time.Time, limit int) ([]UsageEvent, error)
+	ListUsage(ctx context.Context, apiKeyID *uuid.UUID, since *time.Time, limit int) ([]UsageEvent, error)
 	SummaryUsage(ctx context.Context, f UsageFilter) ([]UsageSummaryRow, error)
 
 	// audit（best-effort 批量）
 	InsertAudit(ctx context.Context, rows []Audit) error
-	ListAudit(ctx context.Context, keyID *uuid.UUID, limit int) ([]Audit, error)
+	ListAudit(ctx context.Context, apiKeyID *uuid.UUID, limit int) ([]Audit, error)
 
 	// pg fallback pricing
 	ListModelPricing(ctx context.Context) ([]ModelPrice, error)
-	GetModelPricing(ctx context.Context, model string) (ModelPrice, error)
+	GetModelPrice(ctx context.Context, model string) (ModelPrice, error)
 	UpsertModelPricing(ctx context.Context, p ModelPrice) error
 	DeleteModelPricing(ctx context.Context, model string) error
 
-	Close() error
+	Close()
+
+	// 额度变更流水与管理面
+	ListQuotaAdjustments(ctx context.Context, f QuotaAdjustmentFilter, limit int) ([]QuotaAdjustment, error)
+	CreateAdminToken(ctx context.Context, t AdminToken) (AdminToken, error)
+	// GetAdminTokenByHash 只返回未吊销的 token。
+	GetAdminTokenByHash(ctx context.Context, hash string) (AdminToken, error)
+	ListAdminTokens(ctx context.Context) ([]AdminToken, error)
+	// RevokeAdminToken 吊销 token；不存在或已吊销时返回 ErrNotFound。
+	RevokeAdminToken(ctx context.Context, id uuid.UUID) error
+	InsertAdminAudit(ctx context.Context, row AdminAudit) error
+	ListAdminAudit(ctx context.Context, limit int) ([]AdminAudit, error)
 }
