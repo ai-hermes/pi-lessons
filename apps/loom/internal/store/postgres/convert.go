@@ -131,6 +131,9 @@ func toAudit(a sqlcgen.AuthAudit) store.Audit {
 		Model:           a.Model,
 		Allowed:         a.Allowed,
 		Reason:          a.Reason,
+
+		CredentialPreview: a.CredentialPreview,
+		Count:             int(a.Count),
 	}
 }
 

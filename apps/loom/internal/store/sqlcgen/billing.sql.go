@@ -33,10 +33,22 @@ func (q *Queries) AdjustRateTokens(ctx context.Context, arg AdjustRateTokensPara
 	return result.RowsAffected(), nil
 }
 
+const advanceUsageRollup = `-- name: AdvanceUsageRollup :exec
+INSERT INTO usage_rollup (singleton, through) VALUES (true, $1)
+ON CONFLICT (singleton) DO UPDATE SET through = greatest(usage_rollup.through, EXCLUDED.through)
+`
+
+func (q *Queries) AdvanceUsageRollup(ctx context.Context, through time.Time) error {
+	_, err := q.db.Exec(ctx, advanceUsageRollup, through)
+	return err
+}
+
 const backfillGatewayCost = `-- name: BackfillGatewayCost :execrows
 UPDATE usage_events
 SET gateway_cost_nanos = $2
-WHERE request_id = $1 AND gateway_cost_nanos IS NULL
+WHERE usage_events.request_id = $1
+  AND usage_events.gateway_cost_nanos IS NULL
+  AND usage_events.time = (SELECT s.usage_time FROM settled_requests s WHERE s.request_id = $1)
 `
 
 type BackfillGatewayCostParams struct {
@@ -44,6 +56,7 @@ type BackfillGatewayCostParams struct {
 	GatewayCostNanos *int64
 }
 
+// 按 settled_requests 记下的 usage_time 定位分区（执行期剪枝）；超出幂等保留期的请求不再补写。
 func (q *Queries) BackfillGatewayCost(ctx context.Context, arg BackfillGatewayCostParams) (int64, error) {
 	result, err := q.db.Exec(ctx, backfillGatewayCost, arg.RequestID, arg.GatewayCostNanos)
 	if err != nil {
@@ -113,6 +126,52 @@ func (q *Queries) DeleteReservation(ctx context.Context, requestID string) error
 	return err
 }
 
+const deleteSettledRequests = `-- name: DeleteSettledRequests :execrows
+DELETE FROM settled_requests WHERE settled_at < $1
+`
+
+func (q *Queries) DeleteSettledRequests(ctx context.Context, settledAt time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteSettledRequests, settledAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const dropMonthPartitions = `-- name: DropMonthPartitions :one
+SELECT loom_drop_month_partitions($1::text, $2::timestamptz)::int AS dropped
+`
+
+type DropMonthPartitionsParams struct {
+	Parent string
+	Before time.Time
+}
+
+func (q *Queries) DropMonthPartitions(ctx context.Context, arg DropMonthPartitionsParams) (int32, error) {
+	row := q.db.QueryRow(ctx, dropMonthPartitions, arg.Parent, arg.Before)
+	var dropped int32
+	err := row.Scan(&dropped)
+	return dropped, err
+}
+
+const ensureMonthPartitions = `-- name: EnsureMonthPartitions :one
+SELECT loom_ensure_month_partitions($1::text, $2::timestamptz,
+                                    $3::timestamptz)::int AS created
+`
+
+type EnsureMonthPartitionsParams struct {
+	Parent     string
+	FirstMonth time.Time
+	LastMonth  time.Time
+}
+
+func (q *Queries) EnsureMonthPartitions(ctx context.Context, arg EnsureMonthPartitionsParams) (int32, error) {
+	row := q.db.QueryRow(ctx, ensureMonthPartitions, arg.Parent, arg.FirstMonth, arg.LastMonth)
+	var created int32
+	err := row.Scan(&created)
+	return created, err
+}
+
 const getInFlight = `-- name: GetInFlight :one
 SELECT (SELECT in_flight FROM api_keys WHERE api_keys.id = $1)::bigint     AS key_in_flight,
        (SELECT in_flight FROM accounts WHERE accounts.id = $2)::bigint AS account_in_flight
@@ -174,6 +233,17 @@ func (q *Queries) GetReservation(ctx context.Context, requestID string) (Reserva
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const getUsageRollup = `-- name: GetUsageRollup :one
+SELECT through FROM usage_rollup
+`
+
+func (q *Queries) GetUsageRollup(ctx context.Context) (time.Time, error) {
+	row := q.db.QueryRow(ctx, getUsageRollup)
+	var through time.Time
+	err := row.Scan(&through)
+	return through, err
 }
 
 const incrementRateCounters = `-- name: IncrementRateCounters :many
@@ -255,7 +325,7 @@ func (q *Queries) InsertRateTokens(ctx context.Context, arg InsertRateTokensPara
 }
 
 const listAudit = `-- name: ListAudit :many
-SELECT id, time, request_id, client_request_id, key_id, account_id, protocol, model, allowed, reason FROM auth_audit
+SELECT id, time, request_id, client_request_id, key_id, account_id, protocol, model, allowed, reason, credential_preview, count FROM auth_audit
 WHERE ($1::uuid IS NULL OR key_id = $1)
 ORDER BY time DESC
 LIMIT $2
@@ -286,6 +356,8 @@ func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]AuthAud
 			&i.Model,
 			&i.Allowed,
 			&i.Reason,
+			&i.CredentialPreview,
+			&i.Count,
 		); err != nil {
 			return nil, err
 		}
@@ -565,28 +637,76 @@ func (q *Queries) ReserveQuota(ctx context.Context, arg ReserveQuotaParams) (Res
 	return i, err
 }
 
+const rollupUsageDaily = `-- name: RollupUsageDaily :exec
+INSERT INTO usage_daily (day, account_id, key_id, model, requests, input_tokens, output_tokens, cached_tokens,
+                         cost_nanos, gateway_cost_nanos)
+SELECT (e.time AT TIME ZONE 'UTC')::date,
+       COALESCE(e.account_id, '00000000-0000-0000-0000-000000000000'::uuid),
+       COALESCE(e.key_id, '00000000-0000-0000-0000-000000000000'::uuid),
+       e.model,
+       count(*),
+       sum(e.input_tokens)::bigint,
+       sum(e.output_tokens)::bigint,
+       sum(e.cached_tokens)::bigint,
+       sum(e.cost_nanos)::bigint,
+       COALESCE(sum(e.gateway_cost_nanos), 0)::bigint
+FROM usage_events e
+WHERE e.time >= $1::timestamptz AND e.time < $2::timestamptz
+GROUP BY 1, 2, 3, 4
+ON CONFLICT (day, account_id, key_id, model) DO UPDATE
+SET requests           = EXCLUDED.requests,
+    input_tokens       = EXCLUDED.input_tokens,
+    output_tokens      = EXCLUDED.output_tokens,
+    cached_tokens      = EXCLUDED.cached_tokens,
+    cost_nanos         = EXCLUDED.cost_nanos,
+    gateway_cost_nanos = EXCLUDED.gateway_cost_nanos
+`
+
+type RollupUsageDailyParams struct {
+	FromTime time.Time
+	ToTime   time.Time
+}
+
+// 重算 [from_time, to_time) 内各 UTC 日的汇总（整日覆盖写入，可重复执行）。
+func (q *Queries) RollupUsageDaily(ctx context.Context, arg RollupUsageDailyParams) error {
+	_, err := q.db.Exec(ctx, rollupUsageDaily, arg.FromTime, arg.ToTime)
+	return err
+}
+
 const settleUsage = `-- name: SettleUsage :one
-WITH ins AS (
+WITH claim AS (
+    INSERT INTO settled_requests (request_id, usage_time)
+    SELECT $1::text, $2::timestamptz
+    WHERE $1::text IS NOT NULL
+    ON CONFLICT (request_id) DO NOTHING
+    RETURNING request_id
+), ins AS (
     INSERT INTO usage_events (time, request_id, trace_id, span_id, account_id, key_id, model, provider,
                                route, gateway, input_tokens, output_tokens, cached_tokens,
                                cost_nanos, gateway_cost_nanos, pricing_source,
                                pricing_group, group_ratio, model_ratio, completion_ratio, cache_ratio, model_price,
                                settled)
-    VALUES ($1, $13, $2, $3, $14, $15, $4, $5,
-            $6, $7, $8, $9, $10, $11, $16, $12,
-            $17, $18, $19,
-            $20, $21, $22,
-            true)
-    ON CONFLICT (request_id) DO NOTHING
+    SELECT $2::timestamptz, $1::text, $3::text,
+           $4::text, $5::uuid, $6::uuid, $7::text,
+           $8::text, $9::text, $10::text,
+           $11::bigint, $12::bigint, $13::bigint,
+           $14::bigint, $15::bigint, $16::text,
+           $17::text, $18::double precision, $19::double precision,
+           $20::double precision, $21::double precision, $22::double precision,
+           true
+    WHERE $1::text IS NULL OR EXISTS (SELECT 1 FROM claim)
     RETURNING id
 )
 SELECT id FROM ins
 `
 
 type SettleUsageParams struct {
+	RequestID        pgtype.Text
 	Time             time.Time
 	TraceID          string
 	SpanID           string
+	AccountID        *uuid.UUID
+	KeyID            *uuid.UUID
 	Model            string
 	Provider         string
 	Route            string
@@ -595,11 +715,8 @@ type SettleUsageParams struct {
 	OutputTokens     int64
 	CachedTokens     int64
 	CostNanos        int64
-	PricingSource    string
-	RequestID        pgtype.Text
-	AccountID        *uuid.UUID
-	KeyID            *uuid.UUID
 	GatewayCostNanos *int64
+	PricingSource    string
 	PricingGroup     pgtype.Text
 	GroupRatio       *float64
 	ModelRatio       *float64
@@ -608,11 +725,15 @@ type SettleUsageParams struct {
 	ModelPrice       *float64
 }
 
+// 幂等：先在 settled_requests 登记 request_id，主键冲突说明另一通道已结算；登记成功或没有 request_id 时才写明细。
 func (q *Queries) SettleUsage(ctx context.Context, arg SettleUsageParams) (int64, error) {
 	row := q.db.QueryRow(ctx, settleUsage,
+		arg.RequestID,
 		arg.Time,
 		arg.TraceID,
 		arg.SpanID,
+		arg.AccountID,
+		arg.KeyID,
 		arg.Model,
 		arg.Provider,
 		arg.Route,
@@ -621,11 +742,8 @@ func (q *Queries) SettleUsage(ctx context.Context, arg SettleUsageParams) (int64
 		arg.OutputTokens,
 		arg.CachedTokens,
 		arg.CostNanos,
-		arg.PricingSource,
-		arg.RequestID,
-		arg.AccountID,
-		arg.KeyID,
 		arg.GatewayCostNanos,
+		arg.PricingSource,
 		arg.PricingGroup,
 		arg.GroupRatio,
 		arg.ModelRatio,
@@ -639,20 +757,43 @@ func (q *Queries) SettleUsage(ctx context.Context, arg SettleUsageParams) (int64
 }
 
 const summaryUsage = `-- name: SummaryUsage :many
-SELECT
-    COALESCE(account_id, '00000000-0000-0000-0000-000000000000'::uuid) AS account_id,
-    COALESCE(key_id, '00000000-0000-0000-0000-000000000000'::uuid)     AS key_id,
-    model,
-    count(*)                              AS requests,
-    sum(input_tokens)                      AS input_tokens,
-    sum(output_tokens)                     AS output_tokens,
-    sum(cached_tokens)                     AS cached_tokens,
-    sum(cost_nanos)                        AS cost_nanos,
-    COALESCE(sum(gateway_cost_nanos), 0)::bigint AS gateway_cost_nanos
-FROM usage_events
-WHERE ($1::uuid IS NULL OR account_id = $1)
-  AND ($2::uuid IS NULL OR key_id = $2)
-  AND ($3::timestamptz IS NULL OR time >= $3)
+WITH mark AS (
+    SELECT coalesce((SELECT through FROM usage_rollup), '-infinity'::timestamptz) AS through
+), live AS (
+    SELECT COALESCE(e.account_id, '00000000-0000-0000-0000-000000000000'::uuid) AS account_id,
+           COALESCE(e.key_id, '00000000-0000-0000-0000-000000000000'::uuid)     AS key_id,
+           e.model,
+           count(*)::bigint                            AS requests,
+           sum(e.input_tokens)::bigint                 AS input_tokens,
+           sum(e.output_tokens)::bigint                AS output_tokens,
+           sum(e.cached_tokens)::bigint                AS cached_tokens,
+           sum(e.cost_nanos)::bigint                   AS cost_nanos,
+           COALESCE(sum(e.gateway_cost_nanos), 0)::bigint AS gateway_cost_nanos
+    FROM usage_events e, mark
+    WHERE ($1::uuid IS NULL OR e.account_id = $1)
+      AND ($2::uuid IS NULL OR e.key_id = $2)
+      AND ($3::timestamptz IS NULL OR e.time >= $3)
+      AND e.time >= mark.through
+    GROUP BY 1, 2, 3
+), daily AS (
+    SELECT d.account_id, d.key_id, d.model, d.requests, d.input_tokens, d.output_tokens, d.cached_tokens,
+           d.cost_nanos, d.gateway_cost_nanos
+    FROM usage_daily d, mark
+    WHERE ($1::uuid IS NULL OR d.account_id = $1)
+      AND ($2::uuid IS NULL OR d.key_id = $2)
+      AND ($3::timestamptz IS NULL OR d.day >= ($3::timestamptz AT TIME ZONE 'UTC')::date)
+      AND d.day < (mark.through AT TIME ZONE 'UTC')::date
+)
+SELECT u.account_id::uuid                  AS account_id,
+       u.key_id::uuid                      AS key_id,
+       u.model::text                       AS model,
+       sum(u.requests)::bigint             AS requests,
+       sum(u.input_tokens)::bigint         AS input_tokens,
+       sum(u.output_tokens)::bigint        AS output_tokens,
+       sum(u.cached_tokens)::bigint        AS cached_tokens,
+       sum(u.cost_nanos)::bigint           AS cost_nanos,
+       sum(u.gateway_cost_nanos)::bigint   AS gateway_cost_nanos
+FROM (SELECT account_id, key_id, model, requests, input_tokens, output_tokens, cached_tokens, cost_nanos, gateway_cost_nanos FROM live UNION ALL SELECT account_id, key_id, model, requests, input_tokens, output_tokens, cached_tokens, cost_nanos, gateway_cost_nanos FROM daily) u
 GROUP BY 1, 2, 3
 ORDER BY cost_nanos DESC
 `
@@ -664,8 +805,8 @@ type SummaryUsageParams struct {
 }
 
 type SummaryUsageRow struct {
-	AccountID        *uuid.UUID
-	KeyID            *uuid.UUID
+	AccountID        uuid.UUID
+	KeyID            uuid.UUID
 	Model            string
 	Requests         int64
 	InputTokens      int64
@@ -675,6 +816,8 @@ type SummaryUsageRow struct {
 	GatewayCostNanos int64
 }
 
+// 汇总水位线之前的日子查 usage_daily（since 早于水位线时按 UTC 日对齐），水位线之后查 usage_events 明细，
+// 汇总任务滞后也不会漏数。
 func (q *Queries) SummaryUsage(ctx context.Context, arg SummaryUsageParams) ([]SummaryUsageRow, error) {
 	rows, err := q.db.Query(ctx, summaryUsage, arg.AccountID, arg.KeyID, arg.Since)
 	if err != nil {
@@ -703,6 +846,18 @@ func (q *Queries) SummaryUsage(ctx context.Context, arg SummaryUsageParams) ([]S
 		return nil, err
 	}
 	return items, nil
+}
+
+const tryMaintenanceLock = `-- name: TryMaintenanceLock :one
+SELECT pg_try_advisory_xact_lock(hashtext('loom:maintenance:' || $1::text))
+`
+
+// 多副本时同一维护任务只由一个副本执行；事务结束自动释放。
+func (q *Queries) TryMaintenanceLock(ctx context.Context, task string) (bool, error) {
+	row := q.db.QueryRow(ctx, tryMaintenanceLock, task)
+	var pg_try_advisory_xact_lock bool
+	err := row.Scan(&pg_try_advisory_xact_lock)
+	return pg_try_advisory_xact_lock, err
 }
 
 const upsertModelPricing = `-- name: UpsertModelPricing :exec

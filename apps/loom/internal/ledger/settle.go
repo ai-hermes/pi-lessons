@@ -175,9 +175,24 @@ func (l *Ledger) backfillAgentGatewayCost(ctx context.Context, report UsageRepor
 }
 
 // usageEvent 组装账单明细；带上计价快照（分组与倍率），事后可以复核每一笔金额。
+// 用量时间与结算时刻相差超过这个范围时按结算时刻记账：零值、时钟偏差或极晚到达的上报会落进不存在的分区，
+// 或落到已经汇总过、不再重算的日子（汇总每轮只重算水位线前一天）。
+const (
+	maxUsageTimeLag  = time.Hour
+	maxUsageTimeLead = 5 * time.Minute
+)
+
+// usageTime 返回落库用的用量时间。
+func usageTime(reported, now time.Time) time.Time {
+	if reported.Before(now.Add(-maxUsageTimeLag)) || reported.After(now.Add(maxUsageTimeLead)) {
+		return now
+	}
+	return reported
+}
+
 func usageEvent(report UsageReport, owner usageOwner, cost settlementCost) store.UsageEvent {
 	ev := store.UsageEvent{
-		Time:                  report.Time,
+		Time:                  usageTime(report.Time, time.Now()),
 		RequestID:             report.RequestID,
 		TraceID:               report.TraceID,
 		SpanID:                report.SpanID,

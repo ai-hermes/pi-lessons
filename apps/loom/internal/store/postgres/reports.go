@@ -45,7 +45,9 @@ func (d *DB) SummaryUsage(ctx context.Context, f store.UsageFilter) ([]store.Usa
 		return nil, d.fail("SummaryUsage", err)
 	}
 	return mapRows(rows, func(r sqlcgen.SummaryUsageRow) store.UsageSummaryRow {
-		row := store.UsageSummaryRow{
+		return store.UsageSummaryRow{
+			AccountID:             r.AccountID,
+			APIKeyID:              r.KeyID,
 			Model:                 r.Model,
 			Requests:              r.Requests,
 			InputTokens:           r.InputTokens,
@@ -54,19 +56,12 @@ func (d *DB) SummaryUsage(ctx context.Context, f store.UsageFilter) ([]store.Usa
 			CostNanos:             r.CostNanos,
 			AgentGatewayCostNanos: r.GatewayCostNanos,
 		}
-		if r.AccountID != nil {
-			row.AccountID = *r.AccountID
-		}
-		if r.KeyID != nil {
-			row.APIKeyID = *r.KeyID
-		}
-		return row
 	}), nil
 }
 
 const insertAuditSQL = `INSERT INTO auth_audit
-	(time, request_id, client_request_id, key_id, account_id, protocol, model, allowed, reason)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+	(time, request_id, client_request_id, key_id, account_id, protocol, model, allowed, reason, credential_preview, count)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
 
 // InsertAudit 见 store.Store：一次往返批量写入。
 func (d *DB) InsertAudit(ctx context.Context, rows []store.Audit) error {
@@ -86,6 +81,8 @@ func (d *DB) InsertAudit(ctx context.Context, rows []store.Audit) error {
 			r.Model,
 			r.Allowed,
 			r.Reason,
+			r.CredentialPreview,
+			max(r.Count, 1),
 		)
 	}
 	results := d.pool.SendBatch(ctx, batch)

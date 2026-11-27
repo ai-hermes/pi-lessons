@@ -26,18 +26,28 @@ LIMIT $2
 FOR UPDATE SKIP LOCKED;
 
 -- name: SettleUsage :one
-WITH ins AS (
+-- 幂等：先在 settled_requests 登记 request_id，主键冲突说明另一通道已结算；登记成功或没有 request_id 时才写明细。
+WITH claim AS (
+    INSERT INTO settled_requests (request_id, usage_time)
+    SELECT sqlc.narg(request_id)::text, sqlc.arg(time)::timestamptz
+    WHERE sqlc.narg(request_id)::text IS NOT NULL
+    ON CONFLICT (request_id) DO NOTHING
+    RETURNING request_id
+), ins AS (
     INSERT INTO usage_events (time, request_id, trace_id, span_id, account_id, key_id, model, provider,
                                route, gateway, input_tokens, output_tokens, cached_tokens,
                                cost_nanos, gateway_cost_nanos, pricing_source,
                                pricing_group, group_ratio, model_ratio, completion_ratio, cache_ratio, model_price,
                                settled)
-    VALUES ($1, sqlc.narg(request_id), $2, $3, sqlc.narg(account_id), sqlc.narg(key_id), $4, $5,
-            $6, $7, $8, $9, $10, $11, sqlc.narg(gateway_cost_nanos), $12,
-            sqlc.narg(pricing_group), sqlc.narg(group_ratio), sqlc.narg(model_ratio),
-            sqlc.narg(completion_ratio), sqlc.narg(cache_ratio), sqlc.narg(model_price),
-            true)
-    ON CONFLICT (request_id) DO NOTHING
+    SELECT sqlc.arg(time)::timestamptz, sqlc.narg(request_id)::text, sqlc.arg(trace_id)::text,
+           sqlc.arg(span_id)::text, sqlc.narg(account_id)::uuid, sqlc.narg(key_id)::uuid, sqlc.arg(model)::text,
+           sqlc.arg(provider)::text, sqlc.arg(route)::text, sqlc.arg(gateway)::text,
+           sqlc.arg(input_tokens)::bigint, sqlc.arg(output_tokens)::bigint, sqlc.arg(cached_tokens)::bigint,
+           sqlc.arg(cost_nanos)::bigint, sqlc.narg(gateway_cost_nanos)::bigint, sqlc.arg(pricing_source)::text,
+           sqlc.narg(pricing_group)::text, sqlc.narg(group_ratio)::double precision, sqlc.narg(model_ratio)::double precision,
+           sqlc.narg(completion_ratio)::double precision, sqlc.narg(cache_ratio)::double precision, sqlc.narg(model_price)::double precision,
+           true
+    WHERE sqlc.narg(request_id)::text IS NULL OR EXISTS (SELECT 1 FROM claim)
     RETURNING id
 )
 SELECT id FROM ins;
@@ -50,20 +60,45 @@ ORDER BY time DESC
 LIMIT sqlc.arg(lim);
 
 -- name: SummaryUsage :many
-SELECT
-    COALESCE(account_id, '00000000-0000-0000-0000-000000000000'::uuid) AS account_id,
-    COALESCE(key_id, '00000000-0000-0000-0000-000000000000'::uuid)     AS key_id,
-    model,
-    count(*)                              AS requests,
-    sum(input_tokens)                      AS input_tokens,
-    sum(output_tokens)                     AS output_tokens,
-    sum(cached_tokens)                     AS cached_tokens,
-    sum(cost_nanos)                        AS cost_nanos,
-    COALESCE(sum(gateway_cost_nanos), 0)::bigint AS gateway_cost_nanos
-FROM usage_events
-WHERE (sqlc.narg(account_id)::uuid IS NULL OR account_id = sqlc.narg(account_id))
-  AND (sqlc.narg(key_id)::uuid IS NULL OR key_id = sqlc.narg(key_id))
-  AND (sqlc.narg(since)::timestamptz IS NULL OR time >= sqlc.narg(since))
+-- 汇总水位线之前的日子查 usage_daily（since 早于水位线时按 UTC 日对齐），水位线之后查 usage_events 明细，
+-- 汇总任务滞后也不会漏数。
+WITH mark AS (
+    SELECT coalesce((SELECT through FROM usage_rollup), '-infinity'::timestamptz) AS through
+), live AS (
+    SELECT COALESCE(e.account_id, '00000000-0000-0000-0000-000000000000'::uuid) AS account_id,
+           COALESCE(e.key_id, '00000000-0000-0000-0000-000000000000'::uuid)     AS key_id,
+           e.model,
+           count(*)::bigint                            AS requests,
+           sum(e.input_tokens)::bigint                 AS input_tokens,
+           sum(e.output_tokens)::bigint                AS output_tokens,
+           sum(e.cached_tokens)::bigint                AS cached_tokens,
+           sum(e.cost_nanos)::bigint                   AS cost_nanos,
+           COALESCE(sum(e.gateway_cost_nanos), 0)::bigint AS gateway_cost_nanos
+    FROM usage_events e, mark
+    WHERE (sqlc.narg(account_id)::uuid IS NULL OR e.account_id = sqlc.narg(account_id))
+      AND (sqlc.narg(key_id)::uuid IS NULL OR e.key_id = sqlc.narg(key_id))
+      AND (sqlc.narg(since)::timestamptz IS NULL OR e.time >= sqlc.narg(since))
+      AND e.time >= mark.through
+    GROUP BY 1, 2, 3
+), daily AS (
+    SELECT d.account_id, d.key_id, d.model, d.requests, d.input_tokens, d.output_tokens, d.cached_tokens,
+           d.cost_nanos, d.gateway_cost_nanos
+    FROM usage_daily d, mark
+    WHERE (sqlc.narg(account_id)::uuid IS NULL OR d.account_id = sqlc.narg(account_id))
+      AND (sqlc.narg(key_id)::uuid IS NULL OR d.key_id = sqlc.narg(key_id))
+      AND (sqlc.narg(since)::timestamptz IS NULL OR d.day >= (sqlc.narg(since)::timestamptz AT TIME ZONE 'UTC')::date)
+      AND d.day < (mark.through AT TIME ZONE 'UTC')::date
+)
+SELECT u.account_id::uuid                  AS account_id,
+       u.key_id::uuid                      AS key_id,
+       u.model::text                       AS model,
+       sum(u.requests)::bigint             AS requests,
+       sum(u.input_tokens)::bigint         AS input_tokens,
+       sum(u.output_tokens)::bigint        AS output_tokens,
+       sum(u.cached_tokens)::bigint        AS cached_tokens,
+       sum(u.cost_nanos)::bigint           AS cost_nanos,
+       sum(u.gateway_cost_nanos)::bigint   AS gateway_cost_nanos
+FROM (SELECT * FROM live UNION ALL SELECT * FROM daily) u
 GROUP BY 1, 2, 3
 ORDER BY cost_nanos DESC;
 
@@ -97,9 +132,12 @@ SET model_ratio = EXCLUDED.model_ratio,
 DELETE FROM model_pricing WHERE model = $1;
 
 -- name: BackfillGatewayCost :execrows
+-- 按 settled_requests 记下的 usage_time 定位分区（执行期剪枝）；超出幂等保留期的请求不再补写。
 UPDATE usage_events
 SET gateway_cost_nanos = $2
-WHERE request_id = $1 AND gateway_cost_nanos IS NULL;
+WHERE usage_events.request_id = $1
+  AND usage_events.gateway_cost_nanos IS NULL
+  AND usage_events.time = (SELECT s.usage_time FROM settled_requests s WHERE s.request_id = $1);
 
 -- name: ReserveQuota :one
 -- 一次往返完成两级预扣（额度与并发）与预扣记录。数据修改 CTE 的每个子语句都会执行：
@@ -176,3 +214,49 @@ SET tokens = rate_counters.tokens + EXCLUDED.tokens;
 
 -- name: DeleteRateWindows :execrows
 DELETE FROM rate_counters WHERE window_start < $1;
+
+-- name: RollupUsageDaily :exec
+-- 重算 [from_time, to_time) 内各 UTC 日的汇总（整日覆盖写入，可重复执行）。
+INSERT INTO usage_daily (day, account_id, key_id, model, requests, input_tokens, output_tokens, cached_tokens,
+                         cost_nanos, gateway_cost_nanos)
+SELECT (e.time AT TIME ZONE 'UTC')::date,
+       COALESCE(e.account_id, '00000000-0000-0000-0000-000000000000'::uuid),
+       COALESCE(e.key_id, '00000000-0000-0000-0000-000000000000'::uuid),
+       e.model,
+       count(*),
+       sum(e.input_tokens)::bigint,
+       sum(e.output_tokens)::bigint,
+       sum(e.cached_tokens)::bigint,
+       sum(e.cost_nanos)::bigint,
+       COALESCE(sum(e.gateway_cost_nanos), 0)::bigint
+FROM usage_events e
+WHERE e.time >= sqlc.arg(from_time)::timestamptz AND e.time < sqlc.arg(to_time)::timestamptz
+GROUP BY 1, 2, 3, 4
+ON CONFLICT (day, account_id, key_id, model) DO UPDATE
+SET requests           = EXCLUDED.requests,
+    input_tokens       = EXCLUDED.input_tokens,
+    output_tokens      = EXCLUDED.output_tokens,
+    cached_tokens      = EXCLUDED.cached_tokens,
+    cost_nanos         = EXCLUDED.cost_nanos,
+    gateway_cost_nanos = EXCLUDED.gateway_cost_nanos;
+
+-- name: AdvanceUsageRollup :exec
+INSERT INTO usage_rollup (singleton, through) VALUES (true, $1)
+ON CONFLICT (singleton) DO UPDATE SET through = greatest(usage_rollup.through, EXCLUDED.through);
+
+-- name: GetUsageRollup :one
+SELECT through FROM usage_rollup;
+
+-- name: TryMaintenanceLock :one
+-- 多副本时同一维护任务只由一个副本执行；事务结束自动释放。
+SELECT pg_try_advisory_xact_lock(hashtext('loom:maintenance:' || sqlc.arg(task)::text));
+
+-- name: EnsureMonthPartitions :one
+SELECT loom_ensure_month_partitions(sqlc.arg(parent)::text, sqlc.arg(first_month)::timestamptz,
+                                    sqlc.arg(last_month)::timestamptz)::int AS created;
+
+-- name: DropMonthPartitions :one
+SELECT loom_drop_month_partitions(sqlc.arg(parent)::text, sqlc.arg(before)::timestamptz)::int AS dropped;
+
+-- name: DeleteSettledRequests :execrows
+DELETE FROM settled_requests WHERE settled_at < $1;

@@ -216,3 +216,11 @@ func TestReserveCompensatesWhenCommitOutcomeIsUnknown(t *testing.T) {
 	released := testutil.ToFloat64(f.metrics.ReserveCompensations.WithLabelValues("released"))
 	assert.InDelta(t, 1, released, 0)
 }
+
+func TestUsageTimeFallsBackToSettlementTime(t *testing.T) {
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	assert.Equal(t, now.Add(-time.Minute), usageTime(now.Add(-time.Minute), now), "a normal report keeps its time")
+	assert.Equal(t, now, usageTime(time.Time{}, now), "zero time")
+	assert.Equal(t, now, usageTime(now.Add(-2*time.Hour), now), "too late to be rolled up into its own day")
+	assert.Equal(t, now, usageTime(now.Add(time.Hour), now), "clock skew into the future")
+}

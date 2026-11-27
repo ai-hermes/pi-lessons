@@ -20,6 +20,10 @@
 | 进行中 In Flight | `APIKey.InFlight`、`Account.InFlight` | 未结算的预扣记录数，即当前并发；与 `reserved` 在同一条预扣 UPDATE 中条件递增 |
 | 用量上报 Usage Report | `ledger.UsageReport` | 一次请求的实际 token 用量，来自某个通道 |
 | 通道 Channel | `ratelimit.Channel`=`rls`、`otlp.Channel`=`otlp` | 用量上报的来源；RLS 是同步主通道，OTLP 是补账通道 |
-| 结算 Settlement | `ledger.Settle`、表 `usage_events` | 按实际金额冲正预扣；同一 `request_id` 只结算一次 |
+| 结算 Settlement | `ledger.Settle`、表 `usage_events` | 按实际金额冲正预扣；同一 `request_id` 只结算一次（由幂等表保证） |
+| 幂等记录 Settled Request | 表 `settled_requests` | 已结算的 `request_id`，承担结算去重；保留期内有效 |
+| 日汇总 Daily Rollup | 表 `usage_daily`、`maintenance.Runner` | 按 UTC 日、账户、Key、模型汇总的用量，永久保留 |
+| 汇总水位线 Rollup Watermark | 表 `usage_rollup.through` | 已汇总到此时刻之前；汇总查询在其之前查日汇总、之后查明细 |
+| 聚合审计行 Aggregated Audit | `store.Audit.Count`、`CredentialPreview` | 未识别出 Key 的拒绝按分钟合并成的一行审计 |
 | 协议 Protocol | `admission.Request.Protocol` | extauth 门面协议：`http` / `grpc` |
 | 数据面 / 运维面 | `server.listen` / `server.ops_listen` | `:8080` 只给网关；`:9090` 给运维与 Prometheus |

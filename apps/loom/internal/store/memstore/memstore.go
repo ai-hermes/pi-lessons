@@ -3,6 +3,7 @@ package memstore
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"sort"
 	"sync"
@@ -21,6 +22,9 @@ type Store struct {
 	byHash      map[string]uuid.UUID
 	reserv      map[string]store.Reservation
 	rates       map[rateKey]*rateCount
+	settled     map[string]settledRequest
+	daily       map[dailyKey]store.UsageSummaryRow
+	rollupMark  *time.Time
 	usageEvents []store.UsageEvent
 	audit       []store.Audit
 	pricing     map[string]store.ModelPrice
@@ -39,6 +43,8 @@ func New() *Store {
 		byHash:   map[string]uuid.UUID{},
 		reserv:   map[string]store.Reservation{},
 		rates:    map[rateKey]*rateCount{},
+		settled:  map[string]settledRequest{},
+		daily:    map[dailyKey]store.UsageSummaryRow{},
 		pricing:  map[string]store.ModelPrice{},
 	}
 }
@@ -354,31 +360,33 @@ func (m *Store) CountReservations(_ context.Context) (int64, error) {
 func (m *Store) SettleUsage(_ context.Context, ev store.UsageEvent) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, event := range m.usageEvents {
-		if ev.RequestID != "" && event.RequestID == ev.RequestID {
-			return false, nil
-		}
-	}
-	m.nextID++
-	ev.ID, ev.Settled = m.nextID, true
 	if ev.Time.IsZero() {
 		ev.Time = time.Now()
 	}
-	m.usageEvents = append(m.usageEvents, ev)
-	if ev.APIKeyID != nil {
-		apiKey := m.apiKeys[*ev.APIKeyID]
-		account := m.accounts[apiKey.AccountID]
-		if r, ok := m.reserv[ev.RequestID]; ok {
-			apiKey.QuotaUsed += ev.CostNanos
-			account.QuotaUsed += ev.CostNanos
-			m.releaseLocked(r)
-		} else {
-			apiKey.QuotaUsed += ev.CostNanos
-			account.QuotaUsed += ev.CostNanos
+	if ev.RequestID != "" {
+		if _, ok := m.settled[ev.RequestID]; ok {
+			return false, nil
 		}
-	} else if ev.AccountID != nil {
-		if a, ok := m.accounts[*ev.AccountID]; ok {
-			a.QuotaUsed += ev.CostNanos
+		m.settled[ev.RequestID] = settledRequest{usageTime: ev.Time, settledAt: time.Now()}
+	}
+	m.nextID++
+	ev.ID, ev.Settled = m.nextID, true
+	m.usageEvents = append(m.usageEvents, ev)
+	// 与 PostgreSQL 一致：有预扣时按预扣记录的两级结算；没有时按事件上的 Key 与账户累加，不存在的对象跳过
+	if r, ok := m.reserv[ev.RequestID]; ok && ev.APIKeyID != nil {
+		m.apiKeys[r.APIKeyID].QuotaUsed += ev.CostNanos
+		m.accounts[r.AccountID].QuotaUsed += ev.CostNanos
+		m.releaseLocked(r)
+		return true, nil
+	}
+	if ev.APIKeyID != nil {
+		if apiKey, ok := m.apiKeys[*ev.APIKeyID]; ok {
+			apiKey.QuotaUsed += ev.CostNanos
+		}
+	}
+	if ev.AccountID != nil {
+		if account, ok := m.accounts[*ev.AccountID]; ok {
+			account.QuotaUsed += ev.CostNanos
 		}
 	}
 	return true, nil
@@ -388,6 +396,9 @@ func (m *Store) SettleUsage(_ context.Context, ev store.UsageEvent) (bool, error
 func (m *Store) BackfillAgentGatewayCost(_ context.Context, requestID string, nanos int64) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if _, ok := m.settled[requestID]; !ok {
+		return false, nil // 与 PostgreSQL 一致：超出幂等保留期的请求不再补写
+	}
 	for i := range m.usageEvents {
 		if m.usageEvents[i].RequestID == requestID && m.usageEvents[i].AgentGatewayCostNanos == nil {
 			n := nanos
@@ -447,45 +458,44 @@ func (m *Store) ListUsage(
 func (m *Store) SummaryUsage(_ context.Context, f store.UsageFilter) ([]store.UsageSummaryRow, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	agg := map[string]*store.UsageSummaryRow{}
-	for _, event := range m.usageEvents {
-		if f.AccountID != nil && (event.AccountID == nil || *event.AccountID != *f.AccountID) {
-			continue
+	agg := map[summaryKey]*store.UsageSummaryRow{}
+	add := func(row store.UsageSummaryRow) {
+		k := summaryKey{row.AccountID, row.APIKeyID, row.Model}
+		existing, ok := agg[k]
+		if !ok {
+			agg[k] = &row
+			return
 		}
-		if f.APIKeyID != nil && (event.APIKeyID == nil || *event.APIKeyID != *f.APIKeyID) {
+		existing.Requests += row.Requests
+		existing.InputTokens += row.InputTokens
+		existing.OutputTokens += row.OutputTokens
+		existing.CachedTokens += row.CachedTokens
+		existing.CostNanos += row.CostNanos
+		existing.AgentGatewayCostNanos += row.AgentGatewayCostNanos
+	}
+	// 与 PostgreSQL 一致：水位线之前查日汇总（since 按 UTC 日对齐），之后查明细
+	var mark time.Time
+	if m.rollupMark != nil {
+		mark = *m.rollupMark
+	}
+	for _, event := range m.usageEvents {
+		row := summaryRowOf(event)
+		if event.Time.Before(mark) || !f.Matches(row.AccountID, row.APIKeyID) {
 			continue
 		}
 		if f.Since != nil && event.Time.Before(*f.Since) {
 			continue
 		}
-		row := store.UsageSummaryRow{
-			Model:        event.Model,
-			InputTokens:  event.InputTokens,
-			OutputTokens: event.OutputTokens,
-			CachedTokens: event.CachedTokens,
-			CostNanos:    event.CostNanos,
+		add(row)
+	}
+	for k, row := range m.daily {
+		if !k.day.Before(utcDay(mark)) || !f.Matches(row.AccountID, row.APIKeyID) {
+			continue
 		}
-		if event.AccountID != nil {
-			row.AccountID = *event.AccountID
+		if f.Since != nil && k.day.Before(utcDay(*f.Since)) {
+			continue
 		}
-		if event.APIKeyID != nil {
-			row.APIKeyID = *event.APIKeyID
-		}
-		if event.AgentGatewayCostNanos != nil {
-			row.AgentGatewayCostNanos = *event.AgentGatewayCostNanos
-		}
-		groupKey := row.AccountID.String() + row.APIKeyID.String() + row.Model
-		if existing, ok := agg[groupKey]; ok {
-			existing.Requests++
-			existing.InputTokens += row.InputTokens
-			existing.OutputTokens += row.OutputTokens
-			existing.CachedTokens += row.CachedTokens
-			existing.CostNanos += row.CostNanos
-			existing.AgentGatewayCostNanos += row.AgentGatewayCostNanos
-		} else {
-			row.Requests = 1
-			agg[groupKey] = &row
-		}
+		add(row)
 	}
 	out := make([]store.UsageSummaryRow, 0, len(agg))
 	for _, v := range agg {
@@ -503,6 +513,7 @@ func (m *Store) InsertAudit(_ context.Context, rows []store.Audit) error {
 		if r.Time.IsZero() {
 			r.Time = time.Now()
 		}
+		r.Count = max(r.Count, 1)
 		m.audit = append(m.audit, r)
 	}
 	return nil
@@ -814,4 +825,114 @@ func (m *Store) rateLocked(subject uuid.UUID, window time.Time) *rateCount {
 		m.rates[k] = count
 	}
 	return count
+}
+
+type settledRequest struct {
+	usageTime, settledAt time.Time
+}
+
+type summaryKey struct {
+	account, apiKey uuid.UUID
+	model           string
+}
+
+type dailyKey struct {
+	day time.Time // UTC 日零点
+	summaryKey
+}
+
+func utcDay(t time.Time) time.Time { return t.UTC().Truncate(24 * time.Hour) }
+
+func summaryRowOf(event store.UsageEvent) store.UsageSummaryRow {
+	row := store.UsageSummaryRow{
+		Model:        event.Model,
+		Requests:     1,
+		InputTokens:  event.InputTokens,
+		OutputTokens: event.OutputTokens,
+		CachedTokens: event.CachedTokens,
+		CostNanos:    event.CostNanos,
+	}
+	if event.AccountID != nil {
+		row.AccountID = *event.AccountID
+	}
+	if event.APIKeyID != nil {
+		row.APIKeyID = *event.APIKeyID
+	}
+	if event.AgentGatewayCostNanos != nil {
+		row.AgentGatewayCostNanos = *event.AgentGatewayCostNanos
+	}
+	return row
+}
+
+// EnsurePartitions 见 store.Store：内存实现没有分区。
+func (m *Store) EnsurePartitions(context.Context, time.Time, time.Time) (int, error) { return 0, nil }
+
+// RollupUsageDaily 见 store.Store：整日覆盖写入；明细已被清理的日子保留原有汇总。
+func (m *Store) RollupUsageDaily(_ context.Context, from, to time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	recomputed := map[dailyKey]store.UsageSummaryRow{}
+	for _, event := range m.usageEvents {
+		if event.Time.Before(from) || !event.Time.Before(to) {
+			continue
+		}
+		row := summaryRowOf(event)
+		k := dailyKey{utcDay(event.Time), summaryKey{row.AccountID, row.APIKeyID, row.Model}}
+		sum := recomputed[k]
+		sum.AccountID, sum.APIKeyID, sum.Model = row.AccountID, row.APIKeyID, row.Model
+		sum.Requests++
+		sum.InputTokens += row.InputTokens
+		sum.OutputTokens += row.OutputTokens
+		sum.CachedTokens += row.CachedTokens
+		sum.CostNanos += row.CostNanos
+		sum.AgentGatewayCostNanos += row.AgentGatewayCostNanos
+		recomputed[k] = sum
+	}
+	maps.Copy(m.daily, recomputed)
+	if m.rollupMark == nil || to.After(*m.rollupMark) {
+		m.rollupMark = &to
+	}
+	return nil
+}
+
+// UsageRollupWatermark 见 store.Store。
+func (m *Store) UsageRollupWatermark(context.Context) (time.Time, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.rollupMark == nil {
+		return time.Time{}, false, nil
+	}
+	return *m.rollupMark, true, nil
+}
+
+// PruneUsageEvents 见 store.Store：按行删除，返回行数。
+func (m *Store) PruneUsageEvents(_ context.Context, before time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := len(m.usageEvents)
+	m.usageEvents = slices.DeleteFunc(m.usageEvents, func(e store.UsageEvent) bool { return e.Time.Before(before) })
+	return int64(n - len(m.usageEvents)), nil
+}
+
+// PruneAudit 见 store.Store。
+func (m *Store) PruneAudit(_ context.Context, before time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := len(m.audit)
+	m.audit = slices.DeleteFunc(m.audit, func(a store.Audit) bool { return a.Time.Before(before) })
+	return int64(n - len(m.audit)), nil
+}
+
+// PruneSettledRequests 见 store.Store。
+func (m *Store) PruneSettledRequests(_ context.Context, before time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for id, r := range m.settled {
+		if r.settledAt.Before(before) {
+			delete(m.settled, id)
+			n++
+		}
+	}
+	return n, nil
 }

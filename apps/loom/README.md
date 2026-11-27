@@ -51,6 +51,7 @@ internal/
 ├── account/           管理操作：账户、Key、兜底定价、用量查询、seed
 ├── operator/          管理面身份：引导 token、签发 token（只存哈希）、read / write 角色
 ├── cachesync/         跨副本缓存失效：PG LISTEN / NOTIFY，断线退回 TTL
+├── maintenance/       数据增长维护：按月分区、usage_daily 日汇总、保留期清理（多副本只由一个执行）
 ├── transport/         协议适配，只做线上格式 ↔ 领域类型的翻译
 │   ├── extauth/       HTTP /check + Envoy ext_authz.v3
 │   ├── ratelimit/     Envoy RateLimitService（amend → ledger.Settle；与客户级限流无关）
@@ -74,7 +75,7 @@ deploy/                k8s 清单 · deploy.sh · smoke.sh · contract.sh · ben
 make test lint                            # 单测（-race）+ golangci-lint
 make check                                # 校验配置并打印价目表
 deploy/deploy.sh --fresh --tag v0.7.1     # 部署到 st2-aii（--pg single|cnpg，不指定时沿用现有形态）
-deploy/smoke.sh                           # 验收：RESULT: PASS=117 FAIL=0
+deploy/smoke.sh                           # 验收：RESULT: PASS=126 FAIL=0
 deploy/contract.sh                        # AgentGateway 契约测试：RESULT: PASS=30 FAIL=0
 deploy/bench.sh                           # 压测基线（单账户 / 多账户，按并发分档；--rate-limits 度量限流开销）
 deploy/monitoring/check.sh                # 告警规则校验（promtool + kind 内最小 Prometheus）

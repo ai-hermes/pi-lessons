@@ -81,7 +81,7 @@ func New(
 		metrics:       metrics,
 		log:           logger,
 		apiKeys:       newAPIKeyCache(opts.APIKeyCache),
-		audit:         newAuditWriter(storage, opts.AuditQueue, logger),
+		audit:         newAuditWriter(storage, opts.AuditQueue, metrics, logger),
 		timeout:       opts.Timeout,
 	}
 }

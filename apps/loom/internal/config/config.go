@@ -32,6 +32,16 @@ type Config struct {
 	RateLimit  RateLimit  `koanf:"ratelimit"`
 	OTLP       OTLP       `koanf:"otlp"`
 	Admin      Admin      `koanf:"admin"`
+	Retention  Retention  `koanf:"retention"`
+}
+
+// Retention 数据增长维护：分区、日汇总与保留期清理。
+type Retention struct {
+	Interval              time.Duration `koanf:"interval"`
+	PartitionsAheadMonths int           `koanf:"partitions_ahead_months"`
+	UsageEventsDays       int           `koanf:"usage_events_days"`
+	AuthAuditDays         int           `koanf:"auth_audit_days"`
+	SettledRequestsDays   int           `koanf:"settled_requests_days"`
 }
 
 // Server 监听地址。
@@ -269,6 +279,13 @@ func defaults() map[string]any {
 			},
 		},
 		"admin": map[string]any{"key_prefix": "loom-"},
+		"retention": map[string]any{
+			"interval":                "10m",
+			"partitions_ahead_months": 3,
+			"usage_events_days":       180,
+			"auth_audit_days":         90,
+			"settled_requests_days":   7,
+		},
 	}
 }
 
@@ -277,6 +294,7 @@ func (c *Config) validate() error {
 	if c.Admission.Timeout <= 0 {
 		errs = append(errs, errors.New("admission.timeout must be positive"))
 	}
+	errs = append(errs, c.Retention.validate()...)
 	if c.Store.Driver != "postgres" {
 		errs = append(errs, fmt.Errorf("store.driver must be postgres, got %q", c.Store.Driver))
 	}
@@ -338,4 +356,24 @@ func inlineOrFile(inline, path, name string) (string, error) {
 		return "", fmt.Errorf("%s_file %s is empty", name, path)
 	}
 	return v, nil
+}
+
+func (r Retention) validate() []error {
+	var errs []error
+	if r.Interval <= 0 {
+		errs = append(errs, errors.New("retention.interval must be positive"))
+	}
+	if r.PartitionsAheadMonths < 1 {
+		errs = append(errs, errors.New("retention.partitions_ahead_months must be at least 1"))
+	}
+	for name, days := range map[string]int{
+		"usage_events_days":     r.UsageEventsDays,
+		"auth_audit_days":       r.AuthAuditDays,
+		"settled_requests_days": r.SettledRequestsDays,
+	} {
+		if days < 1 {
+			errs = append(errs, fmt.Errorf("retention.%s must be at least 1", name))
+		}
+	}
+	return errs
 }

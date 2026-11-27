@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/account"
+	"github.com/ai-hermes/pi-lessons/apps/loom/internal/maintenance"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/operator"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/pricing"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store"
@@ -183,4 +184,28 @@ func TestRateLimitsAreValidatedAndShown(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
 	assert.Nil(t, created.RateLimits.RPM, "rate_limits replaces all three items")
 	assert.Equal(t, int64(1000), *created.RateLimits.TPM)
+}
+
+type fakeMaintainer struct{ runs int }
+
+func (m *fakeMaintainer) RunOnce(context.Context) maintenance.Report {
+	m.runs++
+	return maintenance.Report{maintenance.TaskRollup: "ok"}
+}
+
+func TestMaintenanceRunsOnDemandForWriters(t *testing.T) {
+	maintainer := &fakeMaintainer{}
+	f := newFixture(t, Options{Maintenance: maintainer})
+	reader := f.issue(t, "reader", operator.RoleRead)
+	writer := f.issue(t, "writer", operator.RoleWrite)
+
+	assert.Equal(t, http.StatusForbidden, f.do(t, http.MethodPost, "/v1/admin/maintenance", reader, "").Code)
+	rec := f.do(t, http.MethodPost, "/v1/admin/maintenance", writer, "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.JSONEq(t, `{"tasks":{"rollup":"ok"}}`, rec.Body.String())
+	assert.Equal(t, 1, maintainer.runs)
+
+	unconfigured := newFixture(t, Options{})
+	writer = unconfigured.issue(t, "writer", operator.RoleWrite)
+	assert.Equal(t, http.StatusNotImplemented, unconfigured.do(t, http.MethodPost, "/v1/admin/maintenance", writer, "").Code)
 }

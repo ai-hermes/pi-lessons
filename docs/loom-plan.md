@@ -609,7 +609,7 @@ OTLP access log 是遥测链路（批量、可丢），不适合做账本的数�
 
 ### 19.4 存储可替换性（云 PG 与 MySQL）
 
-- [x] 存储一致性测试：`internal/store/storetest` 的 19 组用例（账户与 API Key、条件预扣、两级预扣全有或全无、按请求释放预扣、限流配置读写、并发上限、额度重置两级一致、RPM / TPM 计数、结算幂等与冲正、过期释放、用量与计价快照、准入审计、兜底定价、额度变更流水、管理 token 与审计），`memstore` 在 `go test` 中运行，`postgres` 经 `deploy/conformance.sh` 在 st2-aii 的真实 PG 上（每次重建独立库 `loom_conformance`）运行，两者均通过；新增驱动以通过该测试为准入条件。统一后的语义：预扣金额大于 0 时，不存在的 API Key / 账户返回 `ErrInsufficientQuota`。限流的两个 PG 专有缺陷（在事务内读到本次未生效的递增、upsert 的 `EXCLUDED` 只能拿到截断后的值导致 TPM 负修正丢失）都是这套用例在真实 PG 上发现的，memstore 测不出来。
+- [x] 存储一致性测试：`internal/store/storetest` 的 22 组用例（账户与 API Key、条件预扣、两级预扣全有或全无、按请求释放预扣、限流配置读写、并发上限、额度重置两级一致、RPM / TPM 计数、结算幂等与冲正、过期释放、用量与计价快照、准入审计、兜底定价、额度变更流水、管理 token 与审计、幂等记录保留期、审计聚合行与清理、日汇总在明细删除后仍覆盖），`memstore` 在 `go test` 中运行，`postgres` 经 `deploy/conformance.sh` 在 st2-aii 的真实 PG 上（每次重建独立库 `loom_conformance`）运行，两者均通过；新增驱动以通过该测试为准入条件。统一后的语义：预扣金额大于 0 时，不存在的 API Key / 账户返回 `ErrInsufficientQuota`。限流的两个 PG 专有缺陷（在事务内读到本次未生效的递增、upsert 的 `EXCLUDED` 只能拿到截断后的值导致 TPM 负修正丢失）都是这套用例在真实 PG 上发现的，memstore 测不出来。
 - [x] 配置 `store.driver`（当前只接受 `postgres`，其他值在配置校验阶段报错）。
 - [x] `LISTEN` 使用可单独配置的直连 DSN（`postgres.listen_dsn`，为空时与主 DSN 相同），无法直连时退回 TTL 失效。
 - [ ] 连接经过事务模式连接池（PgBouncer 等）时，提供配置切换为简单查询协议。
@@ -668,10 +668,15 @@ OTLP access log 是遥测链路（批量、可丢），不适合做账本的数�
 
 ### 19.10 数据增长
 
-- [ ] 幂等改造：分区后 `usage_events.request_id` 的唯一约束必须包含分区键，因此先拆出已结算请求表（`request_id` 为主键）承担幂等，再做分区。
-- [ ] `usage_events`、`auth_audit` 按月分区，按下表的保留期删除过期分区；超期明细可选导出到对象存储（Parquet）。
-- [ ] 新增日汇总表 `usage_daily`，报表与管理 API 汇总改查该表。
-- [ ] 准入审计降噪：无效凭据的拒绝按 Key 前缀与时间窗口聚合或采样写入，避免无效 Key 洪水直接放大为同等数量的 `auth_audit` 写入。
+- [x] 幂等改造：新表 `settled_requests (request_id PK, usage_time, settled_at)` 承担结算幂等，结算时先登记再写明细（一条 CTE）；`usage_time` 用于补写网关金额时定位分区（执行期剪枝）。超出保留期（默认 7 天）的重复上报不再能识别，保留期须大于 OTLP 补账的最大延迟。
+- [x] 按月分区：`usage_events`、`auth_audit` 改为 `PARTITION BY RANGE (time)`，主键 `(id, time)`；分区由迁移中的 PL/pgSQL 函数 `loom_ensure_month_partitions` / `loom_drop_month_partitions` 建与删（PG 专有能力只在 `postgres` 实现内部），删除时当月及以后的分区永不删除。迁移 `0006_data_growth.sql` 把现有数据复制进分区表：st2-aii 上约 31 万 × 2 行用时约 20 秒，回滚约 12 秒，均在真实数据副本上演练过。超期明细导出到对象存储（Parquet）暂未实现。
+- [x] 保留期清理：`internal/maintenance` 每 `retention.interval`（默认 10 分钟）按顺序执行建分区（提前 3 个月）→ 日汇总 → 删过期明细 → 删过期审计 → 清理幂等记录；多副本时每个任务用 `pg_try_advisory_xact_lock` 保证只有一个副本执行，其余记为 `skipped`。明细只删除已汇总过的部分（截止时间取保留期与汇总水位线中较早者），首次汇总覆盖全部历史明细。`POST /v1/admin/maintenance`（write 角色）可立即执行一轮。指标 `loom_maintenance_runs_total{task,result}`、`loom_maintenance_last_success_timestamp_seconds{task}`，告警 `LoomMaintenanceFailing`、`LoomMaintenanceStale`（共 15 条）。
+- [x] 日汇总表 `usage_daily (day, account_id, key_id, model)` 永久保留；汇总接口改为“水位线之前查 `usage_daily`（`since` 按 UTC 日对齐），之后查明细”，汇总滞后也不漏数；每轮重算水位线前一天以吸收迟到的结算与补写。结算时间与当前时刻相差超过 1 小时（或超前 5 分钟）时按结算时刻记账，避免落进已汇总、不再重算的日子或不存在的分区。
+- [x] 准入审计降噪：未识别出 Key 的拒绝（缺凭据、未知 Key、查 Key 出错）按“分钟 + 原因 + 凭据前 8 位 + 协议”在各副本内存中聚合成一行（`auth_audit.count`、`credential_preview`），每分钟最多 100 组，其余并入 `*` 溢出组；无效 Key 洪水因此最多放大为每副本每分钟 101 行。指标 `loom_audit_aggregated_requests_total`。
+
+验证：smoke 第 19 节（3 个月后的分区已建好；结算登记了幂等记录；昨天的一条明细经立即维护汇总进 `usage_daily`，删除明细后汇总接口仍返回 `777`；20 次未知 Key 请求合计 `count` 为 20、每个副本至多一行）；store 一致性新增 3 组（共 22 组）；维护任务单测覆盖“先汇总后清理”“未汇总不清理”“其他副本执行时记为 skipped”。真实 PG 发现并修复两个问题：分区名后缀少取了一位（`right(name, 7)`），解析出错误的年份，所有分区都会被当作过期删除；结算时间为零值时写成公元 1 年（旧表一直如此，分区表直接报错）。
+
+开销（st2-aii，16 账户）：吞吐由约 `2,400` 到约 `2,280 rps`（约 −4%），每请求多写 1 行（幂等记录）；单账户基本不变。
 
 | 数据 | 保留期 | 说明 |
 | --- | --- | --- |

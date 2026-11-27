@@ -82,6 +82,22 @@ groups:
             提交结果未知的预扣补偿释放失败（PG 30s 内未恢复），这些额度冻结到 reservation_ttl 后由 reaper 释放；
             期间受影响账户的可用额度偏少。
 
+      - alert: LoomMaintenanceFailing
+        expr: sum by (task) (increase(loom_maintenance_runs_total{result="error"}[1h])) > 0
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: >-
+            维护任务 {{ $labels.task }} 持续失败；partitions 失败超过分区余量（默认 3 个月）后新数据将无法写入，
+            rollup 失败时明细不会被清理。
+
+      - alert: LoomMaintenanceStale
+        expr: max by (task) (time() - loom_maintenance_last_success_timestamp_seconds) > 6 * 3600
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: 维护任务 {{ $labels.task }} 超过 6 小时没有完成（任何副本都没有执行成功）。
+
       - alert: LoomOTLPDropping
         expr: sum(rate(loom_otlp_dropped_total[5m])) > 0
         for: 10m
