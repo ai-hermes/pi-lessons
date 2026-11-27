@@ -336,6 +336,80 @@ func (q *Queries) LockExpiredReservations(ctx context.Context, arg LockExpiredRe
 	return items, nil
 }
 
+const reserveQuota = `-- name: ReserveQuota :one
+WITH api_key AS (
+    UPDATE api_keys
+    SET reserved = api_keys.reserved + $1, last_used_at = now(), updated_at = now()
+    WHERE api_keys.id = $2
+      AND api_keys.status = 'active'
+      AND (api_keys.expires_at IS NULL OR api_keys.expires_at > now())
+      AND (api_keys.quota_limit IS NULL
+           OR api_keys.quota_limit - api_keys.quota_used - api_keys.reserved >= $1)
+    RETURNING api_keys.quota_limit, api_keys.quota_used, api_keys.reserved
+), account AS (
+    UPDATE accounts
+    SET reserved = accounts.reserved + $1, updated_at = now()
+    WHERE accounts.id = $3
+      AND accounts.status = 'active'
+      AND (accounts.quota_limit IS NULL
+           OR accounts.quota_limit - accounts.quota_used - accounts.reserved >= $1)
+    RETURNING accounts.quota_limit, accounts.quota_used, accounts.reserved
+), reservation AS (
+    INSERT INTO reservations (request_id, key_id, account_id, model, nanos, expires_at)
+    VALUES ($4, $2, $3, $5, $1,
+            $6)
+    RETURNING request_id
+)
+SELECT api_key.quota_limit AS key_quota_limit,
+       api_key.quota_used  AS key_quota_used,
+       api_key.reserved    AS key_reserved,
+       account.quota_limit AS account_quota_limit,
+       account.quota_used  AS account_quota_used,
+       account.reserved    AS account_reserved
+FROM api_key, account, reservation
+`
+
+type ReserveQuotaParams struct {
+	Nanos     int64
+	KeyID     uuid.UUID
+	AccountID uuid.UUID
+	RequestID string
+	Model     string
+	ExpiresAt time.Time
+}
+
+type ReserveQuotaRow struct {
+	KeyQuotaLimit     *int64
+	KeyQuotaUsed      int64
+	KeyReserved       int64
+	AccountQuotaLimit *int64
+	AccountQuotaUsed  int64
+	AccountReserved   int64
+}
+
+// 一次往返完成两级预扣与预扣记录。数据修改 CTE 的每个子语句都会执行：
+// 任一级不满足时结果为空行，调用方必须回滚事务以撤销已执行的部分。
+func (q *Queries) ReserveQuota(ctx context.Context, arg ReserveQuotaParams) (ReserveQuotaRow, error) {
+	row := q.db.QueryRow(ctx, reserveQuota,
+		arg.Nanos,
+		arg.KeyID,
+		arg.AccountID,
+		arg.RequestID,
+		arg.Model,
+		arg.ExpiresAt,
+	)
+	var i ReserveQuotaRow
+	err := row.Scan(
+		&i.KeyQuotaLimit,
+		&i.KeyQuotaUsed,
+		&i.KeyReserved,
+		&i.AccountQuotaLimit,
+		&i.AccountQuotaUsed,
+		&i.AccountReserved,
+	)
+	return i, err
+}
+
 const settleUsage = `-- name: SettleUsage :one
 WITH ins AS (
     INSERT INTO usage_events (time, request_id, trace_id, span_id, account_id, key_id, model, provider,

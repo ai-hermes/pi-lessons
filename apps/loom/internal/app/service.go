@@ -99,6 +99,7 @@ func wire(cfg *config.Config, db *postgres.DB, metrics *telemetry.Metrics, log *
 	billingLedger := ledger.New(ledgerOpts, db, prices, metrics, log)
 
 	gateOpts := admission.Options{
+		Timeout:     cfg.Admission.Timeout,
 		APIKeyCache: admission.APIKeyCacheOptions(cfg.Admission.APIKeyCache),
 		AuditQueue:  cfg.Admission.AuditQueue,
 	}

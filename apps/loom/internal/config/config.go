@@ -76,6 +76,8 @@ type Migrations struct {
 type Admission struct {
 	APIKeyCache APIKeyCache `koanf:"key_cache"`
 	AuditQueue  int         `koanf:"audit_queue"`
+	// Timeout 单次准入的截止时间，须小于网关 extAuth 超时（AgentGateway 默认 2s）；超时按 internal_error 拒绝。
+	Timeout time.Duration `koanf:"timeout"`
 }
 
 // APIKeyCache API Key 查找缓存。
@@ -219,6 +221,7 @@ func defaults() map[string]any {
 		"admission": map[string]any{
 			"key_cache":   map[string]any{"enabled": true, "size": 10000, "ttl": "30s", "negative_ttl": "5s"},
 			"audit_queue": 1024,
+			"timeout":     "1500ms",
 		},
 		"extauth": map[string]any{
 			"credential_headers": []string{"authorization", "x-api-key"},
@@ -269,6 +272,9 @@ func defaults() map[string]any {
 
 func (c *Config) validate() error {
 	var errs []error
+	if c.Admission.Timeout <= 0 {
+		errs = append(errs, errors.New("admission.timeout must be positive"))
+	}
 	if c.Store.Driver != "postgres" {
 		errs = append(errs, fmt.Errorf("store.driver must be postgres, got %q", c.Store.Driver))
 	}

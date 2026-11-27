@@ -39,6 +39,8 @@ type QuotaReserver interface {
 
 // Options 准入参数。
 type Options struct {
+	// Timeout 单次准入的截止时间；为 0 时不设截止（测试用）。
+	Timeout     time.Duration
 	APIKeyCache APIKeyCacheOptions
 	AuditQueue  int // 审计写入队列长度；0 表示不写审计
 }
@@ -52,6 +54,7 @@ type Gate struct {
 	log           *slog.Logger
 	apiKeys       *apiKeyCache
 	audit         *auditWriter
+	timeout       time.Duration
 }
 
 // New 创建准入门；审计写入需另行调用 RunAuditWriter。
@@ -71,6 +74,7 @@ func New(
 		log:           logger,
 		apiKeys:       newAPIKeyCache(opts.APIKeyCache),
 		audit:         newAuditWriter(storage, opts.AuditQueue, logger),
+		timeout:       opts.Timeout,
 	}
 }
 
@@ -86,7 +90,13 @@ func (g *Gate) InvalidateAccount(accountID uuid.UUID) { g.apiKeys.invalidateAcco
 // Admit 对一次请求做准入判断，并记录指标、日志与审计。
 func (g *Gate) Admit(ctx context.Context, req Request) Verdict {
 	start := time.Now()
-	v := g.admit(ctx, req, uuid.NewString())
+	admitCtx := ctx
+	if g.timeout > 0 {
+		var cancel context.CancelFunc
+		admitCtx, cancel = context.WithTimeout(ctx, g.timeout)
+		defer cancel()
+	}
+	v := g.admit(admitCtx, req, uuid.NewString())
 
 	g.metrics.AdmissionDuration.WithLabelValues("total").Observe(time.Since(start).Seconds())
 	g.metrics.AdmissionDecisions.WithLabelValues(string(v.Reason), strconv.FormatBool(v.Allowed)).Inc()

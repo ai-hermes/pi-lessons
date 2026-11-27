@@ -36,9 +36,7 @@ const (
 type Store interface {
 	ReserveAPIKeyQuota(ctx context.Context, apiKeyID uuid.UUID, nanos int64) (store.QuotaState, error)
 	ReserveAccountQuota(ctx context.Context, accountID uuid.UUID, nanos int64) (store.QuotaState, error)
-	ReleaseAPIKeyReservation(ctx context.Context, apiKeyID uuid.UUID, nanos int64) error
-	ReleaseAccountReservation(ctx context.Context, accountID uuid.UUID, nanos int64) error
-	CreateReservation(ctx context.Context, r store.Reservation) error
+	ReserveQuota(ctx context.Context, r store.Reservation) (store.QuotaReservation, error)
 	CountReservations(ctx context.Context) (int64, error)
 	ReleaseExpiredReservations(ctx context.Context, now time.Time, limit int) (int, error)
 
