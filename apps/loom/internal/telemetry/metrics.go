@@ -16,6 +16,10 @@ type Metrics struct {
 	AdmissionDuration  *prometheus.HistogramVec // {stage}
 	CacheLookups       *prometheus.CounterVec   // {cache, result}
 
+	// cache sync
+	CacheInvalidations  *prometheus.CounterVec // {kind, origin}
+	CacheSyncReconnects prometheus.Counter
+
 	// pricing
 	PricingLookups *prometheus.CounterVec // {source}
 	PricingReload  *prometheus.CounterVec // {result}
@@ -57,6 +61,15 @@ func NewMetrics(version, commit string) *Metrics {
 			"loom_admission_duration_seconds",
 			"Admission latency by stage.",
 			"stage",
+		),
+		CacheInvalidations: counterVec(
+			"loom_cache_invalidations_total",
+			"Cache invalidations applied on this replica, by origin (local or remote replica).",
+			"kind", "origin",
+		),
+		CacheSyncReconnects: counter(
+			"loom_cache_sync_reconnects_total",
+			"Reconnects of the cross-replica cache invalidation listener.",
 		),
 		CacheLookups: counterVec(
 			"loom_cache_lookups_total",
@@ -165,6 +178,11 @@ func NewMetrics(version, commit string) *Metrics {
 	for _, result := range []string{"ok", "error"} {
 		m.PricingReload.WithLabelValues(result)
 	}
+	for _, kind := range []string{"api_key", "account", "model_price"} {
+		for _, origin := range []string{"local", "remote"} {
+			m.CacheInvalidations.WithLabelValues(kind, origin)
+		}
+	}
 
 	m.Registry.MustRegister(
 		collectors.NewGoCollector(),
@@ -173,6 +191,8 @@ func NewMetrics(version, commit string) *Metrics {
 		m.AdmissionDecisions,
 		m.AdmissionDuration,
 		m.CacheLookups,
+		m.CacheInvalidations,
+		m.CacheSyncReconnects,
 		m.PricingLookups,
 		m.PricingReload,
 		m.PricingModels,

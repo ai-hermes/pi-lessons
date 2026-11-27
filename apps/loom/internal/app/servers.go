@@ -57,6 +57,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.ledger.RunReaper,
 		s.gate.RunAuditWriter,
 		s.queue.Run,
+		s.caches.Run,
 		func(ctx context.Context) { s.watchHealth(ctx, grpcHealth) },
 	} {
 		workers.Go(func() { run(workerCtx) })

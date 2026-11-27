@@ -66,7 +66,7 @@ func (s *Service) UpsertModelPrice(ctx context.Context, model string, in ModelPr
 	if err := s.store.UpsertModelPricing(ctx, price); err != nil {
 		return err
 	}
-	s.prices.InvalidateFallbackCache(model)
+	s.caches.InvalidateModelPrice(ctx, model)
 	return nil
 }
 
@@ -83,7 +83,7 @@ func (s *Service) DeleteModelPrice(ctx context.Context, model string) error {
 	if err := s.store.DeleteModelPricing(ctx, model); err != nil {
 		return err
 	}
-	s.prices.InvalidateFallbackCache(model)
+	s.caches.InvalidateModelPrice(ctx, model)
 	return nil
 }
 

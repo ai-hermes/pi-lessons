@@ -56,14 +56,15 @@ groups=json.load(sys.stdin)["data"]["groups"]
 rules=[r for g in groups for r in g["rules"]]
 bad=[r["name"]+": "+r.get("lastError","") for r in rules if r.get("health")!="ok"]
 print(len(rules), "|", "; ".join(bad) or "none")')
-check "alert rules loaded" 11 "$(echo "$rules" | cut -d'|' -f1 | tr -d ' ')"
+check "alert rules loaded" 12 "$(echo "$rules" | cut -d'|' -f1 | tr -d ' ')"
 check "rules evaluated without errors" none "$(echo "$rules" | cut -d'|' -f2 | sed 's/^ //')"
 
 echo "### 3. 规则引用的指标都有真实序列"
 # loom_store_errors_total{op}、loom_ledger_cost_mismatch_total{model} 的标签取值是动态的，首次出错前不存在，不在此检查
 for metric in loom_admission_decisions_total loom_admission_duration_seconds_bucket \
   loom_store_pool_acquired_conns loom_store_pool_max_conns loom_ledger_settle_errors_total \
-  loom_ledger_reservations_expired_total loom_otlp_dropped_total loom_pricing_reloads_total; do
+  loom_ledger_reservations_expired_total loom_otlp_dropped_total loom_pricing_reloads_total \
+  loom_cache_sync_reconnects_total; do
   n=$(query "count({__name__=\"$metric\"})" | python3 -c 'import json,sys; r=json.load(sys.stdin)["data"]["result"]; print("yes" if r else "no")')
   check "series exist: $metric" yes "$n"
 done

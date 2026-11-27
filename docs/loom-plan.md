@@ -597,7 +597,8 @@ OTLP access log 是遥测链路（批量、可丢），不适合做账本的数�
 
 - [ ] 存储一致性测试：一套针对 `store.Store` 的行为测试，`memstore` 与 `postgres` 必须同时通过；新增驱动以通过该测试为准入条件。
 - [ ] 配置 `store.driver: postgres | mysql`，当前只实现 `postgres`。
-- [ ] 云 PG 兼容：连接经过事务模式连接池（PgBouncer 等）时，提供配置切换为简单查询协议；`LISTEN` 使用单独的直连 DSN（`postgres.listen_dsn`），无法直连时退回 TTL 失效。
+- [x] `LISTEN` 使用可单独配置的直连 DSN（`postgres.listen_dsn`，为空时与主 DSN 相同），无法直连时退回 TTL 失效。
+- [ ] 连接经过事务模式连接池（PgBouncer 等）时，提供配置切换为简单查询协议。
 - [ ] PG 专有能力只出现在 `postgres` 实现内部，不改变 `store.Store` 方法语义：`RETURNING` / `ON CONFLICT`、带写操作的 CTE、`FOR UPDATE SKIP LOCKED`、`LISTEN` / `NOTIFY`、advisory lock、原生分区。MySQL 实现以多语句事务、`ON DUPLICATE KEY`、`GET_LOCK` 与轮询替代。
 
 ### 19.5 性能
@@ -629,7 +630,8 @@ OTLP access log 是遥测链路（批量、可丢），不适合做账本的数�
 
 ### 19.8 多副本一致性
 
-- [ ] 定义缓存失效接口，PG 实现用 `LISTEN` / `NOTIFY`（频道 `loom_invalidate`，载荷 `{kind, id}`）：管理操作提交后广播，所有副本清理 API Key、账户与兜底价格缓存；断线自动重连，最坏退回 TTL（准入 `5s`、结算归属 `60s`、兜底价格 `30s`）。
+- [x] `internal/cachesync`：管理操作（含 `seed`）写入成功后，先清理本副本缓存，再经 `Broadcast` 接口广播；PG 实现用 `LISTEN` / `NOTIFY`（频道 `loom_invalidate`，载荷 `{kind, id, origin}`，忽略自己发出的消息），覆盖 API Key、账户与兜底价格三类缓存。监听连接断开后指数退避重连（`1s`～`30s`），断开期间退回 TTL（准入 `5s`、结算归属 `60s`、兜底价格 `30s`）。指标 `loom_cache_invalidations_total{kind,origin}`、`loom_cache_sync_reconnects_total`，告警 `LoomCacheSyncReconnecting`。
+- [x] 验收：`deploy/smoke.sh` 第 15 节在 2 副本上只经一个副本停用 Key，紧接着的 10 个请求全部 `403`，发起副本记 1 次 `local`、另一副本记 1 次 `remote`。
 
 ### 19.9 上游依赖（AgentGateway）
 

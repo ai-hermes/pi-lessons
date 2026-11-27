@@ -102,7 +102,7 @@ func (s *Service) seedAccount(ctx context.Context, a SeedAccount) ([]string, err
 	if _, err := s.store.UpdateAccount(ctx, acct.ID, settings); err != nil {
 		return nil, err
 	}
-	s.invalidateAccount(acct.ID)
+	s.caches.InvalidateAccount(ctx, acct.ID)
 
 	existing, err := s.store.ListAPIKeys(ctx, &acct.ID, 1000)
 	if err != nil {
@@ -151,7 +151,7 @@ func (s *Service) seedAPIKey(
 		if _, err := s.store.UpdateAPIKey(ctx, existing.ID, settings); err != nil {
 			return "", err
 		}
-		s.invalidateAPIKey(existing.ID)
+		s.caches.InvalidateAPIKey(ctx, existing.ID)
 		return fmt.Sprintf("api key %s/%s updated", acct.Name, k.Name), nil
 	}
 

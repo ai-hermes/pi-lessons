@@ -20,12 +20,22 @@ import (
 type recordingCache struct {
 	apiKeys  []uuid.UUID
 	accounts []uuid.UUID
+	models   []string
 }
 
-func (c *recordingCache) InvalidateAPIKey(id uuid.UUID)  { c.apiKeys = append(c.apiKeys, id) }
-func (c *recordingCache) InvalidateAccount(id uuid.UUID) { c.accounts = append(c.accounts, id) }
+func (c *recordingCache) InvalidateAPIKey(_ context.Context, id uuid.UUID) {
+	c.apiKeys = append(c.apiKeys, id)
+}
 
-func newService(t *testing.T, pricingYAML string, caches ...CacheInvalidator) *Service {
+func (c *recordingCache) InvalidateAccount(_ context.Context, id uuid.UUID) {
+	c.accounts = append(c.accounts, id)
+}
+
+func (c *recordingCache) InvalidateModelPrice(_ context.Context, model string) {
+	c.models = append(c.models, model)
+}
+
+func newService(t *testing.T, pricingYAML string) (*Service, *recordingCache) {
 	t.Helper()
 	file := filepath.Join(t.TempDir(), "pricing.yaml")
 	require.NoError(t, os.WriteFile(file, []byte(pricingYAML), 0o600))
@@ -37,13 +47,14 @@ func newService(t *testing.T, pricingYAML string, caches ...CacheInvalidator) *S
 		slog.New(slog.DiscardHandler),
 	)
 	require.NoError(t, err)
-	return New(st, prices, "", caches...)
+	cache := &recordingCache{}
+	return New(st, prices, "", cache), cache
 }
 
 const groupsPricing = "groups:\n  vip: {ratio: 0.9}\n"
 
 func TestCreateAccountRejectsUndefinedGroup(t *testing.T) {
-	s := newService(t, groupsPricing)
+	s, _ := newService(t, groupsPricing)
 
 	_, err := s.CreateAccount(context.Background(), CreateAccountInput{Name: "a", Group: "VIP"})
 	require.ErrorIs(t, err, ErrInvalidInput)
@@ -55,7 +66,7 @@ func TestCreateAccountRejectsUndefinedGroup(t *testing.T) {
 }
 
 func TestCreateAccountAllowsUndefinedGroupWhenPolicyIsDefault(t *testing.T) {
-	s := newService(t, "defaults: {unknown_group: default}\n"+groupsPricing)
+	s, _ := newService(t, "defaults: {unknown_group: default}\n"+groupsPricing)
 
 	_, err := s.CreateAccount(context.Background(), CreateAccountInput{Name: "a", Group: "enterprise"})
 
@@ -63,8 +74,7 @@ func TestCreateAccountAllowsUndefinedGroupWhenPolicyIsDefault(t *testing.T) {
 }
 
 func TestUpdateAccountValidatesGroupAndInvalidatesCaches(t *testing.T) {
-	cache := &recordingCache{}
-	s := newService(t, groupsPricing, cache)
+	s, cache := newService(t, groupsPricing)
 	account, err := s.CreateAccount(context.Background(), CreateAccountInput{Name: "a"})
 	require.NoError(t, err)
 
@@ -76,4 +86,14 @@ func TestUpdateAccountValidatesGroupAndInvalidatesCaches(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "vip", updated.Group)
 	assert.Equal(t, []uuid.UUID{account.ID}, cache.accounts)
+}
+
+func TestModelPriceChangesInvalidateFallbackCache(t *testing.T) {
+	s, cache := newService(t, groupsPricing)
+	ratio := 0.5
+
+	require.NoError(t, s.UpsertModelPrice(context.Background(), "pg-model", ModelPriceInput{ModelRatio: &ratio}))
+	require.NoError(t, s.DeleteModelPrice(context.Background(), "pg-model"))
+
+	assert.Equal(t, []string{"pg-model", "pg-model"}, cache.models)
 }

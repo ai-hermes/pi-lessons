@@ -9,8 +9,11 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/google/uuid"
+
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/account"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/admission"
+	"github.com/ai-hermes/pi-lessons/apps/loom/internal/cachesync"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/config"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/ledger"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/pricing"
@@ -39,6 +42,7 @@ type Service struct {
 	gate     *admission.Gate
 	accounts *account.Service
 	queue    *otlp.Queue
+	caches   *cachesync.Syncer
 
 	ready atomic.Bool
 }
@@ -115,6 +119,13 @@ func wire(cfg *config.Config, db *postgres.DB, metrics *telemetry.Metrics, log *
 	}
 	queue := otlp.NewQueue(queueOpts, billingLedger, metrics, log)
 
+	localCaches := cachesync.Caches{
+		APIKey:     []func(uuid.UUID){gate.InvalidateAPIKey, billingLedger.InvalidateAPIKey},
+		Account:    []func(uuid.UUID){gate.InvalidateAccount, billingLedger.InvalidateAccount},
+		ModelPrice: []func(string){prices.InvalidateFallbackCache},
+	}
+	caches := cachesync.New(db, localCaches, metrics, log)
+
 	return &Service{
 		cfg:      cfg,
 		log:      log,
@@ -123,8 +134,9 @@ func wire(cfg *config.Config, db *postgres.DB, metrics *telemetry.Metrics, log *
 		prices:   prices,
 		ledger:   billingLedger,
 		gate:     gate,
-		accounts: account.New(db, prices, cfg.Admin.KeyPrefix, gate, billingLedger),
+		accounts: account.New(db, prices, cfg.Admin.KeyPrefix, caches),
 		queue:    queue,
+		caches:   caches,
 	}, nil
 }
 
@@ -141,6 +153,7 @@ func openStore(
 	}
 	db, err := postgres.New(ctx, postgres.Options{
 		DSN:              dsn,
+		ListenDSN:        cfg.Postgres.ListenDSN,
 		MinConns:         cfg.Postgres.MinConns,
 		MaxConns:         cfg.Postgres.MaxConns,
 		MaxConnLifetime:  cfg.Postgres.MaxConnLifetime,

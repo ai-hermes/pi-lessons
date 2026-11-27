@@ -24,6 +24,7 @@ const pingTimeout = 10 * time.Second
 // Options 连接池参数。
 type Options struct {
 	DSN              string
+	ListenDSN        string // 跨副本缓存失效的 LISTEN 连接；为空时与 DSN 相同
 	MinConns         int32
 	MaxConns         int32
 	MaxConnLifetime  time.Duration
@@ -32,10 +33,11 @@ type Options struct {
 
 // DB 封装连接池与 sqlc 查询。
 type DB struct {
-	pool    *pgxpool.Pool
-	conn    *pgx.ConnConfig
-	q       *sqlcgen.Queries
-	onError func(op string, err error)
+	pool         *pgxpool.Pool
+	conn         *pgx.ConnConfig
+	listenConfig *pgx.ConnConfig
+	q            *sqlcgen.Queries
+	onError      func(op string, err error)
 }
 
 // New 创建连接池并确认可连通。
@@ -61,7 +63,14 @@ func New(ctx context.Context, opts Options) (*DB, error) {
 		pool.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
-	return &DB{pool: pool, conn: cfg.ConnConfig, q: sqlcgen.New(pool)}, nil
+	listenConfig := cfg.ConnConfig
+	if opts.ListenDSN != "" {
+		if listenConfig, err = pgx.ParseConfig(opts.ListenDSN); err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("parse listen dsn: %w", err)
+		}
+	}
+	return &DB{pool: pool, conn: cfg.ConnConfig, listenConfig: listenConfig, q: sqlcgen.New(pool)}, nil
 }
 
 // SetErrorHandler 设置非预期错误的回调（用于指标）；未找到、唯一冲突不会回调。
