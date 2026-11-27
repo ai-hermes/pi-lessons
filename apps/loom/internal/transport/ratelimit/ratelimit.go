@@ -1,10 +1,12 @@
 // Package ratelimit 把 AgentGateway 的 RateLimitService 调用用作同步结算通道。
 //
-// 网关策略 rateLimit.global（unit: TokenUsage，descriptors[].cost 读取 llm.* 用量）对每个请求调用两次：
+// 网关策略 rateLimit.global（unit: Tokens，descriptors[].cost 读取 llm.* 用量）对每个请求调用两次：
 //   - check：请求阶段，所有描述符 hits_addend=0；恒返回 OK，额度门禁在 extauth 准入阶段完成。
-//   - amend：响应完成后，三个描述符分别携带 input / cached / output token 数；收到后立即结算。
+//   - amend：响应完成后，描述符分别携带 input / cached / output token 数与 completion=1；收到后立即结算。
 //
-// 描述符 entries 约定：request_id、key_id、model、kind（input | cached | output）。
+// 描述符 entries 约定：request_id、key_id、model、kind（input | cached | output | completion）。
+// completion 的 cost 恒为 1，不计入 token，只表示"该请求已有响应"：上游报错或客户端中途断开时
+// token 用量全为 0，靠它把请求与请求阶段的 check 区分开，按实际用量（0）结算并释放预扣。
 // 网关不看 amend 的返回值；结算失败时返回 ERROR 只为在网关 trace 中留下痕迹。
 package ratelimit
 
