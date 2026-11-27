@@ -14,6 +14,7 @@ import (
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/pricing"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/telemetry"
+	"github.com/ai-hermes/pi-lessons/apps/loom/internal/throttle"
 )
 
 // Store 是准入所需的持久化能力。
@@ -27,14 +28,18 @@ type Pricer interface {
 	Lookup(ctx context.Context, model, group string) (pricing.UnitPrice, error)
 }
 
-// QuotaReserver 预扣额度。
+// QuotaReserver 预扣额度并占用并发名额。
 type QuotaReserver interface {
-	ReserveQuota(
-		ctx context.Context,
-		apiKey store.APIKey,
-		unitPrice pricing.UnitPrice,
-		requestID string,
-	) (ledger.ReservationHold, error)
+	ReserveQuota(ctx context.Context, req ledger.ReserveRequest) (ledger.ReservationHold, error)
+}
+
+// Limiter 客户级限流（RPM / TPM 计数与生效上限）。
+type Limiter interface {
+	Resolve(apiKey store.APIKey) throttle.Limits
+	Acquire(ctx context.Context, apiKey store.APIKey, limits throttle.Limits, tokens int64) (throttle.Ticket, error)
+	Release(ctx context.Context, ticket throttle.Ticket)
+	RecordRejection(err error)
+	RetryAfter(kind store.RateLimitKind) time.Duration
 }
 
 // Options 准入参数。
@@ -50,6 +55,7 @@ type Gate struct {
 	store         Store
 	pricer        Pricer
 	quotaReserver QuotaReserver
+	limiter       Limiter
 	metrics       *telemetry.Metrics
 	log           *slog.Logger
 	apiKeys       *apiKeyCache
@@ -63,6 +69,7 @@ func New(
 	storage Store,
 	pricer Pricer,
 	quotaReserver QuotaReserver,
+	limiter Limiter,
 	metrics *telemetry.Metrics,
 	logger *slog.Logger,
 ) *Gate {
@@ -70,6 +77,7 @@ func New(
 		store:         storage,
 		pricer:        pricer,
 		quotaReserver: quotaReserver,
+		limiter:       limiter,
 		metrics:       metrics,
 		log:           logger,
 		apiKeys:       newAPIKeyCache(opts.APIKeyCache),
@@ -117,9 +125,13 @@ func (g *Gate) admit(ctx context.Context, req Request, requestID string) Verdict
 		return v.deny(denyReason)
 	}
 
+	limits := g.limiter.Resolve(apiKey)
 	v.Model = resolveModel(req)
 	if v.Model == "" {
-		// 非模型请求（如 /echo）：只鉴权，不定价、不预扣
+		// 非模型请求（如 /echo）：只鉴权并计入 RPM，不定价、不预扣
+		if _, err := g.acquireRate(ctx, apiKey, limits, 0); err != nil {
+			return g.denyRateLimited(v, err)
+		}
 		return v.allow()
 	}
 	if !apiKey.AllowsModel(v.Model) {
@@ -130,12 +142,51 @@ func (g *Gate) admit(ctx context.Context, req Request, requestID string) Verdict
 	if denyReason != "" {
 		return v.deny(denyReason)
 	}
-	reservationHold, denyReason := g.reserveQuota(ctx, apiKey, unitPrice, requestID)
-	if denyReason != "" {
-		return v.deny(denyReason)
+	ticket, err := g.acquireRate(ctx, apiKey, limits, unitPrice.ReserveTokens)
+	if err != nil {
+		return g.denyRateLimited(v, err)
+	}
+	reservationHold, err := g.reserveQuota(ctx, ledger.ReserveRequest{
+		APIKey:      apiKey,
+		UnitPrice:   unitPrice,
+		RequestID:   requestID,
+		Concurrency: limits.Concurrency(),
+	})
+	if err != nil {
+		g.limiter.Release(ctx, ticket) // 被拒绝的请求不占 RPM / TPM
+		if errors.Is(err, store.ErrRateLimited) {
+			g.limiter.RecordRejection(err)
+			return g.denyRateLimited(v, err)
+		}
+		return v.deny(reserveDenyReason(err))
 	}
 	v.ReservedNanos, v.RemainingNanos = reservationHold.Nanos, reservationHold.Remaining
 	return v.allow()
+}
+
+// acquireRate 计入 RPM / TPM；超限返回 *store.RateLimitError，存储故障原样返回。
+func (g *Gate) acquireRate(
+	ctx context.Context,
+	apiKey store.APIKey,
+	limits throttle.Limits,
+	tokens int64,
+) (throttle.Ticket, error) {
+	defer g.observe("throttle", time.Now())
+	ticket, err := g.limiter.Acquire(ctx, apiKey, limits, tokens)
+	if err != nil && !errors.Is(err, store.ErrRateLimited) {
+		g.log.Error("rate counter failed", "err", err, "key_id", apiKey.ID)
+	}
+	return ticket, err
+}
+
+// denyRateLimited 把限流错误转成拒绝结论；不是限流错误时按内部错误拒绝。
+func (g *Gate) denyRateLimited(v Verdict, err error) Verdict {
+	limited, ok := errors.AsType[*store.RateLimitError](err)
+	if !ok {
+		return v.deny(ReasonInternalError)
+	}
+	v.RateLimit, v.RetryAfter = limited, g.limiter.RetryAfter(limited.Kind)
+	return v.deny(ReasonRateLimited)
 }
 
 // authenticate 用凭据查找 Key；失败时返回拒绝原因。
@@ -184,24 +235,23 @@ func (g *Gate) lookupUnitPrice(ctx context.Context, model, group string) (pricin
 	return unitPrice, ""
 }
 
-// reserveQuota 预扣额度；失败时返回拒绝原因。
-func (g *Gate) reserveQuota(
-	ctx context.Context,
-	apiKey store.APIKey,
-	unitPrice pricing.UnitPrice,
-	requestID string,
-) (ledger.ReservationHold, Reason) {
+// reserveQuota 预扣额度并占用并发名额。
+func (g *Gate) reserveQuota(ctx context.Context, req ledger.ReserveRequest) (ledger.ReservationHold, error) {
 	defer g.observe("reserve", time.Now())
 
-	reservationHold, err := g.quotaReserver.ReserveQuota(ctx, apiKey, unitPrice, requestID)
-	switch {
-	case ledger.IsInsufficientQuota(err):
-		return ledger.ReservationHold{}, ReasonInsufficientQuota
-	case err != nil:
-		g.log.Error("reserve failed", "err", err, "key_id", apiKey.ID)
-		return ledger.ReservationHold{}, ReasonInternalError
+	reservationHold, err := g.quotaReserver.ReserveQuota(ctx, req)
+	if err != nil && !ledger.IsInsufficientQuota(err) && !errors.Is(err, store.ErrRateLimited) {
+		g.log.Error("reserve failed", "err", err, "key_id", req.APIKey.ID)
 	}
-	return reservationHold, ""
+	return reservationHold, err
+}
+
+// reserveDenyReason 把预扣失败（非限流）映射为拒绝原因。
+func reserveDenyReason(err error) Reason {
+	if ledger.IsInsufficientQuota(err) {
+		return ReasonInsufficientQuota
+	}
+	return ReasonInternalError
 }
 
 func (g *Gate) lookupAPIKey(ctx context.Context, hash string) (store.APIKey, error) {
@@ -238,6 +288,9 @@ func (g *Gate) logVerdict(req Request, v Verdict, start time.Time) {
 	if v.Allowed {
 		g.log.Info("admission allowed", append(logAttrs, "reserved_nanos", v.ReservedNanos)...)
 		return
+	}
+	if v.RateLimit != nil {
+		logAttrs = append(logAttrs, "limit_scope", v.RateLimit.Scope, "limit", v.RateLimit.Kind)
 	}
 	g.log.Info("admission denied", append(logAttrs, "path", req.Path)...)
 }

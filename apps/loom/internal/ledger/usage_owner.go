@@ -21,6 +21,7 @@ type usageOwner struct {
 	accountID uuid.UUID
 	apiKeyID  uuid.UUID
 	group     string
+	apiKey    store.APIKey // 按 Key ID 解析时的 Key 快照（含限流配置）；按账户名解析时为零值
 }
 
 // usageOwnerCache 把用量上报里的 Key ID / 账户名解析为归属，带短 TTL 缓存与负缓存。
@@ -70,7 +71,12 @@ func (c *usageOwnerCache) byAPIKeyID(ctx context.Context, id uuid.UUID) (usageOw
 	if err != nil {
 		return usageOwner{}, err
 	}
-	owner := usageOwner{accountID: apiKey.AccountID, apiKeyID: apiKey.ID, group: apiKey.Account.Group}
+	owner := usageOwner{
+		accountID: apiKey.AccountID,
+		apiKeyID:  apiKey.ID,
+		group:     apiKey.Account.Group,
+		apiKey:    apiKey,
+	}
 	c.byAPIKeyIDCache.Add(id, owner)
 	return owner, nil
 }

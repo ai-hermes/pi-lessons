@@ -4,7 +4,9 @@
 #   - loom 准入耗时分位数（loom_admission_duration_seconds{stage="total"}，所有 Pod 汇总）
 #   - 每请求的 PG 事务数与行写入数（pg_stat_database 增量）
 # 单账户（一个 Key，测账户行热点）与多账户（每个请求轮询 N 个 Key）各跑一组。
+# --rate-limits 给压测账户与 Key 两级都配上不会触发的 RPM / TPM / 并发上限，用来度量限流计数本身的开销。
 # 用法：deploy/bench.sh [--host HOST] [--accounts 16] [--duration 15s] [--levels "1 8 32 64"] [--groups "single multi"]
+#                       [--rate-limits]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 HOST="${DEPLOY_HOST:-192.168.16.62}"
@@ -12,6 +14,7 @@ ACCOUNTS=16
 DURATION=15s
 LEVELS="1 8 32 64"
 GROUPS_TO_RUN="single multi"
+RATE_LIMITS='{}'
 while [ $# -gt 0 ]; do
   case "$1" in
     --host) HOST="$2"; shift ;;
@@ -19,6 +22,7 @@ while [ $# -gt 0 ]; do
     --duration) DURATION="$2"; shift ;;
     --levels) LEVELS="$2"; shift ;;
     --groups) GROUPS_TO_RUN="$2"; shift ;;
+    --rate-limits) RATE_LIMITS='{rpm: 100000000, tpm: 1000000000000, max_concurrency: 100000}' ;;
   esac
   shift
 done
@@ -27,18 +31,19 @@ BENCH_BIN="$(mktemp -d)/loom-bench"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$BENCH_BIN" ./cmd/loom-bench
 scp -q "$BENCH_BIN" "${HOST}:/opt/agentgateway/loom/loom-bench"
 
-cat "$(dirname "$0")/pg.sh" - <<'REMOTE' | ssh "${HOST}" "ACCOUNTS=${ACCOUNTS} DURATION=${DURATION} LEVELS='${LEVELS}' GROUPS_TO_RUN='${GROUPS_TO_RUN}' bash -s"
+cat "$(dirname "$0")/pg.sh" - <<'REMOTE' | ssh "${HOST}" "ACCOUNTS=${ACCOUNTS} DURATION=${DURATION} LEVELS='${LEVELS}' GROUPS_TO_RUN='${GROUPS_TO_RUN}' RATE_LIMITS='${RATE_LIMITS}' bash -s"
 set -euo pipefail
 export PATH=/opt/agentgateway/k8s/bin:$PATH
 BENCH=/opt/agentgateway/loom/loom-bench
 
 bench_key() { printf 'loom-bench-%02d-000000000000000000\n' "$1"; }
 
-echo "==> seed ${ACCOUNTS} bench accounts (unlimited quota, default group)"
+echo "==> seed ${ACCOUNTS} bench accounts (unlimited quota, default group, rate_limits ${RATE_LIMITS})"
 {
   echo "accounts:"
   for i in $(seq 1 "$ACCOUNTS"); do
-    printf '  - name: bench-%02d\n    keys:\n      - name: default\n        plaintext: %s\n' "$i" "$(bench_key "$i")"
+    printf '  - name: bench-%02d\n    rate_limits: %s\n    keys:\n      - name: default\n        plaintext: %s\n        rate_limits: %s\n' \
+      "$i" "$RATE_LIMITS" "$(bench_key "$i")" "$RATE_LIMITS"
   done
 } | kubectl -n loom exec -i deploy/loom -- loom seed --config /etc/loom/config.yaml --file /dev/stdin | tail -1
 

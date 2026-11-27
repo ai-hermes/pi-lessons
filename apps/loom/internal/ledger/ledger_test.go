@@ -88,7 +88,7 @@ func (f *fixture) reserve(t *testing.T, requestID string) ReservationHold {
 	t.Helper()
 	unitPrice, err := f.prices.Lookup(context.Background(), "lab-model", "default")
 	require.NoError(t, err)
-	reservationHold, err := f.ledger.ReserveQuota(context.Background(), f.apiKey, unitPrice, requestID)
+	reservationHold, err := f.ledger.ReserveQuota(context.Background(), ReserveRequest{APIKey: f.apiKey, UnitPrice: unitPrice, RequestID: requestID})
 	require.NoError(t, err)
 	return reservationHold
 }
@@ -175,7 +175,7 @@ func TestReserveFailsWhenQuotaInsufficient(t *testing.T) {
 
 	unitPrice, err := f.prices.Lookup(context.Background(), "lab-model", "default")
 	require.NoError(t, err)
-	_, err = f.ledger.ReserveQuota(context.Background(), f.apiKey, unitPrice, "req-2")
+	_, err = f.ledger.ReserveQuota(context.Background(), ReserveRequest{APIKey: f.apiKey, UnitPrice: unitPrice, RequestID: "req-2"})
 
 	assert.True(t, IsInsufficientQuota(err))
 	apiKey, err := f.st.GetAPIKey(context.Background(), f.apiKey.ID)
@@ -186,8 +186,12 @@ func TestReserveFailsWhenQuotaInsufficient(t *testing.T) {
 // commitLostStore 预扣真的提交了，但调用方收到错误：模拟提交确认在途中连接断开或 context 到期。
 type commitLostStore struct{ Store }
 
-func (s commitLostStore) ReserveQuota(ctx context.Context, r store.Reservation) (store.QuotaReservation, error) {
-	if _, err := s.Store.ReserveQuota(ctx, r); err != nil {
+func (s commitLostStore) ReserveQuota(
+	ctx context.Context,
+	r store.Reservation,
+	concurrency store.ConcurrencyLimits,
+) (store.QuotaReservation, error) {
+	if _, err := s.Store.ReserveQuota(ctx, r, concurrency); err != nil {
 		return store.QuotaReservation{}, err
 	}
 	return store.QuotaReservation{}, fmt.Errorf("%w: %w", store.ErrCommitOutcomeUnknown, context.DeadlineExceeded)
@@ -199,7 +203,7 @@ func TestReserveCompensatesWhenCommitOutcomeIsUnknown(t *testing.T) {
 	unitPrice, err := f.prices.Lookup(context.Background(), "lab-model", "default")
 	require.NoError(t, err)
 
-	_, err = f.ledger.ReserveQuota(context.Background(), f.apiKey, unitPrice, "req-lost")
+	_, err = f.ledger.ReserveQuota(context.Background(), ReserveRequest{APIKey: f.apiKey, UnitPrice: unitPrice, RequestID: "req-lost"})
 
 	require.ErrorIs(t, err, store.ErrCommitOutcomeUnknown)
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {

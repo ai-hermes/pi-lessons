@@ -1,7 +1,3 @@
--- name: CreateReservation :exec
-INSERT INTO reservations (request_id, key_id, account_id, model, nanos, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6);
-
 -- name: GetReservation :one
 SELECT * FROM reservations WHERE request_id = $1;
 
@@ -13,6 +9,11 @@ SELECT count(*) FROM reservations;
 
 -- name: DeleteReservation :exec
 DELETE FROM reservations WHERE request_id = $1;
+
+-- name: GetInFlight :one
+-- 预扣失败后区分原因：并发已满还是额度不足。
+SELECT (SELECT in_flight FROM api_keys WHERE api_keys.id = sqlc.arg(key_id))::bigint     AS key_in_flight,
+       (SELECT in_flight FROM accounts WHERE accounts.id = sqlc.arg(account_id))::bigint AS account_in_flight;
 
 -- name: LockReservation :one
 SELECT * FROM reservations WHERE request_id = $1 FOR UPDATE;
@@ -101,12 +102,15 @@ SET gateway_cost_nanos = $2
 WHERE request_id = $1 AND gateway_cost_nanos IS NULL;
 
 -- name: ReserveQuota :one
--- 一次往返完成两级预扣与预扣记录。数据修改 CTE 的每个子语句都会执行：
+-- 一次往返完成两级预扣（额度与并发）与预扣记录。数据修改 CTE 的每个子语句都会执行：
 -- 任一级不满足时结果为空行，调用方必须回滚事务以撤销已执行的部分。
 WITH api_key AS (
     UPDATE api_keys
-    SET reserved = api_keys.reserved + sqlc.arg(nanos), last_used_at = now(), updated_at = now()
+    SET reserved = api_keys.reserved + sqlc.arg(nanos), in_flight = api_keys.in_flight + 1,
+        last_used_at = now(), updated_at = now()
     WHERE api_keys.id = sqlc.arg(key_id)
+      AND (sqlc.narg(key_max_concurrency)::bigint IS NULL
+           OR api_keys.in_flight < sqlc.narg(key_max_concurrency)::bigint)
       AND api_keys.status = 'active'
       AND (api_keys.expires_at IS NULL OR api_keys.expires_at > now())
       AND (api_keys.quota_limit IS NULL
@@ -114,8 +118,10 @@ WITH api_key AS (
     RETURNING api_keys.quota_limit, api_keys.quota_used, api_keys.reserved
 ), account AS (
     UPDATE accounts
-    SET reserved = accounts.reserved + sqlc.arg(nanos), updated_at = now()
+    SET reserved = accounts.reserved + sqlc.arg(nanos), in_flight = accounts.in_flight + 1, updated_at = now()
     WHERE accounts.id = sqlc.arg(account_id)
+      AND (sqlc.narg(account_max_concurrency)::bigint IS NULL
+           OR accounts.in_flight < sqlc.narg(account_max_concurrency)::bigint)
       AND accounts.status = 'active'
       AND (accounts.quota_limit IS NULL
            OR accounts.quota_limit - accounts.quota_used - accounts.reserved >= sqlc.arg(nanos))
@@ -133,3 +139,40 @@ SELECT api_key.quota_limit AS key_quota_limit,
        account.quota_used  AS account_quota_used,
        account.reserved    AS account_reserved
 FROM api_key, account, reservation;
+
+-- name: IncrementRateCounters :many
+-- 当前窗口内每个计数对象请求数 +1、token 数 +tokens；按 subject 排序加锁。单条语句自动提交，
+-- 热点行的锁只在语句执行期间持有，不跨网络往返。
+INSERT INTO rate_counters (subject, window_start, scope, requests, tokens)
+SELECT c.subject, sqlc.arg(window_start), c.scope, 1, c.tokens
+FROM (SELECT unnest(sqlc.arg(subjects)::uuid[]) AS subject,
+             unnest(sqlc.arg(scopes)::text[])   AS scope,
+             unnest(sqlc.arg(tokens)::bigint[]) AS tokens) AS c
+ORDER BY c.subject
+ON CONFLICT (subject, window_start) DO UPDATE
+SET requests = rate_counters.requests + 1,
+    tokens   = rate_counters.tokens + EXCLUDED.tokens
+RETURNING subject, requests, tokens;
+
+-- 以下单行语句各自自动提交、一次只锁一行，与按 subject 顺序加锁的 IncrementRateCounters 不会形成死锁。
+
+-- name: DecrementRateCounter :exec
+UPDATE rate_counters
+SET requests = greatest(requests - 1, 0),
+    tokens   = greatest(tokens - sqlc.arg(tokens)::bigint, 0)
+WHERE subject = sqlc.arg(subject) AND window_start = sqlc.arg(window_start);
+
+-- name: AdjustRateTokens :execrows
+UPDATE rate_counters
+SET tokens = greatest(tokens + sqlc.arg(tokens)::bigint, 0)
+WHERE subject = sqlc.arg(subject) AND window_start = sqlc.arg(window_start);
+
+-- name: InsertRateTokens :exec
+-- 窗口还不存在时为正的修正新建一行（与并发的新建冲突时累加）。
+INSERT INTO rate_counters (subject, window_start, scope, requests, tokens)
+VALUES (sqlc.arg(subject), sqlc.arg(window_start), sqlc.arg(scope), 0, sqlc.arg(tokens))
+ON CONFLICT (subject, window_start) DO UPDATE
+SET tokens = rate_counters.tokens + EXCLUDED.tokens;
+
+-- name: DeleteRateWindows :execrows
+DELETE FROM rate_counters WHERE window_start < $1;

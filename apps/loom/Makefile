@@ -42,8 +42,9 @@ cross:            ## 交叉编译 linux/amd64 到 build/
 catalog:          ## 从 pricing.yaml 渲染网关 catalog.json
 	go run ./cmd/loom render-catalog --pricing configs/pricing.yaml --out build/catalog.json
 
-check:            ## 校验配置并打印生效价目表
-	go run ./cmd/loom check-config --config configs/config.yaml
+check:            ## 校验配置并打印生效价目表（DSN 与 token 只需非空，不连库）
+	LOOM_POSTGRES_DSN=postgres://check-config LOOM_ADMIN_TOKEN=check-config LOOM_PRICING_FILE=configs/pricing.yaml \
+		go run ./cmd/loom check-config --config configs/config.yaml
 
 run:              ## 本地运行：数据面 :8080、运维面 :9090（需要 PG；LOOM_POSTGRES_DSN / LOOM_ADMIN_TOKEN）
 	go run ./cmd/loom serve --config configs/config.yaml

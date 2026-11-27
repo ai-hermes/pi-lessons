@@ -15,6 +15,8 @@ import (
 	"sort"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store"
 )
 
 // UnknownPolicy 决定 pricing.yaml 中未定义的模型或分组如何处理。
@@ -50,9 +52,10 @@ type ModelRate struct {
 	Reserve *ReserveEstimate `json:"reserve_tokens"`
 }
 
-// Group 分组倍率；0 表示该分组免费。
+// Group 分组：计价倍率（0 表示该分组免费）与账户级限流默认值（账户自身未配置的项取这里的值）。
 type Group struct {
-	Ratio float64 `json:"ratio"`
+	Ratio  float64          `json:"ratio"`
+	Limits store.RateLimits `json:"limits"`
 }
 
 // Defaults 模型未填写倍率时使用的默认值，以及未定义的模型 / 分组的处理策略。
@@ -114,7 +117,13 @@ func ParsePriceConfig(b []byte) (*PriceConfig, error) {
 	}
 
 	for name, g := range raw.Groups {
-		c.Groups[name] = Group{Ratio: ratio("groups."+name+".ratio", g.Ratio, DefaultGroupRatio)}
+		if err := g.Limits.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("groups.%s.limits: %w", name, err))
+		}
+		c.Groups[name] = Group{
+			Ratio:  ratio("groups."+name+".ratio", g.Ratio, DefaultGroupRatio),
+			Limits: g.Limits,
+		}
 	}
 	if _, ok := c.Groups[DefaultGroup]; !ok {
 		c.Groups[DefaultGroup] = Group{Ratio: DefaultGroupRatio}
@@ -176,6 +185,14 @@ func (c *PriceConfig) GroupRatio(group string) float64 {
 	return c.Groups[DefaultGroup].Ratio
 }
 
+// GroupLimits 返回分组的账户级限流默认值；未定义的分组取 default 分组的值。
+func (c *PriceConfig) GroupLimits(group string) store.RateLimits {
+	if g, ok := c.Groups[group]; ok {
+		return g.Limits
+	}
+	return c.Groups[DefaultGroup].Limits
+}
+
 // defaultModelRate 返回 unknown_model: default 时使用的计价规则。
 func (c *PriceConfig) defaultModelRate() ModelRate {
 	return ModelRate{
@@ -228,7 +245,8 @@ type rawDefaults struct {
 }
 
 type rawGroup struct {
-	Ratio *float64 `yaml:"ratio"`
+	Ratio  *float64         `yaml:"ratio"`
+	Limits store.RateLimits `yaml:"limits"`
 }
 
 type rawModelRate struct {

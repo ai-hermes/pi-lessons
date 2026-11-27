@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store"
@@ -13,66 +12,6 @@ import (
 )
 
 // 额度预扣、结算与过期释放。
-
-// ReserveAPIKeyQuota 见 store.Store：条件 UPDATE，剩余额度不足或 Key 不可用时返回 ErrInsufficientQuota。
-func (d *DB) ReserveAPIKeyQuota(ctx context.Context, id uuid.UUID, nanos int64) (store.QuotaState, error) {
-	if nanos <= 0 {
-		k, err := d.GetAPIKey(ctx, id)
-		return store.QuotaState{Limit: k.QuotaLimit, Used: k.QuotaUsed, Reserved: k.Reserved}, err
-	}
-	row, err := d.q.ReserveKeyQuota(ctx, sqlcgen.ReserveKeyQuotaParams{ID: id, Reserved: nanos})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return store.QuotaState{}, store.ErrInsufficientQuota
-	}
-	return store.QuotaState{Limit: row.QuotaLimit, Used: row.QuotaUsed, Reserved: row.Reserved},
-		d.fail("ReserveAPIKeyQuota", err)
-}
-
-// ReserveAccountQuota 见 store.Store。
-func (d *DB) ReserveAccountQuota(ctx context.Context, id uuid.UUID, nanos int64) (store.QuotaState, error) {
-	if nanos <= 0 {
-		a, err := d.GetAccount(ctx, id)
-		return store.QuotaState{Limit: a.QuotaLimit, Used: a.QuotaUsed, Reserved: a.Reserved}, err
-	}
-	params := sqlcgen.ReserveAccountQuotaParams{ID: id, Reserved: nanos}
-	row, err := d.q.ReserveAccountQuota(ctx, params)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return store.QuotaState{}, store.ErrInsufficientQuota
-	}
-	return store.QuotaState{Limit: row.QuotaLimit, Used: row.QuotaUsed, Reserved: row.Reserved},
-		d.fail("ReserveAccountQuota", err)
-}
-
-// ReleaseAPIKeyReservation 见 store.Store。
-func (d *DB) ReleaseAPIKeyReservation(ctx context.Context, id uuid.UUID, nanos int64) error {
-	if nanos <= 0 {
-		return nil
-	}
-	err := d.q.ReleaseKeyReservation(ctx, sqlcgen.ReleaseKeyReservationParams{ID: id, Reserved: nanos})
-	return d.fail("ReleaseAPIKeyReservation", err)
-}
-
-// ReleaseAccountReservation 见 store.Store。
-func (d *DB) ReleaseAccountReservation(ctx context.Context, id uuid.UUID, nanos int64) error {
-	if nanos <= 0 {
-		return nil
-	}
-	err := d.q.ReleaseAccountReservation(ctx, sqlcgen.ReleaseAccountReservationParams{ID: id, Reserved: nanos})
-	return d.fail("ReleaseAccountReservation", err)
-}
-
-// CreateReservation 见 store.Store。
-func (d *DB) CreateReservation(ctx context.Context, r store.Reservation) error {
-	err := d.q.CreateReservation(ctx, sqlcgen.CreateReservationParams{
-		RequestID: r.RequestID,
-		KeyID:     r.APIKeyID,
-		AccountID: r.AccountID,
-		Model:     r.Model,
-		Nanos:     r.Nanos,
-		ExpiresAt: r.ExpiresAt,
-	})
-	return d.fail("CreateReservation", err)
-}
 
 // GetReservation 见 store.Store。
 func (d *DB) GetReservation(ctx context.Context, requestID string) (store.Reservation, error) {
@@ -121,7 +60,8 @@ func (d *DB) chargeQuota(ctx context.Context, q *sqlcgen.Queries, ev store.Usage
 		return d.fail("SettleUsage.addAccountUsed", err)
 	}
 
-	res, err := q.GetReservation(ctx, ev.RequestID)
+	// 锁住预扣记录：与 reaper、补偿释放互斥，同一笔预扣不会被结算和释放各扣回一次
+	res, err := q.LockReservation(ctx, ev.RequestID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if err := q.AddKeyUsed(ctx, sqlcgen.AddKeyUsedParams{ID: *ev.APIKeyID, QuotaUsed: ev.CostNanos}); err != nil {
 			return d.fail("SettleUsage.addKeyUsed", err)
@@ -207,18 +147,24 @@ func usageEventParams(ev store.UsageEvent) sqlcgen.SettleUsageParams {
 }
 
 // ReserveQuota 见 store.Store：一条 SQL 完成两级预扣与预扣记录；任一级不满足时回滚事务。
-func (d *DB) ReserveQuota(ctx context.Context, r store.Reservation) (reserved store.QuotaReservation, err error) {
+func (d *DB) ReserveQuota(
+	ctx context.Context,
+	r store.Reservation,
+	concurrency store.ConcurrencyLimits,
+) (reserved store.QuotaReservation, err error) {
 	err = d.inTx(ctx, "ReserveQuota", func(q *sqlcgen.Queries) error {
 		row, err := q.ReserveQuota(ctx, sqlcgen.ReserveQuotaParams{
-			Nanos:     r.Nanos,
-			KeyID:     r.APIKeyID,
-			AccountID: r.AccountID,
-			RequestID: r.RequestID,
-			Model:     r.Model,
-			ExpiresAt: r.ExpiresAt,
+			Nanos:                 r.Nanos,
+			KeyID:                 r.APIKeyID,
+			KeyMaxConcurrency:     concurrency.APIKey,
+			AccountID:             r.AccountID,
+			AccountMaxConcurrency: concurrency.Account,
+			RequestID:             r.RequestID,
+			Model:                 r.Model,
+			ExpiresAt:             r.ExpiresAt,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
-			return store.ErrInsufficientQuota // 回滚已执行的部分
+			return errReserveRejected // 返回错误即回滚已执行的部分
 		}
 		if err != nil {
 			return d.fail("ReserveQuota", err)
@@ -229,7 +175,36 @@ func (d *DB) ReserveQuota(ctx context.Context, r store.Reservation) (reserved st
 		}
 		return nil
 	})
+	if errors.Is(err, errReserveRejected) {
+		// 回滚之后再判断原因：事务内读到的 in_flight 已被本次未生效的递增改过
+		return store.QuotaReservation{}, d.reserveDenied(ctx, r, concurrency)
+	}
 	return reserved, err
+}
+
+// errReserveRejected 条件预扣没有命中任何行（原因待 reserveDenied 判断）。
+var errReserveRejected = errors.New("reserve rejected")
+
+// reserveDenied 判断预扣失败的原因：并发已满返回 *store.RateLimitError，否则是额度不足或 Key / 账户不可用。
+func (d *DB) reserveDenied(
+	ctx context.Context,
+	r store.Reservation,
+	concurrency store.ConcurrencyLimits,
+) error {
+	if concurrency.APIKey == nil && concurrency.Account == nil {
+		return store.ErrInsufficientQuota
+	}
+	inFlight, err := d.q.GetInFlight(ctx, sqlcgen.GetInFlightParams{KeyID: r.APIKeyID, AccountID: r.AccountID})
+	if err != nil {
+		return d.fail("ReserveQuota.inFlight", err)
+	}
+	switch {
+	case concurrency.APIKey != nil && inFlight.KeyInFlight >= *concurrency.APIKey:
+		return &store.RateLimitError{Scope: store.RateScopeAPIKey, Kind: store.RateLimitConcurrency}
+	case concurrency.Account != nil && inFlight.AccountInFlight >= *concurrency.Account:
+		return &store.RateLimitError{Scope: store.RateScopeAccount, Kind: store.RateLimitConcurrency}
+	}
+	return store.ErrInsufficientQuota
 }
 
 // ReleaseReservation 见 store.Store：锁住预扣记录后回退两级额度并删除，与 reaper、结算互斥。

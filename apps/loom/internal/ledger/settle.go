@@ -66,6 +66,7 @@ func (l *Ledger) Settle(ctx context.Context, report UsageReport) (inserted bool,
 	l.metrics.Settlements.WithLabelValues(report.Channel, strconv.FormatBool(inserted)).Inc()
 	if inserted {
 		l.metrics.SettledNanos.WithLabelValues(report.Model).Add(float64(cost.nanos))
+		l.correctTokenEstimate(ctx, report, owner, cost)
 	}
 	l.log.Info(
 		"usage settled",
@@ -80,6 +81,19 @@ func (l *Ledger) Settle(ctx context.Context, report UsageReport) (inserted bool,
 		"pricing_source", cost.source,
 	)
 	return inserted, nil
+}
+
+// correctTokenEstimate 准入时按预扣估值计入了 TPM，这里补上实际与估值的差额（失败的请求实际为 0，相当于退回估值）。
+func (l *Ledger) correctTokenEstimate(ctx context.Context, report UsageReport, owner usageOwner, cost settlementCost) {
+	if l.tokens == nil || owner.apiKey.ID == uuid.Nil {
+		return
+	}
+	var estimated int64
+	if cost.unitPrice != nil {
+		estimated = cost.unitPrice.ReserveTokens
+	}
+	actual := report.TokenUsage.Input + report.TokenUsage.Output
+	l.tokens.AdjustTokens(ctx, owner.apiKey, actual-estimated)
 }
 
 // settlementCost 是一次结算的金额及其来源；unitPrice 为 nil 表示模型未定价（金额为 0）。

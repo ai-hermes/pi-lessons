@@ -12,16 +12,20 @@ import (
 )
 
 type Account struct {
-	ID         uuid.UUID
-	Name       string
-	Tenant     string
-	Group      string
-	Status     string
-	QuotaLimit *int64
-	QuotaUsed  int64
-	Reserved   int64
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID             uuid.UUID
+	Name           string
+	Tenant         string
+	Group          string
+	Status         string
+	QuotaLimit     *int64
+	QuotaUsed      int64
+	Reserved       int64
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Rpm            *int64
+	Tpm            *int64
+	MaxConcurrency *int64
+	InFlight       int64
 }
 
 type AdminAudit struct {
@@ -60,6 +64,10 @@ type ApiKey struct {
 	LastUsedAt     *time.Time
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	Rpm            *int64
+	Tpm            *int64
+	MaxConcurrency *int64
+	InFlight       int64
 }
 
 type AuthAudit struct {
@@ -98,6 +106,14 @@ type QuotaAdjustment struct {
 	UsedBefore  int64
 	UsedAfter   int64
 	Actor       string
+}
+
+type RateCounter struct {
+	Subject     uuid.UUID
+	WindowStart time.Time
+	Scope       string
+	Requests    int64
+	Tokens      int64
 }
 
 type Reservation struct {

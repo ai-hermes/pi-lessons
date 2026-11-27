@@ -277,7 +277,59 @@ wait "$LOCK"
 check "no reservation leaked after the timeout" "0|0|0" "$(q "select k.reserved || '|' || a.reserved || '|' || (select count(*) from reservations r where r.account_id = a.id) from accounts a join api_keys k on k.account_id = a.id where a.name = 'cache-sync'")"
 check "requests succeed once the lock is gone" 200 "$(code -H "x-api-key: $SYNC_KEY" -H 'content-type: application/json' -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' $BASE/v1/chat/completions)"
 
-echo "### 18. FailClosed：loom 副本缩到 0 → 拒绝；恢复 → 放行"
+echo "### 18. 客户级限流：RPM / TPM / 并发，超限 429 rate_limited；被拒请求不占计数，TPM 按实际用量修正"
+THR_KEY=loom-throttle-00000000000000001
+# throttle_limits <account-limits> <key-limits>：经 seed 设置两级限流（seed 每次对齐限流并广播缓存失效）
+throttle_limits() {
+  printf 'accounts:\n  - name: throttle\n    rate_limits: %s\n    keys:\n      - name: default\n        plaintext: %s\n        rate_limits: %s\n' \
+    "$1" "$THR_KEY" "$2" | kubectl -n loom exec -i deploy/loom -- loom seed --config /etc/loom/config.yaml --file /dev/stdin >/dev/null
+  sleep 1
+}
+# fresh_window：离分钟窗口结束不足 20s 时等到下一个窗口，保证一组断言落在同一窗口内
+fresh_window() { s=$(date +%-S); [ "$s" -gt 40 ] && sleep $((61 - s)); true; }
+thr_chat() { curl -s -o /dev/null -D - -w 'code=%{http_code}\n' --max-time 30 -H "x-api-key: $THR_KEY" -H 'content-type: application/json' \
+  -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' "$BASE/v1/chat/completions" | tr -d '\r'; }
+thr_code()  { echo "$1" | sed -n 's/^code=//p'; }
+thr_head()  { echo "$1" | awk -F': ' -v h="$2" 'tolower($1)==h{print $2}'; }
+throttle_limits '{}' '{rpm: 2}'
+fresh_window
+check "rpm: 1st request" 200 "$(thr_code "$(thr_chat)")"
+check "rpm: 2nd request" 200 "$(thr_code "$(thr_chat)")"
+R=$(thr_chat)
+check "rpm: 3rd request → 429" 429 "$(thr_code "$R")"
+check "rpm: deny reason" rate_limited "$(thr_head "$R" x-loom-deny-reason)"
+check "rpm: which limit" api_key/rpm "$(thr_head "$R" x-loom-rate-limit)"
+check "rpm: retry-after within the window" yes "$(thr_head "$R" retry-after | awk '{print ($1 >= 1 && $1 <= 60) ? "yes" : "no"}')"
+
+throttle_limits '{}' '{tpm: 4000}'
+fresh_window
+# 每次准入按 2,048 token 估值计入，结算后修正为实际 1,500；不修正的话第 2 次就会超过 4,000
+check "tpm: 1st request" 200 "$(thr_code "$(thr_chat)")"
+sleep 1
+check "tpm: 2nd request fits after the correction" 200 "$(thr_code "$(thr_chat)")"
+sleep 1
+R=$(thr_chat)
+check "tpm: 3rd request → api_key/tpm" api_key/tpm "$(thr_head "$R" x-loom-rate-limit)"
+
+throttle_limits '{max_concurrency: 2}' '{}'
+for i in 1 2 3; do
+  curl -s -o /dev/null -w '%{http_code}\n' --max-time 30 -H "x-api-key: $THR_KEY" -H 'content-type: application/json' \
+    -H 'x-mock-stream-chunks: 6' -H 'x-mock-stream-delay-ms: 300' \
+    -d '{"model":"lab-model","stream":true,"messages":[{"role":"user","content":"hi"}]}' "$BASE/v1/chat/completions" > "/tmp/loom-thr-$i" &
+  sleep 0.2
+done
+wait
+check "concurrency: 3 overlapping streams under max 2" "200 200 429" "$(cat /tmp/loom-thr-1 /tmp/loom-thr-2 /tmp/loom-thr-3 | sort | xargs)"
+sleep 1
+check "concurrency: slots are released after settlement" "0|0" "$(q "select k.in_flight || '|' || a.in_flight from accounts a join api_keys k on k.account_id = a.id where a.name = 'throttle'")"
+THR_REJECTED=$(for pod in $(kubectl -n loom get pods -l app=loom -o name); do kubectl -n loom exec "$pod" -- wget -qO- http://127.0.0.1:9090/metrics 2>/dev/null; done \
+  | awk '$1 == "loom_throttle_rejections_total{limit=\"concurrency\",scope=\"account\"}" {s += $2} END {print int(s)}')
+check "concurrency: rejections counted by scope" yes "$([ "$THR_REJECTED" -ge 1 ] && echo yes || echo no)"
+
+throttle_limits '{}' '{}'
+check "no limits → 200" 200 "$(thr_code "$(thr_chat)")"
+
+echo "### 19. FailClosed：loom 副本缩到 0 → 拒绝；恢复 → 放行"
   kubectl -n loom scale deploy/loom --replicas=0 >/dev/null
   sleep 8
   C=$(code -H "x-api-key: $(key dave)" $BASE/echo)

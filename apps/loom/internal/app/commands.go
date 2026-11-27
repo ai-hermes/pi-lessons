@@ -7,12 +7,14 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/account"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/cachesync"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/config"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/pricing"
+	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store/postgres"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/telemetry"
 )
@@ -90,7 +92,8 @@ func CheckConfig(cfg *config.Config, w io.Writer) error {
 
 	groupNames := slices.Sorted(maps.Keys(priceConfig.Groups))
 	for _, name := range groupNames {
-		fmt.Fprintf(&b, "  group %-22s ratio=%v\n", name, priceConfig.Groups[name].Ratio)
+		group := priceConfig.Groups[name]
+		fmt.Fprintf(&b, "  group %-22s ratio=%v limits=%s\n", name, group.Ratio, describeLimits(group.Limits))
 	}
 	for _, name := range priceConfig.SortedModelNames() {
 		m := priceConfig.Models[name]
@@ -109,4 +112,15 @@ func CheckConfig(cfg *config.Config, w io.Writer) error {
 	}
 	_, err = io.WriteString(w, b.String())
 	return err
+}
+
+// describeLimits 把限流配置写成 rpm=60 tpm=- max_concurrency=4 的形式；- 表示不限。
+func describeLimits(l store.RateLimits) string {
+	value := func(v *int64) string {
+		if v == nil {
+			return "-"
+		}
+		return strconv.FormatInt(*v, 10)
+	}
+	return fmt.Sprintf("rpm=%s tpm=%s max_concurrency=%s", value(l.RPM), value(l.TPM), value(l.MaxConcurrency))
 }

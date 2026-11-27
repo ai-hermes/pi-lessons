@@ -22,21 +22,23 @@ type SeedFile struct {
 
 // SeedAccount 种子账户。
 type SeedAccount struct {
-	Name       string       `yaml:"name"`
-	Tenant     string       `yaml:"tenant"`
-	Group      string       `yaml:"group"`
-	Status     store.Status `yaml:"status"`
-	QuotaNanos *int64       `yaml:"quota_limit_nanos"`
-	APIKeys    []SeedAPIKey `yaml:"keys"`
+	Name       string           `yaml:"name"`
+	Tenant     string           `yaml:"tenant"`
+	Group      string           `yaml:"group"`
+	Status     store.Status     `yaml:"status"`
+	QuotaNanos *int64           `yaml:"quota_limit_nanos"`
+	RateLimits store.RateLimits `yaml:"rate_limits"`
+	APIKeys    []SeedAPIKey     `yaml:"keys"`
 }
 
 // SeedAPIKey 种子 Key；明文只存在于 seed 文件（演示环境）。
 type SeedAPIKey struct {
-	Name           string   `yaml:"name"`
-	Plaintext      string   `yaml:"plaintext"`
-	QuotaNanos     *int64   `yaml:"quota_limit_nanos"`
-	ModelAllowlist []string `yaml:"model_allowlist"`
-	ExpiresAt      string   `yaml:"expires_at"` // RFC3339，可空
+	Name           string           `yaml:"name"`
+	Plaintext      string           `yaml:"plaintext"`
+	QuotaNanos     *int64           `yaml:"quota_limit_nanos"`
+	ModelAllowlist []string         `yaml:"model_allowlist"`
+	ExpiresAt      string           `yaml:"expires_at"` // RFC3339，可空
+	RateLimits     store.RateLimits `yaml:"rate_limits"`
 }
 
 // SeedPrice PG 兜底定价种子；取值口径同 ModelPriceInput。
@@ -83,6 +85,7 @@ func (s *Service) seedAccount(ctx context.Context, a SeedAccount) ([]string, err
 			Group:      a.Group,
 			Status:     a.Status,
 			QuotaNanos: a.QuotaNanos,
+			RateLimits: a.RateLimits,
 		})
 		log = append(log, fmt.Sprintf("account %s created", a.Name))
 	}
@@ -90,13 +93,17 @@ func (s *Service) seedAccount(ctx context.Context, a SeedAccount) ([]string, err
 		return nil, err
 	}
 
-	// 每次都把状态、分组、额度上限对齐到 seed 文件（QuotaNanos 为 nil 表示不限额）
+	// 每次都把状态、分组、额度上限、限流对齐到 seed 文件（QuotaNanos 为 nil 表示不限额）
 	settings := store.AccountSettings{
 		Status:     orDefault(a.Status, store.StatusActive),
 		Group:      orDefault(a.Group, pricing.DefaultGroup),
 		QuotaLimit: a.QuotaNanos,
+		Limits:     a.RateLimits,
 	}
 	if err := s.validateGroup(settings.Group); err != nil {
+		return nil, err
+	}
+	if err := validateRateLimits(settings.Limits); err != nil {
 		return nil, err
 	}
 	if _, err := s.store.UpdateAccount(ctx, acct.ID, settings); err != nil {
@@ -147,6 +154,10 @@ func (s *Service) seedAPIKey(
 			ModelAllowlist: k.ModelAllowlist,
 			QuotaLimit:     k.QuotaNanos,
 			ExpiresAt:      expiresAt,
+			Limits:         k.RateLimits,
+		}
+		if err := validateRateLimits(settings.Limits); err != nil {
+			return "", err
 		}
 		if _, err := s.store.UpdateAPIKey(ctx, existing.ID, settings); err != nil {
 			return "", err
@@ -162,6 +173,7 @@ func (s *Service) seedAPIKey(
 		ModelAllowlist: k.ModelAllowlist,
 		ExpiresAt:      expiresAt,
 		Plaintext:      k.Plaintext,
+		RateLimits:     k.RateLimits,
 	})
 	if err != nil {
 		return "", err

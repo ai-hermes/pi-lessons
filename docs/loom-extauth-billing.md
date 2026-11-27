@@ -141,9 +141,9 @@ cd apps/loom
 deploy/smoke.sh
 ```
 
-矩阵共 104 项检查，覆盖：鉴权拒绝矩阵、按量计费与预扣、分组倍率、按次计费、PG 兜底定价、embeddings、并发预扣、凭据头清理、gRPC 门面、管理 API 与指标、ConfigMap 热加载、RLS 同步结算与单通道独立性、多副本缓存失效、管理面角色与审计、超时预算（PG 行锁下准入在截止时间内拒绝且无残留预扣）、FailClosed。两种 PG 形态都适用。脚本开头会通过管理 API 复位 `alice`、`erin` 的额度，可重复执行。
+矩阵共 117 项检查，覆盖：鉴权拒绝矩阵、按量计费与预扣、分组倍率、按次计费、PG 兜底定价、embeddings、并发预扣、凭据头清理、gRPC 门面、管理 API 与指标、ConfigMap 热加载、RLS 同步结算与单通道独立性、多副本缓存失效、管理面角色与审计、超时预算（PG 行锁下准入在截止时间内拒绝且无残留预扣）、客户级限流（RPM / TPM / 并发）、FailClosed。两种 PG 形态都适用。脚本开头会通过管理 API 复位 `alice`、`erin` 的额度，可重复执行。
 
-**通过标准：** 末行输出 `RESULT: PASS=104 FAIL=0`。
+**通过标准：** 末行输出 `RESULT: PASS=117 FAIL=0`。
 
 ### 3.2 关键结果实测
 
@@ -265,7 +265,27 @@ deploy/cnpg/drill.sh restore      # 按需备份 → 时间点前后写标记 �
 
 真实恢复（误删数据、逻辑损坏）不要覆盖原集群：参照 `drill.sh` 中 `loom-pg-restore` 的清单新建集群，`bootstrap.recovery.recoveryTarget.targetTime` 设为事故前的时间点，核对数据后把 `loom-secrets` 的 `pg-dsn` 改指 `loom-pg-restore-rw` 并重启 loom。
 
-### 4.5 停止服务
+### 4.5 客户级限流
+
+API Key 与账户两级都可以配置 `rpm`（每分钟请求数）、`tpm`（每分钟 token 数）、`max_concurrency`（同时进行中的模型请求数），不配置表示不限。账户未配置的项取 `pricing.yaml` 中所属分组的 `limits`：
+
+```yaml
+groups:
+  trial: {ratio: 1, limits: {rpm: 60, tpm: 100000, max_concurrency: 4}}
+```
+
+单个账户或 Key 用管理 API 配置；`rate_limits` 整体替换三项，`{}` 表示全部取消：
+
+```bash
+curl -X PATCH -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"rate_limits":{"rpm":120,"max_concurrency":8}}' http://127.0.0.1:9090/v1/accounts/<account-id>
+```
+
+超限的请求返回 `429`，`x-loom-deny-reason: rate_limited`，`x-loom-rate-limit` 指出层级与限流项（如 `account/tpm`），`Retry-After` 给出建议等待秒数。账户与 Key 视图里的 `in_flight` 是当前进行中的请求数。指标 `loom_throttle_rejections_total{scope,limit}` 按层级与限流项统计拒绝次数。
+
+**通过标准：** 配置后 `GET /v1/accounts/<id>` 返回的 `rate_limits` 与配置一致；`deploy/smoke.sh` 第 18 节全部 PASS。
+
+### 4.6 停止服务
 
 ```bash
 kubectl -n loom scale deploy/loom --replicas=0
@@ -287,4 +307,6 @@ kubectl -n loom scale deploy/loom --replicas=0
 - 现象：按需备份要 4～5 分钟才 `completed`。先查 ObjectStore `loom-pg-backups` 的 `data.immediateCheckpoint`；为 `false` 时备份要等下一次定时检查点（`checkpoint_timeout` 默认 5 分钟）。
 - 现象：告警 `LoomReserveCompensationFailed`。准入预扣的提交确认丢失（多见于主库切换），且 30 秒内补偿释放没成功；这些预扣会在 `reservation_ttl` 后由 reaper 释放，期间相关账户可用额度偏少。确认 PG 已恢复即可，无需人工改账；急需时查 `reservations` 表中无对应 `usage_events` 的记录。
 - 现象：宿主机拉取 `ghcr.io/cloudnative-pg/*` 或 `quay.io/jetstack/*` 长时间无进度。从网盘 `bd://deploy/images/` 离线导入，见 2.3。
+- 现象：配置了 TPM 后请求总是 `429 api_key/tpm` 或 `account/tpm`。先查 `tpm` 是否小于单次预扣估值（`reserve_tokens` 的输入 + 输出，默认 2,048）；准入按估值计入，上限小于估值时任何请求都无法通过。
+- 现象：`in_flight` 长时间不归零、并发名额被占满。先查是否有未结算的预扣（`reservations` 表）；正常情况下 RLS 在响应结束时结算，两条用量通道都没送达时要等 `reservation_ttl`（15 分钟）由 reaper 释放。
 - 现象：某模型只改了 PG `model_pricing` 表但价格没变。先查 `GET /v1/pricing` 的 `pg` 段；PG 兜底有 `pricing_ttl`（30s）正缓存，管理 API 写入会主动清缓存，直接改库需等缓存过期。

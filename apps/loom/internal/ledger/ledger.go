@@ -34,9 +34,11 @@ const (
 
 // Store 是账本所需的持久化能力。
 type Store interface {
-	ReserveAPIKeyQuota(ctx context.Context, apiKeyID uuid.UUID, nanos int64) (store.QuotaState, error)
-	ReserveAccountQuota(ctx context.Context, accountID uuid.UUID, nanos int64) (store.QuotaState, error)
-	ReserveQuota(ctx context.Context, r store.Reservation) (store.QuotaReservation, error)
+	ReserveQuota(
+		ctx context.Context,
+		r store.Reservation,
+		concurrency store.ConcurrencyLimits,
+	) (store.QuotaReservation, error)
 	CountReservations(ctx context.Context) (int64, error)
 	ReleaseReservation(ctx context.Context, requestID string) (bool, error)
 	ReleaseExpiredReservations(ctx context.Context, now time.Time, limit int) (int, error)
@@ -54,6 +56,11 @@ type Pricer interface {
 	Lookup(ctx context.Context, model, group string) (pricing.UnitPrice, error)
 }
 
+// TokenCounter 结算时用实际 token 数修正 TPM 计数（throttle.Limiter 实现）。
+type TokenCounter interface {
+	AdjustTokens(ctx context.Context, apiKey store.APIKey, delta int64)
+}
+
 // Options 账本参数。
 type Options struct {
 	ReservationTTL time.Duration // 预扣有效期，过期由 RunReaper 释放
@@ -69,9 +76,13 @@ type Ledger struct {
 	store   Store
 	pricer  Pricer
 	owners  *usageOwnerCache
+	tokens  TokenCounter // 可为 nil：不修正 TPM
 	metrics *telemetry.Metrics
 	log     *slog.Logger
 }
+
+// SetTokenCounter 设置结算时修正 TPM 的计数器；须在开始结算前调用。
+func (l *Ledger) SetTokenCounter(counter TokenCounter) { l.tokens = counter }
 
 // New 创建账本。
 func New(opts Options, storage Store, pricer Pricer, metrics *telemetry.Metrics, log *slog.Logger) *Ledger {

@@ -17,42 +17,33 @@ type ReservationHold struct {
 	Remaining *int64
 }
 
-// ReserveQuota 对 API Key 与账户做原子预扣并记录预扣，以便结算或过期释放。
-// 两级预扣与预扣记录在同一个事务中完成：任一级额度不足返回 ErrInsufficientQuota，
-// context 被取消（例如准入超时）时整体回滚，都不会留下冻结。
-func (l *Ledger) ReserveQuota(
-	ctx context.Context,
-	apiKey store.APIKey,
-	unitPrice pricing.UnitPrice,
-	requestID string,
-) (ReservationHold, error) {
-	nanos := unitPrice.ReserveNanos
-	if nanos <= 0 {
-		// 免费请求不预扣，只读出两级额度用于返回剩余额度
-		keyState, err := l.store.ReserveAPIKeyQuota(ctx, apiKey.ID, 0)
-		if err != nil {
-			return ReservationHold{}, fmt.Errorf("read api key quota: %w", err)
-		}
-		accountState, err := l.store.ReserveAccountQuota(ctx, apiKey.AccountID, 0)
-		if err != nil {
-			return ReservationHold{}, fmt.Errorf("read account quota: %w", err)
-		}
-		return ReservationHold{Remaining: minRemaining(keyState, accountState)}, nil
-	}
+// ReserveRequest 一次预扣的输入。
+type ReserveRequest struct {
+	APIKey      store.APIKey
+	UnitPrice   pricing.UnitPrice
+	RequestID   string
+	Concurrency store.ConcurrencyLimits // 两级并发上限；nil 表示不限
+}
 
+// ReserveQuota 对 API Key 与账户做原子预扣并记录预扣，以便结算或过期释放。免费请求（预扣额为 0）也写预扣记录，
+// 以占用并发名额。两级额度、并发与预扣记录在同一个事务中完成：额度不足返回 ErrInsufficientQuota，
+// 并发已满返回 *store.RateLimitError；context 被取消（例如准入超时）时整体回滚，都不会留下冻结。
+func (l *Ledger) ReserveQuota(ctx context.Context, req ReserveRequest) (ReservationHold, error) {
+	unitPrice := req.UnitPrice
+	nanos := max(unitPrice.ReserveNanos, 0)
 	now := time.Now()
 	reserved, err := l.store.ReserveQuota(ctx, store.Reservation{
-		RequestID: requestID,
-		APIKeyID:  apiKey.ID,
-		AccountID: apiKey.AccountID,
+		RequestID: req.RequestID,
+		APIKeyID:  req.APIKey.ID,
+		AccountID: req.APIKey.AccountID,
 		Model:     unitPrice.Model,
 		Nanos:     nanos,
 		ExpiresAt: now.Add(l.opts.ReservationTTL),
 		CreatedAt: now,
-	})
+	}, req.Concurrency)
 	if err != nil {
 		if errors.Is(err, store.ErrCommitOutcomeUnknown) {
-			go l.compensateReservation(ctx, requestID)
+			go l.compensateReservation(ctx, req.RequestID)
 		}
 		return ReservationHold{}, fmt.Errorf("reserve quota: %w", err)
 	}

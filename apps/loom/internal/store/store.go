@@ -44,6 +44,8 @@ type Account struct {
 	QuotaLimit *int64 // nil = 不限
 	QuotaUsed  int64
 	Reserved   int64
+	Limits     RateLimits // nil 项取分组默认值
+	InFlight   int64      // 未结算的预扣记录数
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }
@@ -61,11 +63,17 @@ type AccountSettings struct {
 	Status     Status
 	Group      string
 	QuotaLimit *int64 // nil = 不限
+	Limits     RateLimits
 }
 
 // Settings 返回账户当前的可修改属性。
 func (a Account) Settings() AccountSettings {
-	return AccountSettings{Status: a.Status, Group: a.Group, QuotaLimit: a.QuotaLimit}
+	return AccountSettings{
+		Status:     a.Status,
+		Group:      a.Group,
+		QuotaLimit: a.QuotaLimit,
+		Limits:     a.Limits,
+	}
 }
 
 // APIKey 表示一把调用 AgentGateway 的 API Key，并附带所属账户快照。
@@ -80,6 +88,8 @@ type APIKey struct {
 	QuotaLimit     *int64   // nil = 跟随账户
 	QuotaUsed      int64
 	Reserved       int64
+	Limits         RateLimits // nil 项不限（API Key 级不继承分组默认值）
+	InFlight       int64
 	ExpiresAt      *time.Time
 	LastUsedAt     *time.Time
 	CreatedAt      time.Time
@@ -102,6 +112,7 @@ type APIKeySettings struct {
 	ModelAllowlist []string   // nil = 全部模型
 	QuotaLimit     *int64     // nil = 跟随账户
 	ExpiresAt      *time.Time // nil = 不过期
+	Limits         RateLimits
 }
 
 // Settings 返回 API Key 当前的可修改属性。
@@ -112,6 +123,7 @@ func (k APIKey) Settings() APIKeySettings {
 		ModelAllowlist: k.ModelAllowlist,
 		QuotaLimit:     k.QuotaLimit,
 		ExpiresAt:      k.ExpiresAt,
+		Limits:         k.Limits,
 	}
 }
 
@@ -324,18 +336,12 @@ type Store interface {
 	// SetAPIKeyQuota 管理用：直接设置额度上限与已用量，清空预扣，并写入额度变更流水。
 	SetAPIKeyQuota(ctx context.Context, id uuid.UUID, change QuotaChange) error
 
-	// quota（原子操作）
-	ReserveAPIKeyQuota(ctx context.Context, apiKeyID uuid.UUID, nanos int64) (QuotaState, error)
-	ReleaseAPIKeyReservation(ctx context.Context, apiKeyID uuid.UUID, nanos int64) error
-	ReserveAccountQuota(ctx context.Context, accountID uuid.UUID, nanos int64) (QuotaState, error)
-	ReleaseAccountReservation(ctx context.Context, accountID uuid.UUID, nanos int64) error
-
-	// ReserveQuota 单事务：API Key 与账户两级条件预扣，并写入预扣记录；任一级不满足（额度不足、已停用、已过期、
-	// 不存在）时整体回滚并返回 ErrInsufficientQuota，不留下任何冻结。r.Nanos 必须大于 0。
-	ReserveQuota(ctx context.Context, r Reservation) (QuotaReservation, error)
+	// ReserveQuota 单事务：API Key 与账户两级条件预扣（额度与并发），并写入预扣记录；r.Nanos 可以为 0（免费请求也占并发）。
+	// 并发已满时返回 *RateLimitError（Kind 为 concurrency）；其余不满足（额度不足、已停用、已过期、不存在）
+	// 返回 ErrInsufficientQuota。失败时整体回滚，不留下任何冻结。
+	ReserveQuota(ctx context.Context, r Reservation, concurrency ConcurrencyLimits) (QuotaReservation, error)
 
 	// reservations
-	CreateReservation(ctx context.Context, r Reservation) error
 	GetReservation(ctx context.Context, requestID string) (Reservation, error)
 	ListReservations(ctx context.Context, limit int) ([]Reservation, error)
 	CountReservations(ctx context.Context) (int64, error)
@@ -348,6 +354,17 @@ type Store interface {
 	ReleaseReservation(ctx context.Context, requestID string) (released bool, err error)
 	// ReleaseExpiredReservations 单事务：锁定过期的预扣、释放两级额度、删除记录，返回释放条数。
 	ReleaseExpiredReservations(ctx context.Context, now time.Time, limit int) (int, error)
+
+	// rate counters（RPM / TPM 的分钟窗口）
+	// AcquireRate 在 window 内为每个 claim 计 1 次请求与 Tokens 个 token；任一超出上限时撤销本次计数并返回
+	// *RateLimitError，被拒绝的请求不占用计数（实现可以先计后撤，但不得放行超限请求）。
+	AcquireRate(ctx context.Context, window time.Time, claims []RateClaim) error
+	// ReleaseRate 撤销一次成功的 AcquireRate（请求随后被额度或并发拒绝）；计数不低于 0。
+	ReleaseRate(ctx context.Context, window time.Time, claims []RateClaim) error
+	// AddRateTokens 在 window 内按 claim.Tokens 增减 token 计数（结算时用实际值修正估值）；计数不低于 0。
+	AddRateTokens(ctx context.Context, window time.Time, claims []RateClaim) error
+	// DeleteRateWindows 删除 before 之前开始的窗口，返回删除条数。
+	DeleteRateWindows(ctx context.Context, before time.Time) (int64, error)
 
 	// usage
 	ListUsage(ctx context.Context, apiKeyID *uuid.UUID, since *time.Time, limit int) ([]UsageEvent, error)

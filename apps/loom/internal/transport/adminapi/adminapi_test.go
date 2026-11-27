@@ -154,3 +154,33 @@ func TestRedact(t *testing.T) {
 	assert.Empty(t, redact([]byte("not json")))
 	assert.JSONEq(t, `{"name":"a","plaintext":"***"}`, redact([]byte(`{"name":"a","plaintext":"secret"}`)))
 }
+
+func TestRateLimitsAreValidatedAndShown(t *testing.T) {
+	f := newFixture(t, Options{})
+	writer := f.issue(t, "writer", operator.RoleWrite)
+
+	rec := f.do(t, http.MethodPost, "/v1/accounts", writer, `{"name":"acme","rate_limits":{"rpm":0}}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "limits must be positive")
+
+	rec = f.do(t, http.MethodPost, "/v1/accounts", writer, `{"name":"acme","rate_limits":{"rpm":60,"max_concurrency":4}}`)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var created struct {
+		ID         string `json:"id"`
+		RateLimits struct {
+			RPM            *int64 `json:"rpm"`
+			TPM            *int64 `json:"tpm"`
+			MaxConcurrency *int64 `json:"max_concurrency"`
+		} `json:"rate_limits"`
+		InFlight int64 `json:"in_flight"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	assert.Equal(t, int64(60), *created.RateLimits.RPM)
+	assert.Nil(t, created.RateLimits.TPM)
+	assert.Equal(t, int64(4), *created.RateLimits.MaxConcurrency)
+
+	rec = f.do(t, http.MethodPatch, "/v1/accounts/"+created.ID, writer, `{"rate_limits":{"tpm":1000}}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	assert.Nil(t, created.RateLimits.RPM, "rate_limits replaces all three items")
+	assert.Equal(t, int64(1000), *created.RateLimits.TPM)
+}

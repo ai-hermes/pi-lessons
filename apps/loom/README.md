@@ -44,17 +44,20 @@ cmd/
 ├── loom/              cobra 子命令：serve | migrate | seed | render-catalog | check-config | version
 └── loom-mock/         伪 OpenAI 后端（chat / embeddings / images / echo），验收用
 internal/
-├── admission/         准入门 Gate：凭据 → Key → 状态 → 模型 → 定价 → 预扣，输出 Verdict（与协议无关）
-├── ledger/            额度账本：Reserve（预扣）/ Settle（结算）/ RunReaper（过期释放）
-├── pricing/           价目表 Table：pricing.yaml 热加载 + PG 兜底，Card 单价卡，网关 catalog 渲染
+├── admission/         准入门 Gate：凭据 → Key → 状态 → 模型 → 定价 → 限流 → 预扣，输出 Verdict（与协议无关）
+├── ledger/            额度账本：ReserveQuota（预扣）/ Settle（结算）/ RunReaper（过期释放）/ 提交结果未知时的补偿释放
+├── throttle/          客户级限流：RPM / TPM 分钟窗口计数（Counter 接口，第一版 PG），生效上限与重试建议
+├── pricing/           价目表 PriceTable：pricing.yaml 热加载 + PG 兜底，UnitPrice 单价，网关 catalog 渲染
 ├── account/           管理操作：账户、Key、兜底定价、用量查询、seed
+├── operator/          管理面身份：引导 token、签发 token（只存哈希）、read / write 角色
+├── cachesync/         跨副本缓存失效：PG LISTEN / NOTIFY，断线退回 TTL
 ├── transport/         协议适配，只做线上格式 ↔ 领域类型的翻译
 │   ├── extauth/       HTTP /check + Envoy ext_authz.v3
-│   ├── ratelimit/     Envoy RateLimitService（amend → ledger.Settle）
+│   ├── ratelimit/     Envoy RateLimitService（amend → ledger.Settle；与客户级限流无关）
 │   ├── otlp/          OTLP access log → 补账队列 → ledger.Settle
 │   └── adminapi/      gin 管理 API → account.Service
 ├── app/               装配与生命周期：连库迁移、两个端口、后台任务、优雅停机
-├── store/             领域记录与持久化接口；postgres/（sqlc + goose）、memstore/（单测）
+├── store/             领域记录与持久化接口；postgres/（sqlc + goose）、memstore/（单测）、storetest/（一致性用例）
 ├── config/            配置加载（默认值 → yaml → LOOM_* 环境变量）
 └── telemetry/         slog 与 Prometheus 指标
 configs/               config.yaml · pricing.yaml · seed.yaml
@@ -71,9 +74,9 @@ deploy/                k8s 清单 · deploy.sh · smoke.sh · contract.sh · ben
 make test lint                            # 单测（-race）+ golangci-lint
 make check                                # 校验配置并打印价目表
 deploy/deploy.sh --fresh --tag v0.7.1     # 部署到 st2-aii（--pg single|cnpg，不指定时沿用现有形态）
-deploy/smoke.sh                           # 验收：RESULT: PASS=104 FAIL=0
+deploy/smoke.sh                           # 验收：RESULT: PASS=117 FAIL=0
 deploy/contract.sh                        # AgentGateway 契约测试：RESULT: PASS=30 FAIL=0
-deploy/bench.sh                           # 压测基线（单账户 / 多账户，按并发分档）
+deploy/bench.sh                           # 压测基线（单账户 / 多账户，按并发分档；--rate-limits 度量限流开销）
 deploy/monitoring/check.sh                # 告警规则校验（promtool + kind 内最小 Prometheus）
 deploy/conformance.sh                     # store 一致性用例在真实 PostgreSQL 上运行（独立库，不影响 loom 库）
 deploy/cnpg/install.sh                    # 安装 CloudNativePG 平台组件（一次性），之后 deploy.sh --pg cnpg

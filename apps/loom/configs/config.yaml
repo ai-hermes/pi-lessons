@@ -45,6 +45,7 @@ extauth:
     request_id: x-loom-request-id
     quota_remaining: x-loom-quota-remaining
     deny_reason: x-loom-deny-reason
+    rate_limit: x-loom-rate-limit                   # rate_limited 时触发的层级与限流项，如 account/rpm；同时返回 Retry-After
   deny_status:
     missing_credential: 401
     unknown_api_key: 401
@@ -54,6 +55,7 @@ extauth:
     model_not_priced: 403
     group_not_priced: 403
     insufficient_quota: 403
+    rate_limited: 429
     internal_error: 500
   body_limit: 1048576
 

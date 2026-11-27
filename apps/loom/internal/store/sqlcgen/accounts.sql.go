@@ -15,7 +15,7 @@ const addAccountQuotaLimit = `-- name: AddAccountQuotaLimit :one
 UPDATE accounts
 SET quota_limit = COALESCE(quota_limit, 0) + $2, updated_at = now()
 WHERE id = $1
-RETURNING id, name, tenant, "group", status, quota_limit, quota_used, reserved, created_at, updated_at
+RETURNING id, name, tenant, "group", status, quota_limit, quota_used, reserved, created_at, updated_at, rpm, tpm, max_concurrency, in_flight
 `
 
 type AddAccountQuotaLimitParams struct {
@@ -37,6 +37,10 @@ func (q *Queries) AddAccountQuotaLimit(ctx context.Context, arg AddAccountQuotaL
 		&i.Reserved,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Rpm,
+		&i.Tpm,
+		&i.MaxConcurrency,
+		&i.InFlight,
 	)
 	return i, err
 }
@@ -58,18 +62,21 @@ func (q *Queries) AddAccountUsed(ctx context.Context, arg AddAccountUsedParams) 
 }
 
 const createAccount = `-- name: CreateAccount :one
-INSERT INTO accounts (id, name, tenant, "group", status, quota_limit)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, name, tenant, "group", status, quota_limit, quota_used, reserved, created_at, updated_at
+INSERT INTO accounts (id, name, tenant, "group", status, quota_limit, rpm, tpm, max_concurrency)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, name, tenant, "group", status, quota_limit, quota_used, reserved, created_at, updated_at, rpm, tpm, max_concurrency, in_flight
 `
 
 type CreateAccountParams struct {
-	ID         uuid.UUID
-	Name       string
-	Tenant     string
-	Group      string
-	Status     string
-	QuotaLimit *int64
+	ID             uuid.UUID
+	Name           string
+	Tenant         string
+	Group          string
+	Status         string
+	QuotaLimit     *int64
+	Rpm            *int64
+	Tpm            *int64
+	MaxConcurrency *int64
 }
 
 func (q *Queries) CreateAccount(ctx context.Context, arg CreateAccountParams) (Account, error) {
@@ -80,6 +87,9 @@ func (q *Queries) CreateAccount(ctx context.Context, arg CreateAccountParams) (A
 		arg.Group,
 		arg.Status,
 		arg.QuotaLimit,
+		arg.Rpm,
+		arg.Tpm,
+		arg.MaxConcurrency,
 	)
 	var i Account
 	err := row.Scan(
@@ -93,24 +103,34 @@ func (q *Queries) CreateAccount(ctx context.Context, arg CreateAccountParams) (A
 		&i.Reserved,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Rpm,
+		&i.Tpm,
+		&i.MaxConcurrency,
+		&i.InFlight,
 	)
 	return i, err
 }
 
-const deleteAccountReservations = `-- name: DeleteAccountReservations :execrows
-DELETE FROM reservations WHERE account_id = $1
+const deleteAccountReservations = `-- name: DeleteAccountReservations :exec
+WITH gone AS (
+    DELETE FROM reservations WHERE reservations.account_id = $1 RETURNING reservations.key_id, reservations.nanos
+), totals AS (
+    SELECT key_id, sum(nanos)::bigint AS nanos, count(*) AS n FROM gone GROUP BY key_id
+)
+UPDATE api_keys k
+SET reserved = k.reserved - totals.nanos, in_flight = k.in_flight - totals.n, updated_at = now()
+FROM totals
+WHERE k.id = totals.key_id
 `
 
-func (q *Queries) DeleteAccountReservations(ctx context.Context, accountID uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteAccountReservations, accountID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// 删除一个账户的全部预扣，并从各 Key 扣回对应的 reserved 与 in_flight（账户自身由 SetAccountQuota 清零）。
+func (q *Queries) DeleteAccountReservations(ctx context.Context, accountID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteAccountReservations, accountID)
+	return err
 }
 
 const getAccount = `-- name: GetAccount :one
-SELECT id, name, tenant, "group", status, quota_limit, quota_used, reserved, created_at, updated_at FROM accounts WHERE id = $1
+SELECT id, name, tenant, "group", status, quota_limit, quota_used, reserved, created_at, updated_at, rpm, tpm, max_concurrency, in_flight FROM accounts WHERE id = $1
 `
 
 func (q *Queries) GetAccount(ctx context.Context, id uuid.UUID) (Account, error) {
@@ -127,12 +147,16 @@ func (q *Queries) GetAccount(ctx context.Context, id uuid.UUID) (Account, error)
 		&i.Reserved,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Rpm,
+		&i.Tpm,
+		&i.MaxConcurrency,
+		&i.InFlight,
 	)
 	return i, err
 }
 
 const getAccountByName = `-- name: GetAccountByName :one
-SELECT id, name, tenant, "group", status, quota_limit, quota_used, reserved, created_at, updated_at FROM accounts WHERE name = $1
+SELECT id, name, tenant, "group", status, quota_limit, quota_used, reserved, created_at, updated_at, rpm, tpm, max_concurrency, in_flight FROM accounts WHERE name = $1
 `
 
 func (q *Queries) GetAccountByName(ctx context.Context, name string) (Account, error) {
@@ -149,12 +173,16 @@ func (q *Queries) GetAccountByName(ctx context.Context, name string) (Account, e
 		&i.Reserved,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Rpm,
+		&i.Tpm,
+		&i.MaxConcurrency,
+		&i.InFlight,
 	)
 	return i, err
 }
 
 const listAccounts = `-- name: ListAccounts :many
-SELECT id, name, tenant, "group", status, quota_limit, quota_used, reserved, created_at, updated_at FROM accounts ORDER BY created_at DESC LIMIT $1
+SELECT id, name, tenant, "group", status, quota_limit, quota_used, reserved, created_at, updated_at, rpm, tpm, max_concurrency, in_flight FROM accounts ORDER BY created_at DESC LIMIT $1
 `
 
 func (q *Queries) ListAccounts(ctx context.Context, lim int32) ([]Account, error) {
@@ -177,6 +205,10 @@ func (q *Queries) ListAccounts(ctx context.Context, lim int32) ([]Account, error
 			&i.Reserved,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Rpm,
+			&i.Tpm,
+			&i.MaxConcurrency,
+			&i.InFlight,
 		); err != nil {
 			return nil, err
 		}
@@ -190,7 +222,7 @@ func (q *Queries) ListAccounts(ctx context.Context, lim int32) ([]Account, error
 
 const releaseAccountReservation = `-- name: ReleaseAccountReservation :exec
 UPDATE accounts
-SET reserved = reserved - $2, updated_at = now()
+SET reserved = reserved - $2, in_flight = in_flight - 1, updated_at = now()
 WHERE id = $1
 `
 
@@ -204,42 +236,9 @@ func (q *Queries) ReleaseAccountReservation(ctx context.Context, arg ReleaseAcco
 	return err
 }
 
-const reserveAccountQuota = `-- name: ReserveAccountQuota :one
-UPDATE accounts
-SET reserved = reserved + $2, updated_at = now()
-WHERE id = $1
-  AND status = 'active'
-  AND (quota_limit IS NULL OR quota_limit - quota_used - reserved >= $2)
-RETURNING id, quota_limit, quota_used, reserved
-`
-
-type ReserveAccountQuotaParams struct {
-	ID       uuid.UUID
-	Reserved int64
-}
-
-type ReserveAccountQuotaRow struct {
-	ID         uuid.UUID
-	QuotaLimit *int64
-	QuotaUsed  int64
-	Reserved   int64
-}
-
-func (q *Queries) ReserveAccountQuota(ctx context.Context, arg ReserveAccountQuotaParams) (ReserveAccountQuotaRow, error) {
-	row := q.db.QueryRow(ctx, reserveAccountQuota, arg.ID, arg.Reserved)
-	var i ReserveAccountQuotaRow
-	err := row.Scan(
-		&i.ID,
-		&i.QuotaLimit,
-		&i.QuotaUsed,
-		&i.Reserved,
-	)
-	return i, err
-}
-
 const setAccountQuota = `-- name: SetAccountQuota :exec
 UPDATE accounts
-SET quota_limit = $2, quota_used = $3, reserved = 0, updated_at = now()
+SET quota_limit = $2, quota_used = $3, reserved = 0, in_flight = 0, updated_at = now()
 WHERE id = $1
 `
 
@@ -258,7 +257,8 @@ const settleAccountQuota = `-- name: SettleAccountQuota :exec
 UPDATE accounts
 SET quota_used = quota_used + $3,
     reserved   = reserved - $2,
-    updated_at  = now()
+    in_flight  = in_flight - 1,
+    updated_at = now()
 WHERE id = $1
 `
 
@@ -275,19 +275,25 @@ func (q *Queries) SettleAccountQuota(ctx context.Context, arg SettleAccountQuota
 
 const updateAccount = `-- name: UpdateAccount :one
 UPDATE accounts
-SET status      = $2,
-    quota_limit = $3,
-    "group"     = $4,
-    updated_at  = now()
+SET status          = $2,
+    quota_limit     = $3,
+    "group"         = $4,
+    rpm             = $5,
+    tpm             = $6,
+    max_concurrency = $7,
+    updated_at      = now()
 WHERE id = $1
-RETURNING id, name, tenant, "group", status, quota_limit, quota_used, reserved, created_at, updated_at
+RETURNING id, name, tenant, "group", status, quota_limit, quota_used, reserved, created_at, updated_at, rpm, tpm, max_concurrency, in_flight
 `
 
 type UpdateAccountParams struct {
-	ID         uuid.UUID
-	Status     string
-	QuotaLimit *int64
-	Group      string
+	ID             uuid.UUID
+	Status         string
+	QuotaLimit     *int64
+	Group          string
+	Rpm            *int64
+	Tpm            *int64
+	MaxConcurrency *int64
 }
 
 func (q *Queries) UpdateAccount(ctx context.Context, arg UpdateAccountParams) (Account, error) {
@@ -296,6 +302,9 @@ func (q *Queries) UpdateAccount(ctx context.Context, arg UpdateAccountParams) (A
 		arg.Status,
 		arg.QuotaLimit,
 		arg.Group,
+		arg.Rpm,
+		arg.Tpm,
+		arg.MaxConcurrency,
 	)
 	var i Account
 	err := row.Scan(
@@ -309,6 +318,10 @@ func (q *Queries) UpdateAccount(ctx context.Context, arg UpdateAccountParams) (A
 		&i.Reserved,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Rpm,
+		&i.Tpm,
+		&i.MaxConcurrency,
+		&i.InFlight,
 	)
 	return i, err
 }

@@ -1,10 +1,16 @@
-// Package admission 是请求准入门：凭据 → Key → 状态 → 模型 → 定价 → 预扣，给出放行或拒绝的 Verdict。
+// Package admission 是请求准入门：凭据 → Key → 状态 → 模型 → 定价 → 限流 → 预扣，给出放行或拒绝的 Verdict。
 //
 // 本包与传输协议无关：凭据、模型提示等由 transport 层从请求头中抽出后传入；
 // Verdict 如何映射为 HTTP 状态码、响应头和错误体也由 transport 层决定。
 package admission
 
-import "github.com/google/uuid"
+import (
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store"
+)
 
 // Request 一次准入请求。
 type Request struct {
@@ -32,6 +38,7 @@ const (
 	ReasonModelNotPriced    Reason = "model_not_priced"
 	ReasonGroupNotPriced    Reason = "group_not_priced"
 	ReasonInsufficientQuota Reason = "insufficient_quota"
+	ReasonRateLimited       Reason = "rate_limited"
 	ReasonInternalError     Reason = "internal_error"
 )
 
@@ -48,6 +55,10 @@ type Verdict struct {
 
 	ReservedNanos  int64
 	RemainingNanos *int64 // 两级额度中较小的剩余值；不限额时为 nil
+
+	// 以下字段仅在 Reason 为 rate_limited 时有值。
+	RateLimit  *store.RateLimitError // 触发的层级与限流项
+	RetryAfter time.Duration         // 建议的重试等待时间
 }
 
 func (v Verdict) allow() Verdict {
