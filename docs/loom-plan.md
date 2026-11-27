@@ -279,7 +279,7 @@ admin:
 
 ### 5.2 K8s 侧配置模型（`deploy/k8s/`）
 
-对齐 Notion《vke 部署 agentgateway》的生产拓扑，按文件名顺序 apply：
+对齐生产部署拓扑，按文件名顺序 apply：
 
 | 文件 | 内容 |
 | --- | --- |
@@ -490,7 +490,7 @@ kubectl -n agentgateway get deploy           # 预期 controller 仍 1/1
 ### 14.1 流程：从源头消灭手工改 ConfigMap 的机会
 
 - [ ] 定价变更只允许通过 Git 进行：修改 `apps/loom/configs/pricing.yaml` → PR → 合并后由 `deploy/deploy.sh`（非 `--fresh`）统一重新生成 `loom-pricing` 与 `loom-catalog`，禁止 `kubectl edit` 两个 ConfigMap；在 `deploy/k8s/README.md` 与运维手册「修改价格」一节写明，并给两个 ConfigMap 加注解 `loom.ansible/managed-by: deploy.sh`。
-- [ ] 评估是否移除网关 `modelCatalog`（方案 A）：若生产看板不消费 `agw.ai.usage.cost.*`，从 `01-gateway.yaml` 删掉 `modelCatalog`、`deploy.sh` 不再生成 `loom-catalog`，smoke 删除两条对账断言，`render-catalog` 降级为可选工具。决策人：dingwenjiang。
+- [ ] 评估是否移除网关 `modelCatalog`（方案 A）：若生产看板不消费 `agw.ai.usage.cost.*`，从 `01-gateway.yaml` 删掉 `modelCatalog`、`deploy.sh` 不再生成 `loom-catalog`，smoke 删除两条对账断言，`render-catalog` 降级为可选工具。
 - [ ] `deploy.sh` 在 apply 之前用 `loom check-config` 校验 `pricing.yaml` 可解析，并把 `pricing.yaml` 的 sha256 写进 `loom-pricing` 的注解，账单争议时可追溯到具体版本。
 - [ ] PG 兜底定价（`model_pricing`）同样纳入流程：只允许通过管理 API `PUT /v1/pricing/<model>` 写入并记录操作审计（当前没有审计），禁止直接改库。
 
@@ -694,3 +694,22 @@ OTLP access log 是遥测链路（批量、可丢），不适合做账本的数�
 - [ ] 金额统一经过一层单位换算，不在业务代码中写死 nano-USD，与第十五章 credit 方案衔接。
 - [ ] 管理 API 是唯一集成面：门户等外部系统只通过管理 API 读写，不直接访问数据库。
 - [ ] 结算成功后输出结构化事件（先写日志或 `NOTIFY`），以后接计费系统时不改账本。
+
+### 19.12 真实上游验证
+
+2026-11-27 在 st2-aii 上让 loom-gateway 直连火山方舟按量付费接口（`deploy/real/`），模型 `doubao-seed-2-0-lite-260428`（思考模型）与 `deepseek-v4-flash-ga-260731`，`deploy/real/run.sh` 23 项全部通过。
+
+| 场景 | 结果 |
+| --- | --- |
+| 非流式、关闭思考、流式（两种写法）、DeepSeek | 客户端收到的 `usage`（输入 / 缓存 / 输出）与 loom 落库逐项一致；loom 金额与网关 catalog 金额一致；RLS 先结算，OTLP 到达后识别为重复并补写网关金额 |
+| 上游 400（非法参数） | 网关记录 `http.status=400`，loom 按 0 结算，预扣立即释放 |
+| TPM 上限 3,000、估值 2,048 | 实际约 40 token，结算修正后 3 次均放行（不修正时第 2 次即超限） |
+| 账户扣减 | `accounts.quota_used` 等于本轮结算总额 |
+| 准入耗时 | 约 `2.5 ms`；预扣 `921,600` nano，按实际结算（如 `310,800`）冲正 |
+
+发现：
+
+1. **客户端中途断开的流式请求按 0 结算（计费漏洞，待定策略）。** 方舟只在最后一个 chunk 返回 usage，客户端在此之前断开时，网关访问日志为 `http.status=200`、有首 token 耗时，但没有任何 token 数；loom 收到全 0 的用量，按 0 结算、释放预扣。上游通常仍对已生成的 token 计费（未在账单侧核实），调用方可借此免费使用。可区分的信号是“状态 2xx 且用量为 0”（上游报错时状态为 4xx/5xx）。可选策略：按预扣额结算（简单、偏保守，正常的“停止生成”也会被按估值计费）；只按输入估值结算；或由网关按已转发内容估算 token（需网关支持，new-api 的做法是对已收到的流式文本计数）。
+2. **思考模型的 `max_tokens` 不约束思考 token。** `max_tokens: 60` 时输出 `611`～`683` token，其中思考 `562`～`633`；按输出计费正确，但全局预扣估值（输出 1,024）可能低于实际，此类模型宜在 `pricing.yaml` 中单独调大 `reserve_tokens`。
+3. **流式请求即使未要求 usage，客户端也会收到 usage chunk**：网关为了计量向上游补上了 `stream_options.include_usage`，并原样转发给客户端；一般无害，个别严格的客户端可能需要兼容。
+4. **前缀缓存未命中**：同一 1,242 token 前缀连发两次，`cached_tokens` 均为 0（方舟的 Chat Completions 不做隐式前缀缓存），缓存计价路径仍只有 mock 覆盖。
