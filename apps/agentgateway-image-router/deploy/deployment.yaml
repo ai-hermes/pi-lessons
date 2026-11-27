@@ -23,6 +23,9 @@ spec:
         - name: router
           image: ${IMAGE_ROUTER_IMAGE}
           env:
+            # 第三方图片上游地址不入库：部署前替换为真实地址（或改为从 ConfigMap / Secret 引用）
+            - name: THIRDPARTY_IMAGE_URL
+              value: https://third-party-upstream.example.com/v1/images/generations
             - name: THIRDPARTY_AUTHORIZATION
               valueFrom:
                 secretKeyRef:

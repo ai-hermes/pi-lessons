@@ -12,6 +12,13 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.routing import Route
 
 
+# 第三方图片上游地址不入库，部署时通过环境变量提供；未配置时使用示例地址（仅测试用）。
+THIRDPARTY_IMAGE_URL = os.environ.get(
+    "THIRDPARTY_IMAGE_URL",
+    "https://third-party-upstream.example.com/v1/images/generations",
+)
+
+
 @dataclass(frozen=True)
 class Upstream:
     url: str
@@ -23,7 +30,7 @@ def select_upstream(model: str) -> Upstream | None:
     """Map a public image model name to one upstream."""
     if model == "gpt-image-2":
         return Upstream(
-            url="https://third-party-upstream.example.com/v1/images/generations",
+            url=THIRDPARTY_IMAGE_URL,
             authorization_env="THIRDPARTY_AUTHORIZATION",
             channel="thirdparty-image",
         )
