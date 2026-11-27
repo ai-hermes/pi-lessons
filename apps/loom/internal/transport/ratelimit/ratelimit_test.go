@@ -3,7 +3,6 @@ package ratelimit
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"testing"
 
@@ -20,20 +19,20 @@ import (
 )
 
 type fakeSettler struct {
-	got []ledger.Usage
+	got []ledger.UsageReport
 	err error
 }
 
-func (f *fakeSettler) Settle(_ context.Context, u ledger.Usage) (bool, error) {
+func (f *fakeSettler) Settle(_ context.Context, u ledger.UsageReport) (bool, error) {
 	f.got = append(f.got, u)
 	return f.err == nil, f.err
 }
 
-func descriptor(requestID, keyID, kind string, hits uint64) *rlscommon.RateLimitDescriptor {
+func descriptor(requestID, apiKeyID, kind string, hits uint64) *rlscommon.RateLimitDescriptor {
 	return &rlscommon.RateLimitDescriptor{
 		Entries: []*rlscommon.RateLimitDescriptor_Entry{
 			{Key: "request_id", Value: requestID},
-			{Key: "key_id", Value: keyID},
+			{Key: "key_id", Value: apiKeyID},
 			{Key: "model", Value: "lab-model"},
 			{Key: "kind", Value: kind},
 		},
@@ -42,12 +41,9 @@ func descriptor(requestID, keyID, kind string, hits uint64) *rlscommon.RateLimit
 }
 
 func newServer(settler Settler) *Server {
-	return NewServer(
-		settler,
-		"loom-billing",
-		telemetry.NewMetrics("test", "test"),
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-	)
+	metrics := telemetry.NewMetrics("test", "test")
+	log := slog.New(slog.DiscardHandler)
+	return NewServer(settler, "loom-billing", metrics, log)
 }
 
 func TestCheckPhaseDoesNotSettle(t *testing.T) {
@@ -62,15 +58,15 @@ func TestCheckPhaseDoesNotSettle(t *testing.T) {
 	assert.Empty(t, settler.got)
 }
 
-func TestAmendMergesDescriptorsIntoOneUsage(t *testing.T) {
+func TestAmendMergesDescriptorsIntoOneUsageReport(t *testing.T) {
 	settler := &fakeSettler{}
-	keyID := uuid.New()
+	apiKeyID := uuid.New()
 	resp, err := newServer(settler).ShouldRateLimit(context.Background(), &rlsv3.RateLimitRequest{
 		Domain: "loom-billing",
 		Descriptors: []*rlscommon.RateLimitDescriptor{
-			descriptor("req-1", keyID.String(), "input", 1000),
-			descriptor("req-1", keyID.String(), "cached", 200),
-			descriptor("req-1", keyID.String(), "output", 500),
+			descriptor("req-1", apiKeyID.String(), "input", 1000),
+			descriptor("req-1", apiKeyID.String(), "cached", 200),
+			descriptor("req-1", apiKeyID.String(), "output", 500),
 		},
 	})
 
@@ -80,9 +76,9 @@ func TestAmendMergesDescriptorsIntoOneUsage(t *testing.T) {
 	require.Len(t, settler.got, 1)
 	u := settler.got[0]
 	assert.Equal(t, "req-1", u.RequestID)
-	assert.Equal(t, keyID, u.KeyID)
+	assert.Equal(t, apiKeyID, u.APIKeyID)
 	assert.Equal(t, Channel, u.Channel)
-	assert.Equal(t, pricing.Tokens{Input: 1000, Cached: 200, Output: 500}, u.Tokens)
+	assert.Equal(t, pricing.TokenUsage{Input: 1000, Cached: 200, Output: 500}, u.TokenUsage)
 }
 
 func TestOtherDomainIsIgnored(t *testing.T) {

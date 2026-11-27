@@ -26,10 +26,10 @@ func toAccount(a sqlcgen.Account) store.Account {
 	}
 }
 
-// toKey 转换带账户快照的 Key 行。sqlc 为 GetKeyByHash / GetKey / ListKeys 生成了
+// toAPIKey 转换带账户快照的 Key 行。sqlc 为 APIKeyByHash / APIKey / ListAPIKeys 生成了
 // 字段完全相同的三个行类型，调用方用类型转换统一成 GetKeyByHashRow。
-func toKey(r sqlcgen.GetKeyByHashRow) store.Key {
-	return store.Key{
+func toAPIKey(r sqlcgen.GetKeyByHashRow) store.APIKey {
+	return store.APIKey{
 		ID:             r.ID,
 		AccountID:      r.AccountID,
 		Name:           r.Name,
@@ -60,7 +60,7 @@ func toKey(r sqlcgen.GetKeyByHashRow) store.Key {
 func toReservation(r sqlcgen.Reservation) store.Reservation {
 	return store.Reservation{
 		RequestID: r.RequestID,
-		KeyID:     r.KeyID,
+		APIKeyID:  r.KeyID,
 		AccountID: r.AccountID,
 		Model:     r.Model,
 		Nanos:     r.Nanos,
@@ -70,26 +70,44 @@ func toReservation(r sqlcgen.Reservation) store.Reservation {
 }
 
 func toUsageEvent(u sqlcgen.UsageEvent) store.UsageEvent {
-	return store.UsageEvent{
-		ID:               u.ID,
-		Time:             u.Time,
-		RequestID:        u.RequestID.String,
-		TraceID:          u.TraceID,
-		SpanID:           u.SpanID,
-		AccountID:        u.AccountID,
-		KeyID:            u.KeyID,
-		Model:            u.Model,
-		Provider:         u.Provider,
-		Route:            u.Route,
-		Gateway:          u.Gateway,
-		InputTokens:      u.InputTokens,
-		OutputTokens:     u.OutputTokens,
-		CachedTokens:     u.CachedTokens,
-		CostNanos:        u.CostNanos,
-		GatewayCostNanos: u.GatewayCostNanos,
-		PricingSource:    u.PricingSource,
-		Settled:          u.Settled,
+	ev := store.UsageEvent{
+		ID:                    u.ID,
+		Time:                  u.Time,
+		RequestID:             u.RequestID.String,
+		TraceID:               u.TraceID,
+		SpanID:                u.SpanID,
+		AccountID:             u.AccountID,
+		APIKeyID:              u.KeyID,
+		Model:                 u.Model,
+		Provider:              u.Provider,
+		Route:                 u.Route,
+		AgentGateway:          u.Gateway,
+		InputTokens:           u.InputTokens,
+		OutputTokens:          u.OutputTokens,
+		CachedTokens:          u.CachedTokens,
+		CostNanos:             u.CostNanos,
+		AgentGatewayCostNanos: u.GatewayCostNanos,
+		PricingSource:         u.PricingSource,
+		Settled:               u.Settled,
 	}
+	if u.GroupRatio != nil {
+		ev.Pricing = &store.PricingSnapshot{
+			Group:           u.PricingGroup.String,
+			GroupRatio:      *u.GroupRatio,
+			ModelRatio:      derefOrZero(u.ModelRatio),
+			CompletionRatio: derefOrZero(u.CompletionRatio),
+			CacheRatio:      derefOrZero(u.CacheRatio),
+			ModelPrice:      u.ModelPrice,
+		}
+	}
+	return ev
+}
+
+func derefOrZero(v *float64) float64 {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 func toAudit(a sqlcgen.AuthAudit) store.Audit {
@@ -97,7 +115,7 @@ func toAudit(a sqlcgen.AuthAudit) store.Audit {
 		Time:            a.Time,
 		RequestID:       a.RequestID,
 		ClientRequestID: a.ClientRequestID,
-		KeyID:           a.KeyID,
+		APIKeyID:        a.KeyID,
 		AccountID:       a.AccountID,
 		Protocol:        a.Protocol,
 		Model:           a.Model,

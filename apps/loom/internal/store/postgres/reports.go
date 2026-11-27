@@ -13,18 +13,24 @@ import (
 
 // 用量与审计。
 
-// BackfillGatewayCost 见 store.Store。
-func (d *DB) BackfillGatewayCost(ctx context.Context, requestID string, nanos int64) (bool, error) {
+// BackfillAgentGatewayCost 见 store.Store。
+func (d *DB) BackfillAgentGatewayCost(ctx context.Context, requestID string, nanos int64) (bool, error) {
 	n, err := d.q.BackfillGatewayCost(ctx, sqlcgen.BackfillGatewayCostParams{
 		RequestID:        optionalText(requestID),
 		GatewayCostNanos: &nanos,
 	})
-	return n > 0, d.fail("BackfillGatewayCost", err)
+	return n > 0, d.fail("BackfillAgentGatewayCost", err)
 }
 
 // ListUsage 见 store.Store。
-func (d *DB) ListUsage(ctx context.Context, keyID *uuid.UUID, since *time.Time, limit int) ([]store.UsageEvent, error) {
-	rows, err := d.q.ListUsage(ctx, sqlcgen.ListUsageParams{KeyID: keyID, Since: since, Lim: int32(limit)})
+func (d *DB) ListUsage(
+	ctx context.Context,
+	apiKeyID *uuid.UUID,
+	since *time.Time,
+	limit int,
+) ([]store.UsageEvent, error) {
+	params := sqlcgen.ListUsageParams{KeyID: apiKeyID, Since: since, Lim: queryLimit(limit)}
+	rows, err := d.q.ListUsage(ctx, params)
 	if err != nil {
 		return nil, d.fail("ListUsage", err)
 	}
@@ -33,26 +39,26 @@ func (d *DB) ListUsage(ctx context.Context, keyID *uuid.UUID, since *time.Time, 
 
 // SummaryUsage 见 store.Store。
 func (d *DB) SummaryUsage(ctx context.Context, f store.UsageFilter) ([]store.UsageSummaryRow, error) {
-	params := sqlcgen.SummaryUsageParams{AccountID: f.AccountID, KeyID: f.KeyID, Since: f.Since}
+	params := sqlcgen.SummaryUsageParams{AccountID: f.AccountID, KeyID: f.APIKeyID, Since: f.Since}
 	rows, err := d.q.SummaryUsage(ctx, params)
 	if err != nil {
 		return nil, d.fail("SummaryUsage", err)
 	}
 	return mapRows(rows, func(r sqlcgen.SummaryUsageRow) store.UsageSummaryRow {
 		row := store.UsageSummaryRow{
-			Model:            r.Model,
-			Requests:         r.Requests,
-			InputTokens:      r.InputTokens,
-			OutputTokens:     r.OutputTokens,
-			CachedTokens:     r.CachedTokens,
-			CostNanos:        r.CostNanos,
-			GatewayCostNanos: r.GatewayCostNanos,
+			Model:                 r.Model,
+			Requests:              r.Requests,
+			InputTokens:           r.InputTokens,
+			OutputTokens:          r.OutputTokens,
+			CachedTokens:          r.CachedTokens,
+			CostNanos:             r.CostNanos,
+			AgentGatewayCostNanos: r.GatewayCostNanos,
 		}
 		if r.AccountID != nil {
 			row.AccountID = *r.AccountID
 		}
 		if r.KeyID != nil {
-			row.KeyID = *r.KeyID
+			row.APIKeyID = *r.KeyID
 		}
 		return row
 	}), nil
@@ -69,8 +75,18 @@ func (d *DB) InsertAudit(ctx context.Context, rows []store.Audit) error {
 	}
 	batch := &pgx.Batch{}
 	for _, r := range rows {
-		batch.Queue(insertAuditSQL,
-			r.Time, r.RequestID, r.ClientRequestID, r.KeyID, r.AccountID, r.Protocol, r.Model, r.Allowed, r.Reason)
+		batch.Queue(
+			insertAuditSQL,
+			r.Time,
+			r.RequestID,
+			r.ClientRequestID,
+			r.APIKeyID,
+			r.AccountID,
+			r.Protocol,
+			r.Model,
+			r.Allowed,
+			r.Reason,
+		)
 	}
 	results := d.pool.SendBatch(ctx, batch)
 	defer func() { _ = results.Close() }()
@@ -83,8 +99,8 @@ func (d *DB) InsertAudit(ctx context.Context, rows []store.Audit) error {
 }
 
 // ListAudit 见 store.Store。
-func (d *DB) ListAudit(ctx context.Context, keyID *uuid.UUID, limit int) ([]store.Audit, error) {
-	rows, err := d.q.ListAudit(ctx, sqlcgen.ListAuditParams{KeyID: keyID, Lim: int32(limit)})
+func (d *DB) ListAudit(ctx context.Context, apiKeyID *uuid.UUID, limit int) ([]store.Audit, error) {
+	rows, err := d.q.ListAudit(ctx, sqlcgen.ListAuditParams{KeyID: apiKeyID, Lim: queryLimit(limit)})
 	if err != nil {
 		return nil, d.fail("ListAudit", err)
 	}

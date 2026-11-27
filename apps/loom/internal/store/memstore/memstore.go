@@ -3,6 +3,7 @@ package memstore
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -12,24 +13,24 @@ import (
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store"
 )
 
-// Mem 内存存储。
-type Mem struct {
-	mu       sync.Mutex
-	accounts map[uuid.UUID]*store.Account
-	keys     map[uuid.UUID]*store.Key
-	byHash   map[string]uuid.UUID
-	reserv   map[string]store.Reservation
-	usage    []store.UsageEvent
-	audit    []store.Audit
-	pricing  map[string]store.ModelPrice
-	nextID   int64
+// Store 内存存储。
+type Store struct {
+	mu          sync.Mutex
+	accounts    map[uuid.UUID]*store.Account
+	apiKeys     map[uuid.UUID]*store.APIKey
+	byHash      map[string]uuid.UUID
+	reserv      map[string]store.Reservation
+	usageEvents []store.UsageEvent
+	audit       []store.Audit
+	pricing     map[string]store.ModelPrice
+	nextID      int64
 }
 
 // New 创建空存储。
-func New() *Mem {
-	return &Mem{
+func New() *Store {
+	return &Store{
 		accounts: map[uuid.UUID]*store.Account{},
-		keys:     map[uuid.UUID]*store.Key{},
+		apiKeys:  map[uuid.UUID]*store.APIKey{},
 		byHash:   map[string]uuid.UUID{},
 		reserv:   map[string]store.Reservation{},
 		pricing:  map[string]store.ModelPrice{},
@@ -37,10 +38,10 @@ func New() *Mem {
 }
 
 // Close 见 store.Store。
-func (m *Mem) Close() {}
+func (m *Store) Close() {}
 
 // GetAccount 见 store.Store。
-func (m *Mem) GetAccount(_ context.Context, id uuid.UUID) (store.Account, error) {
+func (m *Store) GetAccount(_ context.Context, id uuid.UUID) (store.Account, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.accounts[id]
@@ -51,7 +52,7 @@ func (m *Mem) GetAccount(_ context.Context, id uuid.UUID) (store.Account, error)
 }
 
 // GetAccountByName 见 store.Store。
-func (m *Mem) GetAccountByName(_ context.Context, name string) (store.Account, error) {
+func (m *Store) GetAccountByName(_ context.Context, name string) (store.Account, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, a := range m.accounts {
@@ -63,7 +64,7 @@ func (m *Mem) GetAccountByName(_ context.Context, name string) (store.Account, e
 }
 
 // ListAccounts 见 store.Store。
-func (m *Mem) ListAccounts(_ context.Context, limit int) ([]store.Account, error) {
+func (m *Store) ListAccounts(_ context.Context, limit int) ([]store.Account, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]store.Account, 0, len(m.accounts))
@@ -78,7 +79,7 @@ func (m *Mem) ListAccounts(_ context.Context, limit int) ([]store.Account, error
 }
 
 // CreateAccount 见 store.Store。
-func (m *Mem) CreateAccount(_ context.Context, a store.Account) (store.Account, error) {
+func (m *Store) CreateAccount(_ context.Context, a store.Account) (store.Account, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, x := range m.accounts {
@@ -104,25 +105,20 @@ func (m *Mem) CreateAccount(_ context.Context, a store.Account) (store.Account, 
 }
 
 // UpdateAccount 见 store.Store。
-func (m *Mem) UpdateAccount(
-	_ context.Context,
-	id uuid.UUID,
-	status store.Status,
-	quotaLimit *int64,
-	group string,
-) (store.Account, error) {
+func (m *Store) UpdateAccount(_ context.Context, id uuid.UUID, s store.AccountSettings) (store.Account, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.accounts[id]
 	if !ok {
 		return store.Account{}, store.ErrNotFound
 	}
-	a.Status, a.QuotaLimit, a.Group, a.UpdatedAt = status, quotaLimit, group, time.Now()
+	a.Status, a.Group, a.QuotaLimit = s.Status, s.Group, s.QuotaLimit
+	a.UpdatedAt = time.Now()
 	return *a, nil
 }
 
 // AddAccountQuotaLimit 见 store.Store。
-func (m *Mem) AddAccountQuotaLimit(_ context.Context, id uuid.UUID, delta int64) (store.Account, error) {
+func (m *Store) AddAccountQuotaLimit(_ context.Context, id uuid.UUID, delta int64) (store.Account, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.accounts[id]
@@ -145,7 +141,7 @@ func reserve(limit *int64, used, reserved, nanos int64) (store.QuotaState, bool)
 }
 
 // SetAccountQuota 见 store.Store。
-func (m *Mem) SetAccountQuota(_ context.Context, id uuid.UUID, limit *int64, used int64) error {
+func (m *Store) SetAccountQuota(_ context.Context, id uuid.UUID, limit *int64, used int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.accounts[id]
@@ -161,17 +157,17 @@ func (m *Mem) SetAccountQuota(_ context.Context, id uuid.UUID, limit *int64, use
 	return nil
 }
 
-// SetKeyQuota 见 store.Store。
-func (m *Mem) SetKeyQuota(_ context.Context, id uuid.UUID, limit *int64, used int64) error {
+// SetAPIKeyQuota 见 store.Store。
+func (m *Store) SetAPIKeyQuota(_ context.Context, id uuid.UUID, limit *int64, used int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	k, ok := m.keys[id]
+	apiKey, ok := m.apiKeys[id]
 	if !ok {
 		return store.ErrNotFound
 	}
-	k.QuotaLimit, k.QuotaUsed, k.Reserved, k.UpdatedAt = limit, used, 0, time.Now()
+	apiKey.QuotaLimit, apiKey.QuotaUsed, apiKey.Reserved, apiKey.UpdatedAt = limit, used, 0, time.Now()
 	for rk, r := range m.reserv {
-		if r.KeyID == id {
+		if r.APIKeyID == id {
 			delete(m.reserv, rk)
 		}
 	}
@@ -179,7 +175,7 @@ func (m *Mem) SetKeyQuota(_ context.Context, id uuid.UUID, limit *int64, used in
 }
 
 // ReserveAccountQuota 见 store.Store。
-func (m *Mem) ReserveAccountQuota(_ context.Context, id uuid.UUID, nanos int64) (store.QuotaState, error) {
+func (m *Store) ReserveAccountQuota(_ context.Context, id uuid.UUID, nanos int64) (store.QuotaState, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.accounts[id]
@@ -201,7 +197,7 @@ func (m *Mem) ReserveAccountQuota(_ context.Context, id uuid.UUID, nanos int64) 
 }
 
 // ReleaseAccountReservation 见 store.Store。
-func (m *Mem) ReleaseAccountReservation(_ context.Context, id uuid.UUID, nanos int64) error {
+func (m *Store) ReleaseAccountReservation(_ context.Context, id uuid.UUID, nanos int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.accounts[id]
@@ -212,44 +208,44 @@ func (m *Mem) ReleaseAccountReservation(_ context.Context, id uuid.UUID, nanos i
 	return nil
 }
 
-// GetKeyByHash 见 store.Store。
-func (m *Mem) GetKeyByHash(_ context.Context, hash string) (store.Key, error) {
+// GetAPIKeyByHash 见 store.Store。
+func (m *Store) GetAPIKeyByHash(_ context.Context, hash string) (store.APIKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	id, ok := m.byHash[hash]
 	if !ok {
-		return store.Key{}, store.ErrNotFound
+		return store.APIKey{}, store.ErrNotFound
 	}
-	return m.keyLocked(id)
+	return m.apiKeyLocked(id)
 }
 
-func (m *Mem) keyLocked(id uuid.UUID) (store.Key, error) {
-	k, ok := m.keys[id]
+func (m *Store) apiKeyLocked(id uuid.UUID) (store.APIKey, error) {
+	apiKey, ok := m.apiKeys[id]
 	if !ok {
-		return store.Key{}, store.ErrNotFound
+		return store.APIKey{}, store.ErrNotFound
 	}
-	out := *k
-	out.Account = *m.accounts[k.AccountID]
+	out := *apiKey
+	out.Account = *m.accounts[apiKey.AccountID]
 	return out, nil
 }
 
-// GetKey 见 store.Store。
-func (m *Mem) GetKey(_ context.Context, id uuid.UUID) (store.Key, error) {
+// GetAPIKey 见 store.Store。
+func (m *Store) GetAPIKey(_ context.Context, id uuid.UUID) (store.APIKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.keyLocked(id)
+	return m.apiKeyLocked(id)
 }
 
-// ListKeys 见 store.Store。
-func (m *Mem) ListKeys(_ context.Context, accountID *uuid.UUID, limit int) ([]store.Key, error) {
+// ListAPIKeys 见 store.Store。
+func (m *Store) ListAPIKeys(_ context.Context, accountID *uuid.UUID, limit int) ([]store.APIKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]store.Key, 0, len(m.keys))
-	for _, k := range m.keys {
-		if accountID != nil && k.AccountID != *accountID {
+	out := make([]store.APIKey, 0, len(m.apiKeys))
+	for _, apiKey := range m.apiKeys {
+		if accountID != nil && apiKey.AccountID != *accountID {
 			continue
 		}
-		full, _ := m.keyLocked(k.ID)
+		full, _ := m.apiKeyLocked(apiKey.ID)
 		out = append(out, full)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
@@ -259,93 +255,84 @@ func (m *Mem) ListKeys(_ context.Context, accountID *uuid.UUID, limit int) ([]st
 	return out, nil
 }
 
-// CreateKey 见 store.Store。
-func (m *Mem) CreateKey(_ context.Context, k store.Key, allowlist []string) (store.Key, error) {
+// CreateAPIKey 见 store.Store。
+func (m *Store) CreateAPIKey(_ context.Context, apiKey store.APIKey) (store.APIKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.accounts[k.AccountID]; !ok {
-		return store.Key{}, store.ErrNotFound
+	if _, ok := m.accounts[apiKey.AccountID]; !ok {
+		return store.APIKey{}, store.ErrNotFound
 	}
-	if _, exists := m.byHash[k.KeyHash]; exists {
-		return store.Key{}, store.ErrConflict
+	if _, exists := m.byHash[apiKey.KeyHash]; exists {
+		return store.APIKey{}, store.ErrConflict
 	}
-	if k.ID == uuid.Nil {
-		k.ID = uuid.New()
+	if apiKey.ID == uuid.Nil {
+		apiKey.ID = uuid.New()
 	}
-	if k.CreatedAt.IsZero() {
-		k.CreatedAt = time.Now()
+	if apiKey.CreatedAt.IsZero() {
+		apiKey.CreatedAt = time.Now()
 	}
-	k.UpdatedAt = k.CreatedAt
-	if k.Status == "" {
-		k.Status = store.StatusActive
+	apiKey.UpdatedAt = apiKey.CreatedAt
+	if apiKey.Status == "" {
+		apiKey.Status = store.StatusActive
 	}
-	k.ModelAllowlist = allowlist
-	m.keys[k.ID] = &k
-	m.byHash[k.KeyHash] = k.ID
-	return m.keyLocked(k.ID)
+	m.apiKeys[apiKey.ID] = &apiKey
+	m.byHash[apiKey.KeyHash] = apiKey.ID
+	return m.apiKeyLocked(apiKey.ID)
 }
 
-// UpdateKey 见 store.Store。
-func (m *Mem) UpdateKey(
-	_ context.Context,
-	id uuid.UUID,
-	status store.Status,
-	allowlist []string,
-	quotaLimit *int64,
-	expiresAt *time.Time,
-	name string,
-) (store.Key, error) {
+// UpdateAPIKey 见 store.Store。
+func (m *Store) UpdateAPIKey(_ context.Context, id uuid.UUID, s store.APIKeySettings) (store.APIKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	k, ok := m.keys[id]
+	apiKey, ok := m.apiKeys[id]
 	if !ok {
-		return store.Key{}, store.ErrNotFound
+		return store.APIKey{}, store.ErrNotFound
 	}
-	k.Status = status
-	k.ModelAllowlist = allowlist
-	k.QuotaLimit = quotaLimit
-	k.ExpiresAt = expiresAt
-	k.Name = name
-	k.UpdatedAt = time.Now()
-	return m.keyLocked(id)
+	apiKey.Name = s.Name
+	apiKey.Status = s.Status
+	apiKey.ModelAllowlist = s.ModelAllowlist
+	apiKey.QuotaLimit = s.QuotaLimit
+	apiKey.ExpiresAt = s.ExpiresAt
+	apiKey.UpdatedAt = time.Now()
+	return m.apiKeyLocked(id)
 }
 
-// ReserveKeyQuota 见 store.Store。
-func (m *Mem) ReserveKeyQuota(_ context.Context, id uuid.UUID, nanos int64) (store.QuotaState, error) {
+// ReserveAPIKeyQuota 见 store.Store。
+func (m *Store) ReserveAPIKeyQuota(_ context.Context, id uuid.UUID, nanos int64) (store.QuotaState, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	k, ok := m.keys[id]
+	apiKey, ok := m.apiKeys[id]
 	if !ok {
 		return store.QuotaState{}, store.ErrNotFound
 	}
 	if nanos <= 0 {
-		return store.QuotaState{Limit: k.QuotaLimit, Used: k.QuotaUsed, Reserved: k.Reserved}, nil
+		return store.QuotaState{Limit: apiKey.QuotaLimit, Used: apiKey.QuotaUsed, Reserved: apiKey.Reserved}, nil
 	}
-	if k.Status != store.StatusActive || (k.ExpiresAt != nil && k.ExpiresAt.Before(time.Now())) {
+	if apiKey.Status != store.StatusActive || (apiKey.ExpiresAt != nil && apiKey.ExpiresAt.Before(time.Now())) {
 		return store.QuotaState{}, store.ErrInsufficientQuota
 	}
-	q, ok := reserve(k.QuotaLimit, k.QuotaUsed, k.Reserved, nanos)
+	q, ok := reserve(apiKey.QuotaLimit, apiKey.QuotaUsed, apiKey.Reserved, nanos)
 	if !ok {
 		return store.QuotaState{}, store.ErrInsufficientQuota
 	}
-	k.Reserved, k.LastUsedAt = q.Reserved, &[]time.Time{time.Now()}[0]
+	apiKey.Reserved, apiKey.LastUsedAt = q.Reserved, &[]time.Time{time.Now()}[0]
 	return q, nil
 }
 
-// ReleaseKeyReservation 见 store.Store。
-func (m *Mem) ReleaseKeyReservation(_ context.Context, id uuid.UUID, nanos int64) error {
+// ReleaseAPIKeyReservation 见 store.Store。
+func (m *Store) ReleaseAPIKeyReservation(_ context.Context, id uuid.UUID, nanos int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	k, ok := m.keys[id]
+	apiKey, ok := m.apiKeys[id]
 	if !ok {
 		return store.ErrNotFound
 	}
-	k.Reserved -= nanos
+	apiKey.Reserved -= nanos
 	return nil
 }
 
 // CreateReservation 见 store.Store。
-func (m *Mem) CreateReservation(_ context.Context, r store.Reservation) error {
+func (m *Store) CreateReservation(_ context.Context, r store.Reservation) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.reserv[r.RequestID] = r
@@ -353,7 +340,7 @@ func (m *Mem) CreateReservation(_ context.Context, r store.Reservation) error {
 }
 
 // GetReservation 见 store.Store。
-func (m *Mem) GetReservation(_ context.Context, requestID string) (store.Reservation, error) {
+func (m *Store) GetReservation(_ context.Context, requestID string) (store.Reservation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r, ok := m.reserv[requestID]
@@ -364,7 +351,7 @@ func (m *Mem) GetReservation(_ context.Context, requestID string) (store.Reserva
 }
 
 // ListReservations 见 store.Store。
-func (m *Mem) ListReservations(_ context.Context, limit int) ([]store.Reservation, error) {
+func (m *Store) ListReservations(_ context.Context, limit int) ([]store.Reservation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]store.Reservation, 0, len(m.reserv))
@@ -379,18 +366,18 @@ func (m *Mem) ListReservations(_ context.Context, limit int) ([]store.Reservatio
 }
 
 // CountReservations 见 store.Store。
-func (m *Mem) CountReservations(_ context.Context) (int64, error) {
+func (m *Store) CountReservations(_ context.Context) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return int64(len(m.reserv)), nil
 }
 
 // SettleUsage 见 store.Store。
-func (m *Mem) SettleUsage(_ context.Context, ev store.UsageEvent) (bool, error) {
+func (m *Store) SettleUsage(_ context.Context, ev store.UsageEvent) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, u := range m.usage {
-		if ev.RequestID != "" && u.RequestID == ev.RequestID {
+	for _, event := range m.usageEvents {
+		if ev.RequestID != "" && event.RequestID == ev.RequestID {
 			return false, nil
 		}
 	}
@@ -399,17 +386,17 @@ func (m *Mem) SettleUsage(_ context.Context, ev store.UsageEvent) (bool, error) 
 	if ev.Time.IsZero() {
 		ev.Time = time.Now()
 	}
-	m.usage = append(m.usage, ev)
-	if ev.KeyID != nil {
-		k := m.keys[*ev.KeyID]
-		a := m.accounts[k.AccountID]
+	m.usageEvents = append(m.usageEvents, ev)
+	if ev.APIKeyID != nil {
+		apiKey := m.apiKeys[*ev.APIKeyID]
+		account := m.accounts[apiKey.AccountID]
 		if r, ok := m.reserv[ev.RequestID]; ok {
-			k.QuotaUsed, k.Reserved = k.QuotaUsed+ev.CostNanos, k.Reserved-r.Nanos
-			a.QuotaUsed, a.Reserved = a.QuotaUsed+ev.CostNanos, a.Reserved-r.Nanos
+			apiKey.QuotaUsed, apiKey.Reserved = apiKey.QuotaUsed+ev.CostNanos, apiKey.Reserved-r.Nanos
+			account.QuotaUsed, account.Reserved = account.QuotaUsed+ev.CostNanos, account.Reserved-r.Nanos
 			delete(m.reserv, ev.RequestID)
 		} else {
-			k.QuotaUsed += ev.CostNanos
-			a.QuotaUsed += ev.CostNanos
+			apiKey.QuotaUsed += ev.CostNanos
+			account.QuotaUsed += ev.CostNanos
 		}
 	} else if ev.AccountID != nil {
 		if a, ok := m.accounts[*ev.AccountID]; ok {
@@ -419,14 +406,14 @@ func (m *Mem) SettleUsage(_ context.Context, ev store.UsageEvent) (bool, error) 
 	return true, nil
 }
 
-// BackfillGatewayCost 见 store.Store。
-func (m *Mem) BackfillGatewayCost(_ context.Context, requestID string, nanos int64) (bool, error) {
+// BackfillAgentGatewayCost 见 store.Store。
+func (m *Store) BackfillAgentGatewayCost(_ context.Context, requestID string, nanos int64) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for i := range m.usage {
-		if m.usage[i].RequestID == requestID && m.usage[i].GatewayCostNanos == nil {
+	for i := range m.usageEvents {
+		if m.usageEvents[i].RequestID == requestID && m.usageEvents[i].AgentGatewayCostNanos == nil {
 			n := nanos
-			m.usage[i].GatewayCostNanos = &n
+			m.usageEvents[i].AgentGatewayCostNanos = &n
 			return true, nil
 		}
 	}
@@ -434,7 +421,7 @@ func (m *Mem) BackfillGatewayCost(_ context.Context, requestID string, nanos int
 }
 
 // ReleaseExpiredReservations 见 store.Store。
-func (m *Mem) ReleaseExpiredReservations(_ context.Context, now time.Time, limit int) (int, error) {
+func (m *Store) ReleaseExpiredReservations(_ context.Context, now time.Time, limit int) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var expired []store.Reservation
@@ -448,7 +435,7 @@ func (m *Mem) ReleaseExpiredReservations(_ context.Context, now time.Time, limit
 		expired = expired[:limit]
 	}
 	for _, r := range expired {
-		m.keys[r.KeyID].Reserved -= r.Nanos
+		m.apiKeys[r.APIKeyID].Reserved -= r.Nanos
 		m.accounts[r.AccountID].Reserved -= r.Nanos
 		delete(m.reserv, r.RequestID)
 	}
@@ -456,19 +443,23 @@ func (m *Mem) ReleaseExpiredReservations(_ context.Context, now time.Time, limit
 }
 
 // ListUsage 见 store.Store。
-func (m *Mem) ListUsage(_ context.Context, keyID *uuid.UUID, since *time.Time, limit int) ([]store.UsageEvent, error) {
+func (m *Store) ListUsage(
+	_ context.Context,
+	apiKeyID *uuid.UUID,
+	since *time.Time,
+	limit int,
+) ([]store.UsageEvent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]store.UsageEvent, 0, len(m.usage))
-	for i := len(m.usage) - 1; i >= 0; i-- {
-		u := m.usage[i]
-		if keyID != nil && (u.KeyID == nil || *u.KeyID != *keyID) {
+	out := make([]store.UsageEvent, 0, len(m.usageEvents))
+	for _, event := range slices.Backward(m.usageEvents) {
+		if apiKeyID != nil && (event.APIKeyID == nil || *event.APIKeyID != *apiKeyID) {
 			continue
 		}
-		if since != nil && u.Time.Before(*since) {
+		if since != nil && event.Time.Before(*since) {
 			continue
 		}
-		out = append(out, u)
+		out = append(out, event)
 	}
 	if len(out) > limit {
 		out = out[:limit]
@@ -477,42 +468,47 @@ func (m *Mem) ListUsage(_ context.Context, keyID *uuid.UUID, since *time.Time, l
 }
 
 // SummaryUsage 见 store.Store。
-func (m *Mem) SummaryUsage(_ context.Context, f store.UsageFilter) ([]store.UsageSummaryRow, error) {
+func (m *Store) SummaryUsage(_ context.Context, f store.UsageFilter) ([]store.UsageSummaryRow, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	agg := map[string]*store.UsageSummaryRow{}
-	for _, u := range m.usage {
-		if f.AccountID != nil && (u.AccountID == nil || *u.AccountID != *f.AccountID) {
+	for _, event := range m.usageEvents {
+		if f.AccountID != nil && (event.AccountID == nil || *event.AccountID != *f.AccountID) {
 			continue
 		}
-		if f.KeyID != nil && (u.KeyID == nil || *u.KeyID != *f.KeyID) {
+		if f.APIKeyID != nil && (event.APIKeyID == nil || *event.APIKeyID != *f.APIKeyID) {
 			continue
 		}
-		if f.Since != nil && u.Time.Before(*f.Since) {
+		if f.Since != nil && event.Time.Before(*f.Since) {
 			continue
 		}
-		row := store.UsageSummaryRow{Model: u.Model, InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
-			CachedTokens: u.CachedTokens, CostNanos: u.CostNanos}
-		if u.AccountID != nil {
-			row.AccountID = *u.AccountID
+		row := store.UsageSummaryRow{
+			Model:        event.Model,
+			InputTokens:  event.InputTokens,
+			OutputTokens: event.OutputTokens,
+			CachedTokens: event.CachedTokens,
+			CostNanos:    event.CostNanos,
 		}
-		if u.KeyID != nil {
-			row.KeyID = *u.KeyID
+		if event.AccountID != nil {
+			row.AccountID = *event.AccountID
 		}
-		if u.GatewayCostNanos != nil {
-			row.GatewayCostNanos = *u.GatewayCostNanos
+		if event.APIKeyID != nil {
+			row.APIKeyID = *event.APIKeyID
 		}
-		key := row.AccountID.String() + row.KeyID.String() + row.Model
-		if a, ok := agg[key]; ok {
-			a.Requests++
-			a.InputTokens += row.InputTokens
-			a.OutputTokens += row.OutputTokens
-			a.CachedTokens += row.CachedTokens
-			a.CostNanos += row.CostNanos
-			a.GatewayCostNanos += row.GatewayCostNanos
+		if event.AgentGatewayCostNanos != nil {
+			row.AgentGatewayCostNanos = *event.AgentGatewayCostNanos
+		}
+		groupKey := row.AccountID.String() + row.APIKeyID.String() + row.Model
+		if existing, ok := agg[groupKey]; ok {
+			existing.Requests++
+			existing.InputTokens += row.InputTokens
+			existing.OutputTokens += row.OutputTokens
+			existing.CachedTokens += row.CachedTokens
+			existing.CostNanos += row.CostNanos
+			existing.AgentGatewayCostNanos += row.AgentGatewayCostNanos
 		} else {
 			row.Requests = 1
-			agg[key] = &row
+			agg[groupKey] = &row
 		}
 	}
 	out := make([]store.UsageSummaryRow, 0, len(agg))
@@ -524,7 +520,7 @@ func (m *Mem) SummaryUsage(_ context.Context, f store.UsageFilter) ([]store.Usag
 }
 
 // InsertAudit 见 store.Store。
-func (m *Mem) InsertAudit(_ context.Context, rows []store.Audit) error {
+func (m *Store) InsertAudit(_ context.Context, rows []store.Audit) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, r := range rows {
@@ -537,13 +533,12 @@ func (m *Mem) InsertAudit(_ context.Context, rows []store.Audit) error {
 }
 
 // ListAudit 见 store.Store。
-func (m *Mem) ListAudit(_ context.Context, keyID *uuid.UUID, limit int) ([]store.Audit, error) {
+func (m *Store) ListAudit(_ context.Context, apiKeyID *uuid.UUID, limit int) ([]store.Audit, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]store.Audit, 0, len(m.audit))
-	for i := len(m.audit) - 1; i >= 0; i-- {
-		a := m.audit[i]
-		if keyID != nil && (a.KeyID == nil || *a.KeyID != *keyID) {
+	for _, a := range slices.Backward(m.audit) {
+		if apiKeyID != nil && (a.APIKeyID == nil || *a.APIKeyID != *apiKeyID) {
 			continue
 		}
 		out = append(out, a)
@@ -555,7 +550,7 @@ func (m *Mem) ListAudit(_ context.Context, keyID *uuid.UUID, limit int) ([]store
 }
 
 // ListModelPricing 见 store.Store。
-func (m *Mem) ListModelPricing(_ context.Context) ([]store.ModelPrice, error) {
+func (m *Store) ListModelPricing(_ context.Context) ([]store.ModelPrice, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]store.ModelPrice, 0, len(m.pricing))
@@ -568,8 +563,8 @@ func (m *Mem) ListModelPricing(_ context.Context) ([]store.ModelPrice, error) {
 	return out, nil
 }
 
-// GetModelPricing 见 store.Store。
-func (m *Mem) GetModelPricing(_ context.Context, model string) (store.ModelPrice, error) {
+// GetModelPrice 见 store.Store。
+func (m *Store) GetModelPrice(_ context.Context, model string) (store.ModelPrice, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	p, ok := m.pricing[model]
@@ -580,7 +575,7 @@ func (m *Mem) GetModelPricing(_ context.Context, model string) (store.ModelPrice
 }
 
 // UpsertModelPricing 见 store.Store。
-func (m *Mem) UpsertModelPricing(_ context.Context, p store.ModelPrice) error {
+func (m *Store) UpsertModelPricing(_ context.Context, p store.ModelPrice) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	p.Enabled, p.UpdatedAt = true, time.Now()
@@ -589,7 +584,7 @@ func (m *Mem) UpsertModelPricing(_ context.Context, p store.ModelPrice) error {
 }
 
 // DeleteModelPricing 见 store.Store。
-func (m *Mem) DeleteModelPricing(_ context.Context, model string) error {
+func (m *Store) DeleteModelPricing(_ context.Context, model string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.pricing, model)

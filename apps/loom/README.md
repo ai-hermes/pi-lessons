@@ -25,8 +25,14 @@ client ──key + body──► agentgateway ──extauth──► loom :8080 
 | --- | --- |
 | `model_ratio` | 倍率，`1` = `$2 / 1M input tokens` = `2000 nano-USD / token` |
 | `completion_ratio` / `cache_ratio` | 输出 / 缓存命中相对输入单价的倍率 |
-| `model_price` | 按次计费（USD/次），优先于倍率 |
+| `model_price` | 按次计费（USD/次），填写后优先于倍率 |
 | `groups.<g>.ratio` | 分组倍率（账户 `group`） |
+
+取值口径与 one-api / new-api 一致：**未填写**取 `defaults`（分组取 1）；**`0` 表示免费**（`model_ratio: 0` 免费模型、`completion_ratio: 0` 输出免费、`model_price: 0` 按次免费、分组 `ratio: 0` 免费分组），免费请求不预扣；**负数**让配置加载失败（热加载时保留旧价目表）。PG `model_pricing` 与管理 API `PUT /v1/pricing/:model` 同口径：未传的倍率取 1。
+
+分组：`default` 分组总是存在（没写时倍率为 1）。账户分组必须在 `groups` 里定义——管理 API / `seed` 写入时校验（`400`），准入时按 `defaults.unknown_group` 处理：`deny`（默认）拒绝并返回 `group_not_priced`，`default` 按 `default` 分组计价；结算时遇到已被删除的分组按 `default` 分组结算。
+
+精度与留痕：单 token 单价保留小数，整笔请求算完只取整一次；每条 `usage_events` 记录计价快照（`pricing_group`、`group_ratio`、`model_ratio`、`completion_ratio`、`cache_ratio`、`model_price`），可以离线复核金额。`cost_source: gateway_prefer` 时用网关金额 × 分组倍率。
 
 金额是整数 nano-USD（`1 USD = 1e9`）：`cost = (in − cached) × p_in + cached × p_cache + out × p_out`。
 查价顺序：`pricing.yaml`（ConfigMap）→ PG `model_pricing` → `defaults.unknown_model`（`deny` 或 `default`）。

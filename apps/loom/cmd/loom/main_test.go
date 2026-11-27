@@ -30,8 +30,10 @@ func TestRootHelpListsCommands(t *testing.T) {
 	for _, name := range []string{"serve", "migrate", "seed", "render-catalog", "check-config", "completion"} {
 		assert.Contains(t, stdout, name)
 	}
-	assert.Contains(t, stdout, "Running:")
-	assert.Contains(t, stdout, "Operations:")
+	assert.Contains(t, stdout, "Loom adds authentication, quota control, and usage billing to AgentGateway")
+	assert.Contains(t, stdout, "Service:")
+	assert.Contains(t, stdout, "Administration:")
+	assert.Contains(t, stdout, "Utilities:")
 }
 
 func TestVersion(t *testing.T) {
@@ -39,6 +41,15 @@ func TestVersion(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Contains(t, stdout, "loom "+version+" ("+commit+")")
+}
+
+func TestVersionDoesNotLoadServiceConfig(t *testing.T) {
+	t.Setenv("LOOM_CONFIG", filepath.Join(t.TempDir(), "missing.yaml"))
+
+	stdout, _, err := execute(t, "version")
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "loom "+version)
 }
 
 func TestMigrateValidatesAction(t *testing.T) {
@@ -66,13 +77,14 @@ func TestCommandsRejectPositionalArgs(t *testing.T) {
 func TestRenderCatalog(t *testing.T) {
 	dir := t.TempDir()
 	pricing := filepath.Join(dir, "pricing.yaml")
-	require.NoError(t, os.WriteFile(pricing, []byte("models:\n  lab-model: {model_ratio: 0.5, completion_ratio: 2}\n"), 0o644))
+	priceConfig := "models:\n  lab-model: {model_ratio: 0.5, completion_ratio: 2}\n"
+	require.NoError(t, os.WriteFile(pricing, []byte(priceConfig), 0o600))
 	out := filepath.Join(dir, "catalog.json")
 
 	_, _, err := execute(t, "render-catalog", "--pricing", pricing, "--out", out)
 
 	require.NoError(t, err)
-	b, err := os.ReadFile(out)
+	b, err := os.ReadFile(out) //nolint:gosec // out is a test-owned path under t.TempDir().
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(string(b), "{\n  \"providers\""))
 	assert.Contains(t, string(b), `"input": "1"`)

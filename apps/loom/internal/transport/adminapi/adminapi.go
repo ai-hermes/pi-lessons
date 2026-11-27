@@ -45,13 +45,13 @@ func (a *API) Handler() http.Handler {
 	v1.PATCH("/accounts/:id", a.updateAccount)
 	v1.POST("/accounts/:id/topup", a.topUpAccount)
 	v1.POST("/accounts/:id/quota", a.resetAccountQuota)
-	v1.GET("/accounts/:id/keys", a.listAccountKeys)
+	v1.GET("/accounts/:id/keys", a.listAccountAPIKeys)
 
-	v1.GET("/keys", a.listKeys)
-	v1.POST("/keys", a.createKey)
-	v1.GET("/keys/:id", a.getKey)
-	v1.PATCH("/keys/:id", a.updateKey)
-	v1.POST("/keys/:id/quota", a.resetKeyQuota)
+	v1.GET("/keys", a.listAPIKeys)
+	v1.POST("/keys", a.createAPIKey)
+	v1.GET("/keys/:id", a.getAPIKey)
+	v1.PATCH("/keys/:id", a.updateAPIKey)
+	v1.POST("/keys/:id/quota", a.resetAPIKeyQuota)
 
 	v1.GET("/pricing", a.getPricing)
 	v1.PUT("/pricing/:model", a.upsertPrice)
@@ -94,7 +94,7 @@ func (a *API) listAccounts(c *gin.Context) {
 }
 
 func (a *API) createAccount(c *gin.Context) {
-	var in account.NewAccount
+	var in account.CreateAccountInput
 	if !bind(c, &in) {
 		return
 	}
@@ -121,7 +121,7 @@ func (a *API) getAccount(c *gin.Context) {
 
 func (a *API) updateAccount(c *gin.Context) {
 	id, ok := pathID(c)
-	var in account.AccountUpdate
+	var in account.UpdateAccountInput
 	if !ok || !bind(c, &in) {
 		return
 	}
@@ -163,7 +163,7 @@ func (a *API) resetAccountQuota(c *gin.Context) {
 	c.JSON(http.StatusOK, newAccountView(acct))
 }
 
-func (a *API) listAccountKeys(c *gin.Context) {
+func (a *API) listAccountAPIKeys(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
 		return
@@ -171,78 +171,78 @@ func (a *API) listAccountKeys(c *gin.Context) {
 	a.respondKeys(c, &id)
 }
 
-// ---- keys ----
+// ---- api keys ----
 
-func (a *API) listKeys(c *gin.Context) {
+func (a *API) listAPIKeys(c *gin.Context) {
 	a.respondKeys(c, queryID(c, "account_id"))
 }
 
 func (a *API) respondKeys(c *gin.Context, accountID *uuid.UUID) {
-	rows, err := a.accounts.ListKeys(c, accountID, listLimit(c))
+	rows, err := a.accounts.ListAPIKeys(c, accountID, listLimit(c))
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	views := make([]keyView, 0, len(rows))
+	views := make([]apiKeyView, 0, len(rows))
 	for _, row := range rows {
-		views = append(views, newKeyView(row))
+		views = append(views, newAPIKeyView(row))
 	}
 	c.JSON(http.StatusOK, gin.H{"keys": views})
 }
 
-func (a *API) createKey(c *gin.Context) {
-	var in account.NewKey
+func (a *API) createAPIKey(c *gin.Context) {
+	var in account.CreateAPIKeyInput
 	if !bind(c, &in) {
 		return
 	}
-	issued, err := a.accounts.CreateKey(c, in)
+	issued, err := a.accounts.CreateAPIKey(c, in)
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	// 明文只在创建时返回这一次
-	c.JSON(http.StatusCreated, gin.H{"key": newKeyView(issued.Key), "plaintext": issued.Plaintext})
+	c.JSON(http.StatusCreated, gin.H{"key": newAPIKeyView(issued.APIKey), "plaintext": issued.Plaintext})
 }
 
-func (a *API) getKey(c *gin.Context) {
+func (a *API) getAPIKey(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
 		return
 	}
-	key, err := a.accounts.GetKey(c, id)
+	apiKey, err := a.accounts.GetAPIKey(c, id)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, newKeyView(key))
+	c.JSON(http.StatusOK, newAPIKeyView(apiKey))
 }
 
-func (a *API) updateKey(c *gin.Context) {
+func (a *API) updateAPIKey(c *gin.Context) {
 	id, ok := pathID(c)
-	var in account.KeyUpdate
+	var in account.APIKeyUpdate
 	if !ok || !bind(c, &in) {
 		return
 	}
-	key, err := a.accounts.UpdateKey(c, id, in)
+	apiKey, err := a.accounts.UpdateAPIKey(c, id, in)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, newKeyView(key))
+	c.JSON(http.StatusOK, newAPIKeyView(apiKey))
 }
 
-func (a *API) resetKeyQuota(c *gin.Context) {
+func (a *API) resetAPIKeyQuota(c *gin.Context) {
 	id, ok := pathID(c)
 	var in account.QuotaReset
 	if !ok || !bind(c, &in) {
 		return
 	}
-	key, err := a.accounts.ResetKeyQuota(c, id, in)
+	apiKey, err := a.accounts.ResetAPIKeyQuota(c, id, in)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, newKeyView(key))
+	c.JSON(http.StatusOK, newAPIKeyView(apiKey))
 }
 
 // ---- pricing ----
@@ -257,20 +257,20 @@ func (a *API) getPricing(c *gin.Context) {
 }
 
 func (a *API) upsertPrice(c *gin.Context) {
-	var price store.ModelPrice
-	if !bind(c, &price) {
+	var in account.ModelPriceInput
+	if !bind(c, &in) {
 		return
 	}
-	price.Model = c.Param("model")
-	if err := a.accounts.UpsertStorePrice(c, price); err != nil {
+	model := c.Param("model")
+	if err := a.accounts.UpsertModelPrice(c, model, in); err != nil {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"model": price.Model, "source": "pg"})
+	c.JSON(http.StatusOK, gin.H{"model": model, "source": "pg"})
 }
 
 func (a *API) deletePrice(c *gin.Context) {
-	if err := a.accounts.DeleteStorePrice(c, c.Param("model")); err != nil {
+	if err := a.accounts.DeleteModelPrice(c, c.Param("model")); err != nil {
 		fail(c, err)
 		return
 	}
@@ -278,7 +278,7 @@ func (a *API) deletePrice(c *gin.Context) {
 }
 
 func (a *API) getCatalog(c *gin.Context) {
-	catalog, err := a.accounts.GatewayCatalog(c)
+	catalog, err := a.accounts.AgentGatewayCatalog(c)
 	if err != nil {
 		fail(c, err)
 		return
@@ -298,7 +298,7 @@ func (a *API) listUsage(c *gin.Context) {
 }
 
 func (a *API) usageSummary(c *gin.Context) {
-	filter := store.UsageFilter{AccountID: queryID(c, "account_id"), KeyID: queryID(c, "key_id")}
+	filter := store.UsageFilter{AccountID: queryID(c, "account_id"), APIKeyID: queryID(c, "key_id")}
 	if v := c.Query("since"); v != "" {
 		since, err := time.Parse(time.RFC3339, v)
 		if err != nil {

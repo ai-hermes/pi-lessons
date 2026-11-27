@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -46,7 +48,7 @@ func New(ctx context.Context, opts Options) (*DB, error) {
 	cfg.MaxConns = opts.MaxConns
 	cfg.MaxConnLifetime = opts.MaxConnLifetime
 	if opts.StatementTimeout > 0 {
-		cfg.ConnConfig.RuntimeParams["statement_timeout"] = fmt.Sprint(opts.StatementTimeout.Milliseconds())
+		cfg.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(opts.StatementTimeout.Milliseconds(), 10)
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
@@ -73,6 +75,18 @@ func (d *DB) Stat() *pgxpool.Stat { return d.pool.Stat() }
 
 // Close 关闭连接池。
 func (d *DB) Close() { d.pool.Close() }
+
+// queryLimit 把外部分页上限收敛为 PostgreSQL integer；负数按 0 处理。
+func queryLimit(limit int) int32 {
+	switch {
+	case limit <= 0:
+		return 0
+	case int64(limit) > math.MaxInt32:
+		return math.MaxInt32
+	default:
+		return int32(limit)
+	}
+}
 
 // fail 把驱动错误翻译为 store 哨兵错误，其余错误补充操作名并上报。
 func (d *DB) fail(op string, err error) error {

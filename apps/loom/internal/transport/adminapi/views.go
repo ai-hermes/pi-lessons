@@ -42,8 +42,8 @@ func newAccountView(a store.Account) accountView {
 	return v
 }
 
-// keyView Key 的 API 表示；不包含摘要与明文。
-type keyView struct {
+// apiKeyView Key 的 API 表示；不包含摘要与明文。
+type apiKeyView struct {
 	ID                  uuid.UUID    `json:"id"`
 	AccountID           uuid.UUID    `json:"account_id"`
 	Name                string       `json:"name"`
@@ -60,8 +60,8 @@ type keyView struct {
 	Account             accountView  `json:"account"`
 }
 
-func newKeyView(k store.Key) keyView {
-	v := keyView{
+func newAPIKeyView(k store.APIKey) apiKeyView {
+	v := apiKeyView{
 		ID:              k.ID,
 		AccountID:       k.AccountID,
 		Name:            k.Name,

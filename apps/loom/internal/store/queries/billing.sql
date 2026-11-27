@@ -25,9 +25,14 @@ FOR UPDATE SKIP LOCKED;
 WITH ins AS (
     INSERT INTO usage_events (time, request_id, trace_id, span_id, account_id, key_id, model, provider,
                                route, gateway, input_tokens, output_tokens, cached_tokens,
-                               cost_nanos, gateway_cost_nanos, pricing_source, settled)
+                               cost_nanos, gateway_cost_nanos, pricing_source,
+                               pricing_group, group_ratio, model_ratio, completion_ratio, cache_ratio, model_price,
+                               settled)
     VALUES ($1, sqlc.narg(request_id), $2, $3, sqlc.narg(account_id), sqlc.narg(key_id), $4, $5,
-            $6, $7, $8, $9, $10, $11, sqlc.narg(gateway_cost_nanos), $12, true)
+            $6, $7, $8, $9, $10, $11, sqlc.narg(gateway_cost_nanos), $12,
+            sqlc.narg(pricing_group), sqlc.narg(group_ratio), sqlc.narg(model_ratio),
+            sqlc.narg(completion_ratio), sqlc.narg(cache_ratio), sqlc.narg(model_price),
+            true)
     ON CONFLICT (request_id) DO NOTHING
     RETURNING id
 )

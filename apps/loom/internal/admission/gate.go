@@ -18,64 +18,78 @@ import (
 
 // Store 是准入所需的持久化能力。
 type Store interface {
-	GetKeyByHash(ctx context.Context, hash string) (store.Key, error)
+	GetAPIKeyByHash(ctx context.Context, hash string) (store.APIKey, error)
 	InsertAudit(ctx context.Context, rows []store.Audit) error
 }
 
 // Pricer 按模型与分组查单价卡。
 type Pricer interface {
-	Lookup(ctx context.Context, model, group string) (pricing.Card, error)
+	Lookup(ctx context.Context, model, group string) (pricing.UnitPrice, error)
 }
 
-// Reserver 预扣额度。
-type Reserver interface {
-	Reserve(ctx context.Context, key store.Key, card pricing.Card, requestID string) (ledger.Hold, error)
+// QuotaReserver 预扣额度。
+type QuotaReserver interface {
+	ReserveQuota(
+		ctx context.Context,
+		apiKey store.APIKey,
+		unitPrice pricing.UnitPrice,
+		requestID string,
+	) (ledger.ReservationHold, error)
 }
 
 // Options 准入参数。
 type Options struct {
-	KeyCache   KeyCacheOptions
-	AuditQueue int // 审计写入队列长度；0 表示不写审计
-}
-
-// Deps 准入依赖。
-type Deps struct {
-	Store    Store
-	Pricer   Pricer
-	Reserver Reserver
-	Metrics  *telemetry.Metrics
-	Log      *slog.Logger
+	APIKeyCache APIKeyCacheOptions
+	AuditQueue  int // 审计写入队列长度；0 表示不写审计
 }
 
 // Gate 准入门。
 type Gate struct {
-	deps  Deps
-	keys  *keyCache
-	audit *auditWriter
+	store         Store
+	pricer        Pricer
+	quotaReserver QuotaReserver
+	metrics       *telemetry.Metrics
+	log           *slog.Logger
+	apiKeys       *apiKeyCache
+	audit         *auditWriter
 }
 
 // New 创建准入门；审计写入需另行调用 RunAuditWriter。
-func New(opts Options, deps Deps) *Gate {
+func New(
+	opts Options,
+	storage Store,
+	pricer Pricer,
+	quotaReserver QuotaReserver,
+	metrics *telemetry.Metrics,
+	logger *slog.Logger,
+) *Gate {
 	return &Gate{
-		deps:  deps,
-		keys:  newKeyCache(opts.KeyCache),
-		audit: newAuditWriter(deps.Store, opts.AuditQueue, deps.Log),
+		store:         storage,
+		pricer:        pricer,
+		quotaReserver: quotaReserver,
+		metrics:       metrics,
+		log:           logger,
+		apiKeys:       newAPIKeyCache(opts.APIKeyCache),
+		audit:         newAuditWriter(storage, opts.AuditQueue, logger),
 	}
 }
 
 // RunAuditWriter 批量写入审计记录，阻塞直到 ctx 结束并刷完队列。
 func (g *Gate) RunAuditWriter(ctx context.Context) { g.audit.run(ctx) }
 
-// InvalidateKey 清除某把 Key 的缓存（管理 API 修改 Key 后调用；仅作用于当前副本）。
-func (g *Gate) InvalidateKey(keyID uuid.UUID) { g.keys.invalidate(keyID) }
+// InvalidateAPIKey 清除某把 Key 的缓存（管理 API 修改 Key 后调用；仅作用于当前副本）。
+func (g *Gate) InvalidateAPIKey(apiKeyID uuid.UUID) { g.apiKeys.invalidate(apiKeyID) }
+
+// InvalidateAccount 清除某账户下所有 API Key 的缓存（管理 API 修改账户状态或分组后调用；仅作用于当前副本）。
+func (g *Gate) InvalidateAccount(accountID uuid.UUID) { g.apiKeys.invalidateAccount(accountID) }
 
 // Admit 对一次请求做准入判断，并记录指标、日志与审计。
 func (g *Gate) Admit(ctx context.Context, req Request) Verdict {
 	start := time.Now()
 	v := g.admit(ctx, req, uuid.NewString())
 
-	g.deps.Metrics.AdmissionDuration.WithLabelValues("total").Observe(time.Since(start).Seconds())
-	g.deps.Metrics.AdmissionDecisions.WithLabelValues(string(v.Reason), strconv.FormatBool(v.Allowed)).Inc()
+	g.metrics.AdmissionDuration.WithLabelValues("total").Observe(time.Since(start).Seconds())
+	g.metrics.AdmissionDecisions.WithLabelValues(string(v.Reason), strconv.FormatBool(v.Allowed)).Inc()
 	g.audit.record(req, v)
 	g.logVerdict(req, v, start)
 	return v
@@ -84,13 +98,13 @@ func (g *Gate) Admit(ctx context.Context, req Request) Verdict {
 func (g *Gate) admit(ctx context.Context, req Request, requestID string) Verdict {
 	v := Verdict{RequestID: requestID}
 
-	key, reason := g.authenticate(ctx, req.Credential)
-	if reason != "" {
-		return v.deny(reason)
+	apiKey, denyReason := g.authenticate(ctx, req.Credential)
+	if denyReason != "" {
+		return v.deny(denyReason)
 	}
-	v.KeyID, v.AccountID, v.AccountName = key.ID, key.AccountID, key.Account.Name
-	if reason := checkUsable(key, time.Now()); reason != "" {
-		return v.deny(reason)
+	v.APIKeyID, v.AccountID, v.AccountName = apiKey.ID, apiKey.AccountID, apiKey.Account.Name
+	if denyReason := checkUsable(apiKey, time.Now()); denyReason != "" {
+		return v.deny(denyReason)
 	}
 
 	v.Model = resolveModel(req)
@@ -98,117 +112,124 @@ func (g *Gate) admit(ctx context.Context, req Request, requestID string) Verdict
 		// 非模型请求（如 /echo）：只鉴权，不定价、不预扣
 		return v.allow()
 	}
-	if !key.AllowsModel(v.Model) {
+	if !apiKey.AllowsModel(v.Model) {
 		return v.deny(ReasonModelNotAllowed)
 	}
 
-	card, reason := g.price(ctx, v.Model, key.Account.Group)
-	if reason != "" {
-		return v.deny(reason)
+	unitPrice, denyReason := g.lookupUnitPrice(ctx, v.Model, apiKey.Account.Group)
+	if denyReason != "" {
+		return v.deny(denyReason)
 	}
-	hold, reason := g.reserve(ctx, key, card, requestID)
-	if reason != "" {
-		return v.deny(reason)
+	reservationHold, denyReason := g.reserveQuota(ctx, apiKey, unitPrice, requestID)
+	if denyReason != "" {
+		return v.deny(denyReason)
 	}
-	v.ReservedNanos, v.RemainingNanos = hold.Nanos, hold.Remaining
+	v.ReservedNanos, v.RemainingNanos = reservationHold.Nanos, reservationHold.Remaining
 	return v.allow()
 }
 
 // authenticate 用凭据查找 Key；失败时返回拒绝原因。
-func (g *Gate) authenticate(ctx context.Context, credential string) (store.Key, Reason) {
+func (g *Gate) authenticate(ctx context.Context, credential string) (store.APIKey, Reason) {
 	if credential == "" {
-		return store.Key{}, ReasonMissingCredential
+		return store.APIKey{}, ReasonMissingCredential
 	}
 	defer g.observe("authenticate", time.Now())
 
-	key, err := g.lookupKey(ctx, store.HashAPIKey(credential))
+	apiKey, err := g.lookupAPIKey(ctx, store.HashAPIKey(credential))
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		return store.Key{}, ReasonUnknownKey
+		return store.APIKey{}, ReasonUnknownKey
 	case err != nil:
-		g.deps.Log.Error("key lookup failed", "err", err)
-		return store.Key{}, ReasonInternalError
+		g.log.Error("api key lookup failed", "err", err)
+		return store.APIKey{}, ReasonInternalError
 	}
-	return key, ""
+	return apiKey, ""
 }
 
 // checkUsable 检查 Key 与账户是否可用。
-func checkUsable(key store.Key, now time.Time) Reason {
-	if !key.Status.IsActive() || !key.Account.Status.IsActive() {
+func checkUsable(apiKey store.APIKey, now time.Time) Reason {
+	if !apiKey.Status.IsActive() || !apiKey.Account.Status.IsActive() {
 		return ReasonInactive
 	}
-	if key.ExpiresAt != nil && !key.ExpiresAt.After(now) {
+	if apiKey.ExpiresAt != nil && !apiKey.ExpiresAt.After(now) {
 		return ReasonExpiredKey
 	}
 	return ""
 }
 
-// price 查单价卡；失败时返回拒绝原因。
-func (g *Gate) price(ctx context.Context, model, group string) (pricing.Card, Reason) {
+// lookupUnitPrice 查找模型与账户分组对应的有效价卡；失败时返回拒绝原因。
+func (g *Gate) lookupUnitPrice(ctx context.Context, model, group string) (pricing.UnitPrice, Reason) {
 	defer g.observe("price", time.Now())
 
-	card, err := g.deps.Pricer.Lookup(ctx, model, group)
+	unitPrice, err := g.pricer.Lookup(ctx, model, group)
 	switch {
 	case errors.Is(err, pricing.ErrNotPriced):
-		return pricing.Card{}, ReasonModelNotPriced
+		return pricing.UnitPrice{}, ReasonModelNotPriced
+	case errors.Is(err, pricing.ErrGroupNotPriced):
+		return pricing.UnitPrice{}, ReasonGroupNotPriced
 	case err != nil:
-		g.deps.Log.Error("price lookup failed", "err", err, "model", model)
-		return pricing.Card{}, ReasonInternalError
+		g.log.Error("price lookup failed", "err", err, "model", model)
+		return pricing.UnitPrice{}, ReasonInternalError
 	}
-	return card, ""
+	return unitPrice, ""
 }
 
-// reserve 预扣额度；失败时返回拒绝原因。
-func (g *Gate) reserve(ctx context.Context, key store.Key, card pricing.Card, requestID string) (ledger.Hold, Reason) {
+// reserveQuota 预扣额度；失败时返回拒绝原因。
+func (g *Gate) reserveQuota(
+	ctx context.Context,
+	apiKey store.APIKey,
+	unitPrice pricing.UnitPrice,
+	requestID string,
+) (ledger.ReservationHold, Reason) {
 	defer g.observe("reserve", time.Now())
 
-	hold, err := g.deps.Reserver.Reserve(ctx, key, card, requestID)
+	reservationHold, err := g.quotaReserver.ReserveQuota(ctx, apiKey, unitPrice, requestID)
 	switch {
 	case ledger.IsInsufficientQuota(err):
-		return ledger.Hold{}, ReasonInsufficientQuota
+		return ledger.ReservationHold{}, ReasonInsufficientQuota
 	case err != nil:
-		g.deps.Log.Error("reserve failed", "err", err, "key_id", key.ID)
-		return ledger.Hold{}, ReasonInternalError
+		g.log.Error("reserve failed", "err", err, "key_id", apiKey.ID)
+		return ledger.ReservationHold{}, ReasonInternalError
 	}
-	return hold, ""
+	return reservationHold, ""
 }
 
-func (g *Gate) lookupKey(ctx context.Context, hash string) (store.Key, error) {
-	if key, err, ok := g.keys.get(hash); ok {
-		g.deps.Metrics.CacheLookups.WithLabelValues("api_key", "hit").Inc()
-		return key, err
+func (g *Gate) lookupAPIKey(ctx context.Context, hash string) (store.APIKey, error) {
+	if apiKey, err, ok := g.apiKeys.get(hash); ok {
+		g.metrics.CacheLookups.WithLabelValues("api_key", "hit").Inc()
+		return apiKey, err
 	}
-	g.deps.Metrics.CacheLookups.WithLabelValues("api_key", "miss").Inc()
+	g.metrics.CacheLookups.WithLabelValues("api_key", "miss").Inc()
 
-	key, err := g.deps.Store.GetKeyByHash(ctx, hash)
+	apiKey, err := g.store.GetAPIKeyByHash(ctx, hash)
 	switch {
 	case err == nil:
-		g.keys.add(hash, key)
+		g.apiKeys.add(hash, apiKey)
 	case errors.Is(err, store.ErrNotFound):
-		g.keys.addMiss(hash)
+		g.apiKeys.addMiss(hash)
 	}
-	return key, err
+	return apiKey, err
 }
 
 func (g *Gate) observe(stage string, start time.Time) {
-	g.deps.Metrics.AdmissionDuration.WithLabelValues(stage).Observe(time.Since(start).Seconds())
+	g.metrics.AdmissionDuration.WithLabelValues(stage).Observe(time.Since(start).Seconds())
 }
 
 func (g *Gate) logVerdict(req Request, v Verdict, start time.Time) {
-	attrs := []any{
+	logAttrs := []any{
 		"request_id", v.RequestID,
 		"reason", v.Reason,
-		"key_id", v.KeyID,
+		"key_id", v.APIKeyID,
 		"account", v.AccountName,
 		"model", v.Model,
 		"protocol", req.Protocol,
 		"ms", float64(time.Since(start).Microseconds()) / 1000,
 	}
 	if v.Allowed {
-		g.deps.Log.Info("admission allowed", append(attrs, "reserved_nanos", v.ReservedNanos)...)
+		g.log.Info("admission allowed", append(logAttrs, "reserved_nanos", v.ReservedNanos)...)
 		return
 	}
-	g.deps.Log.Info("admission denied", append(attrs, "path", req.Path)...)
+	g.log.Info("admission denied", append(logAttrs, "path", req.Path)...)
 }
 
 // resolveModel 取模型名：网关提示优先，其次请求体 JSON 的 model 字段。

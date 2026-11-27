@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -13,143 +14,188 @@ import (
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store"
 )
 
-// Usage 是一次请求的用量上报，来自网关 RLS amend 或 OTLP access log。
+// UsageReport 是一次请求的用量上报，来自网关 RLS amend 或 OTLP access log。
 // 同一 RequestID 只会结算一次，后到的上报只补写网关金额。
-type Usage struct {
+type UsageReport struct {
 	RequestID string
 	Channel   string // 上报通道，仅用于指标与日志：rls | otlp
 
-	// 归属：优先 KeyID；没有 KeyID 时按账户名归属（无预扣的旧流量）。
-	KeyID       uuid.UUID
+	// 归属：优先 APIKeyID；没有 APIKeyID 时按账户名归属（无预扣的旧流量）。
+	APIKeyID    uuid.UUID
 	AccountName string
 
-	Model  string
-	Tokens pricing.Tokens
-	// GatewayCostNanos 网关按其 modelCatalog 算出的金额，仅用于对账。
-	GatewayCostNanos *int64
+	Model      string
+	TokenUsage pricing.TokenUsage
+	// AgentGatewayCostNanos 网关按其 modelCatalog 算出的金额，仅用于对账。
+	AgentGatewayCostNanos *int64
 
-	Time     time.Time
-	TraceID  string
-	SpanID   string
-	Provider string
-	Route    string
-	Gateway  string
+	Time         time.Time
+	TraceID      string
+	SpanID       string
+	Provider     string
+	Route        string
+	AgentGateway string
 }
 
 // Settle 按实际用量结算一次请求：解析归属 → 定价 → 对账 → 落库并冲正预扣。
 // 返回 inserted=false 表示该请求已被另一通道结算过。
-func (l *Ledger) Settle(ctx context.Context, u Usage) (inserted bool, err error) {
+func (l *Ledger) Settle(ctx context.Context, report UsageReport) (inserted bool, err error) {
 	defer func() {
 		if err != nil {
-			l.metrics.SettleErrors.WithLabelValues(u.Channel).Inc()
+			l.metrics.SettleErrors.WithLabelValues(report.Channel).Inc()
 		}
 	}()
 
-	o, err := l.owners.resolve(ctx, u)
+	owner, err := l.owners.resolve(ctx, report)
 	if err != nil {
-		return false, fmt.Errorf("resolve owner: %w", err)
+		return false, fmt.Errorf("resolve usage owner: %w", err)
 	}
-	cost, source, err := l.price(ctx, u, o)
+	cost, err := l.calculateCost(ctx, report, owner)
 	if err != nil {
 		return false, fmt.Errorf("price usage: %w", err)
 	}
 
-	inserted, err = l.store.SettleUsage(ctx, usageEvent(u, o, cost, source))
+	inserted, err = l.store.SettleUsage(ctx, usageEvent(report, owner, cost))
 	if err != nil {
 		return false, fmt.Errorf("persist usage: %w", err)
 	}
 	if !inserted {
-		l.backfillGatewayCost(ctx, u)
+		l.backfillAgentGatewayCost(ctx, report)
 	}
 
-	l.metrics.Settlements.WithLabelValues(u.Channel, strconv.FormatBool(inserted)).Inc()
+	l.metrics.Settlements.WithLabelValues(report.Channel, strconv.FormatBool(inserted)).Inc()
 	if inserted {
-		l.metrics.SettledNanos.WithLabelValues(u.Model).Add(float64(cost))
+		l.metrics.SettledNanos.WithLabelValues(report.Model).Add(float64(cost.nanos))
 	}
-	l.log.Info("usage settled",
-		"channel", u.Channel,
+	l.log.Info(
+		"usage settled",
+		"channel", report.Channel,
 		"inserted", inserted,
-		"request_id", u.RequestID,
-		"model", u.Model,
-		"input", u.Tokens.Input,
-		"cached", u.Tokens.Cached,
-		"output", u.Tokens.Output,
-		"cost_nanos", cost,
-		"pricing_source", source,
+		"request_id", report.RequestID,
+		"model", report.Model,
+		"input", report.TokenUsage.Input,
+		"cached", report.TokenUsage.Cached,
+		"output", report.TokenUsage.Output,
+		"cost_nanos", cost.nanos,
+		"pricing_source", cost.source,
 	)
 	return inserted, nil
 }
 
-// price 计算结算金额；未定价模型金额为 0（准入阶段已拦截，这里只记账）。
-func (l *Ledger) price(ctx context.Context, u Usage, o owner) (int64, pricing.Source, error) {
-	card, err := l.pricer.Lookup(ctx, u.Model, o.group)
-	if errors.Is(err, pricing.ErrNotPriced) {
-		return 0, "", nil
-	}
-	if err != nil {
-		return 0, "", err
-	}
-	cost := card.Cost(u.Tokens)
-
-	if l.opts.CostSource == CostSourceGatewayPreferred && u.GatewayCostNanos != nil {
-		return *u.GatewayCostNanos, pricingSourceGateway, nil
-	}
-	l.reconcile(u, card, cost)
-	return cost, card.Source, nil
+// settlementCost 是一次结算的金额及其来源；unitPrice 为 nil 表示模型未定价（金额为 0）。
+type settlementCost struct {
+	nanos     int64
+	source    pricing.PriceSource
+	unitPrice *pricing.UnitPrice
 }
 
-// reconcile 比对 loom 与网关金额。网关 catalog 不表达分组倍率，非 1 倍率的账户不比较。
-func (l *Ledger) reconcile(u Usage, card pricing.Card, cost int64) {
-	if u.GatewayCostNanos == nil || card.GroupRatio != 1 {
+// calculateCost 计算结算金额。
+//   - 模型未定价：金额为 0（准入阶段已拦截，这里只记账）。
+//   - 分组未定义（准入后 pricing.yaml 删除了该分组）：按 default 分组结算，避免已发生的调用变成 0 元。
+//   - cost_source 为 gateway_prefer 且网关上报了金额：网关金额 × 分组倍率（网关 catalog 不含分组倍率）。
+func (l *Ledger) calculateCost(ctx context.Context, report UsageReport, owner usageOwner) (settlementCost, error) {
+	unitPrice, err := l.pricer.Lookup(ctx, report.Model, owner.group)
+	if errors.Is(err, pricing.ErrGroupNotPriced) {
+		l.log.Warn(
+			"settling usage of an undefined group at the default group price",
+			"request_id", report.RequestID,
+			"group", owner.group,
+		)
+		unitPrice, err = l.pricer.Lookup(ctx, report.Model, pricing.DefaultGroup)
+	}
+	if errors.Is(err, pricing.ErrNotPriced) {
+		return settlementCost{}, nil
+	}
+	if err != nil {
+		return settlementCost{}, err
+	}
+
+	cost := settlementCost{
+		nanos:     unitPrice.Cost(report.TokenUsage),
+		source:    unitPrice.PriceSource,
+		unitPrice: &unitPrice,
+	}
+	agentGatewayNanos, hasAgentGatewayCost := agentGatewayCostWithGroupRatio(report, unitPrice)
+	if !hasAgentGatewayCost {
+		return cost, nil
+	}
+	if l.opts.CostSource == CostSourceAgentGatewayPreferred {
+		cost.nanos, cost.source = agentGatewayNanos, pricingSourceAgentGateway
+		return cost, nil
+	}
+	l.reconcileAgentGatewayCost(report, cost.nanos, agentGatewayNanos)
+	return cost, nil
+}
+
+// agentGatewayCostWithGroupRatio 把网关上报的金额乘上分组倍率；网关按 1 倍 catalog 计价，不含分组倍率。
+func agentGatewayCostWithGroupRatio(report UsageReport, unitPrice pricing.UnitPrice) (int64, bool) {
+	if report.AgentGatewayCostNanos == nil {
+		return 0, false
+	}
+	return int64(math.Round(float64(*report.AgentGatewayCostNanos) * unitPrice.GroupRatio)), true
+}
+
+// reconcileAgentGatewayCost 比对 loom 与网关金额（均已含分组倍率），允许 1 nano 的取整误差。
+func (l *Ledger) reconcileAgentGatewayCost(report UsageReport, loomNanos, agentGatewayNanos int64) {
+	if diff := agentGatewayNanos - loomNanos; diff >= -1 && diff <= 1 {
 		return
 	}
-	if diff := *u.GatewayCostNanos - cost; diff >= -1 && diff <= 1 {
-		return
-	}
-	l.metrics.CostMismatch.WithLabelValues(u.Model).Inc()
-	l.log.Warn("cost mismatch between loom and gateway",
-		"request_id", u.RequestID,
-		"model", u.Model,
-		"loom_nanos", cost,
-		"gateway_nanos", *u.GatewayCostNanos,
+	l.metrics.CostMismatch.WithLabelValues(report.Model).Inc()
+	l.log.Warn(
+		"cost mismatch between loom and agentgateway",
+		"request_id", report.RequestID,
+		"model", report.Model,
+		"loom_nanos", loomNanos,
+		"agentgateway_nanos", agentGatewayNanos,
 	)
 }
 
-// backfillGatewayCost 在请求已被另一通道结算时补写网关金额，只用于对账，不影响扣费。
-func (l *Ledger) backfillGatewayCost(ctx context.Context, u Usage) {
-	if u.GatewayCostNanos == nil || u.RequestID == "" {
+// backfillAgentGatewayCost 在请求已被另一通道结算时补写网关金额，只用于对账，不影响扣费。
+func (l *Ledger) backfillAgentGatewayCost(ctx context.Context, report UsageReport) {
+	if report.AgentGatewayCostNanos == nil || report.RequestID == "" {
 		return
 	}
-	if _, err := l.store.BackfillGatewayCost(ctx, u.RequestID, *u.GatewayCostNanos); err != nil {
-		l.log.Warn("backfill gateway cost failed", "err", err, "request_id", u.RequestID)
+	if _, err := l.store.BackfillAgentGatewayCost(ctx, report.RequestID, *report.AgentGatewayCostNanos); err != nil {
+		l.log.Warn("backfill agentgateway cost failed", "err", err, "request_id", report.RequestID)
 	}
 }
 
-func usageEvent(u Usage, o owner, cost int64, source pricing.Source) store.UsageEvent {
+// usageEvent 组装账单明细；带上计价快照（分组与倍率），事后可以复核每一笔金额。
+func usageEvent(report UsageReport, owner usageOwner, cost settlementCost) store.UsageEvent {
 	ev := store.UsageEvent{
-		Time:             u.Time,
-		RequestID:        u.RequestID,
-		TraceID:          u.TraceID,
-		SpanID:           u.SpanID,
-		Model:            u.Model,
-		Provider:         u.Provider,
-		Route:            u.Route,
-		Gateway:          u.Gateway,
-		InputTokens:      u.Tokens.Input,
-		OutputTokens:     u.Tokens.Output,
-		CachedTokens:     u.Tokens.Cached,
-		CostNanos:        cost,
-		GatewayCostNanos: u.GatewayCostNanos,
-		PricingSource:    string(source),
+		Time:                  report.Time,
+		RequestID:             report.RequestID,
+		TraceID:               report.TraceID,
+		SpanID:                report.SpanID,
+		Model:                 report.Model,
+		Provider:              report.Provider,
+		Route:                 report.Route,
+		AgentGateway:          report.AgentGateway,
+		InputTokens:           report.TokenUsage.Input,
+		OutputTokens:          report.TokenUsage.Output,
+		CachedTokens:          report.TokenUsage.Cached,
+		CostNanos:             cost.nanos,
+		AgentGatewayCostNanos: report.AgentGatewayCostNanos,
+		PricingSource:         string(cost.source),
+	}
+	if unitPrice := cost.unitPrice; unitPrice != nil {
+		ev.Pricing = &store.PricingSnapshot{
+			Group:           unitPrice.Group,
+			GroupRatio:      unitPrice.GroupRatio,
+			ModelRatio:      unitPrice.ModelRatio,
+			CompletionRatio: unitPrice.CompletionRatio,
+			CacheRatio:      unitPrice.CacheRatio,
+			ModelPrice:      unitPrice.ModelPrice,
+		}
 	}
 	if ev.Time.IsZero() {
 		ev.Time = time.Now()
 	}
-	if o.keyID != uuid.Nil {
-		ev.KeyID = &o.keyID
+	if owner.apiKeyID != uuid.Nil {
+		ev.APIKeyID = &owner.apiKeyID
 	}
-	if o.accountID != uuid.Nil {
-		ev.AccountID = &o.accountID
+	if owner.accountID != uuid.Nil {
+		ev.AccountID = &owner.accountID
 	}
 	return ev
 }

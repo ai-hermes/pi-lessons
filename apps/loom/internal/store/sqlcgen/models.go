@@ -95,4 +95,10 @@ type UsageEvent struct {
 	GatewayCostNanos *int64
 	PricingSource    string
 	Settled          bool
+	PricingGroup     pgtype.Text
+	GroupRatio       *float64
+	ModelRatio       *float64
+	CompletionRatio  *float64
+	CacheRatio       *float64
+	ModelPrice       *float64
 }

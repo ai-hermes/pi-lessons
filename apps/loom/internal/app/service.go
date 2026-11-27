@@ -26,15 +26,15 @@ type BuildInfo struct {
 	Commit  string
 }
 
-// App 是装配完成的 loom 服务。
-type App struct {
+// Service 是装配完成的 loom 服务。
+type Service struct {
 	cfg     *config.Config
 	build   BuildInfo
 	log     *slog.Logger
 	metrics *telemetry.Metrics
 
 	db       *postgres.DB
-	prices   *pricing.Table
+	prices   *pricing.PriceTable
 	ledger   *ledger.Ledger
 	gate     *admission.Gate
 	accounts *account.Service
@@ -44,73 +44,86 @@ type App struct {
 }
 
 // New 连接数据库（按需执行迁移）并装配全部组件。
-func New(ctx context.Context, cfg *config.Config, build BuildInfo) (*App, error) {
+func New(ctx context.Context, cfg *config.Config, build BuildInfo) (*Service, error) {
 	log := telemetry.NewLogger(cfg.Log.Level, cfg.Log.Format)
 	if !strings.EqualFold(cfg.Log.Format, "text") {
 		slog.SetDefault(log)
 	}
-	metrics := telemetry.NewMetrics(orDefault(build.Version, "dev"), orDefault(build.Commit, "none"))
+	build.Version = orDefault(build.Version, "dev")
+	build.Commit = orDefault(build.Commit, "none")
+	metrics := telemetry.NewMetrics(build.Version, build.Commit)
 
 	db, err := openStore(ctx, cfg, metrics, log)
 	if err != nil {
 		return nil, err
 	}
-	a, err := wire(cfg, db, metrics, log)
+	svc, err := wire(cfg, db, metrics, log)
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
-	a.build = build
-	return a, nil
+	svc.build = build
+	return svc, nil
 }
 
 // Close 释放数据库连接。
-func (a *App) Close() {
-	a.prices.Close()
-	a.db.Close()
+func (s *Service) Close() {
+	s.prices.Close()
+	s.db.Close()
 }
 
 // wire 用已打开的数据库装配业务组件。
-func wire(cfg *config.Config, db *postgres.DB, metrics *telemetry.Metrics, log *slog.Logger) (*App, error) {
-	prices, err := pricing.New(pricing.Options{
-		File:           cfg.Pricing.File,
-		ReloadInterval: cfg.Pricing.ReloadInterval,
-		StoreFallback:  cfg.Pricing.StoreFallback,
-		Reserve:        pricing.ReserveTokens(cfg.Ledger.ReserveTokens),
-	}, db, metrics, log)
+func wire(cfg *config.Config, db *postgres.DB, metrics *telemetry.Metrics, log *slog.Logger) (*Service, error) {
+	priceOpts := pricing.Options{
+		File:                    cfg.Pricing.File,
+		ReloadInterval:          cfg.Pricing.ReloadInterval,
+		DatabaseFallbackEnabled: cfg.Pricing.DatabaseFallbackEnabled,
+		Reserve:                 pricing.ReserveEstimate(cfg.Ledger.ReserveEstimate),
+	}
+	prices, err := pricing.New(priceOpts, db, metrics, log)
 	if err != nil {
 		return nil, fmt.Errorf("load pricing: %w", err)
 	}
 
-	l := ledger.New(ledger.Options{
+	ledgerOpts := ledger.Options{
 		ReservationTTL: cfg.Ledger.ReservationTTL,
 		ReaperInterval: cfg.Ledger.ReaperInterval,
 		ReaperBatch:    cfg.Ledger.ReaperBatch,
 		CostSource:     ledger.CostSource(cfg.Ledger.CostSource),
 		OwnerCacheTTL:  cfg.Ledger.OwnerCacheTTL,
-	}, db, prices, metrics, log)
+	}
+	billingLedger := ledger.New(ledgerOpts, db, prices, metrics, log)
 
-	gate := admission.New(admission.Options{
-		KeyCache:   admission.KeyCacheOptions(cfg.Admission.KeyCache),
-		AuditQueue: cfg.Admission.AuditQueue,
-	}, admission.Deps{Store: db, Pricer: prices, Reserver: l, Metrics: metrics, Log: log})
+	gateOpts := admission.Options{
+		APIKeyCache: admission.APIKeyCacheOptions(cfg.Admission.APIKeyCache),
+		AuditQueue:  cfg.Admission.AuditQueue,
+	}
+	gate := admission.New(
+		gateOpts,
+		db,
+		prices,
+		billingLedger,
+		metrics,
+		log,
+	)
 
-	queue := otlp.NewQueue(otlp.QueueOptions{
+	queueOpts := otlp.QueueOptions{
 		Protocols:     cfg.OTLP.Protocols,
 		Size:          cfg.OTLP.QueueSize,
 		BatchSize:     cfg.OTLP.BatchSize,
 		FlushInterval: cfg.OTLP.FlushInterval,
-	}, l, metrics, log)
+	}
+	queue := otlp.NewQueue(queueOpts, billingLedger, metrics, log)
 
-	return &App{
+	return &Service{
 		cfg:      cfg,
 		log:      log,
 		metrics:  metrics,
 		db:       db,
 		prices:   prices,
-		ledger:   l,
+		ledger:   billingLedger,
 		gate:     gate,
-		accounts: account.New(db, prices, gate, cfg.Admin.KeyPrefix),
+		accounts: account.New(db, prices, cfg.Admin.KeyPrefix, gate, billingLedger),
 		queue:    queue,
 	}, nil
 }
@@ -162,7 +175,7 @@ func extauthOptions(cfg config.ExtAuth) extauth.Options {
 			ClientRequestID: h.ClientRequestID,
 			Model:           h.Model,
 			Account:         h.Account,
-			KeyID:           h.KeyID,
+			APIKeyID:        h.APIKeyID,
 			RequestID:       h.RequestID,
 			QuotaRemaining:  h.QuotaRemaining,
 			DenyReason:      h.DenyReason,
@@ -171,8 +184,6 @@ func extauthOptions(cfg config.ExtAuth) extauth.Options {
 		BodyLimit:  cfg.BodyLimit,
 	}
 }
-
-func otlpAttributes(a config.OTLPAttributes) otlp.Attributes { return otlp.Attributes(a) }
 
 func orDefault(v, fallback string) string {
 	if v == "" {

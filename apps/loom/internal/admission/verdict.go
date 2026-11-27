@@ -30,6 +30,7 @@ const (
 	ReasonInactive          Reason = "client_inactive"
 	ReasonModelNotAllowed   Reason = "model_not_allowed"
 	ReasonModelNotPriced    Reason = "model_not_priced"
+	ReasonGroupNotPriced    Reason = "group_not_priced"
 	ReasonInsufficientQuota Reason = "insufficient_quota"
 	ReasonInternalError     Reason = "internal_error"
 )
@@ -40,7 +41,7 @@ type Verdict struct {
 	Reason    Reason
 	RequestID string
 
-	KeyID       uuid.UUID // 未识别出 Key 时为零值
+	APIKeyID    uuid.UUID // 未识别出 Key 时为零值
 	AccountID   uuid.UUID
 	AccountName string
 	Model       string
@@ -60,4 +61,4 @@ func (v Verdict) deny(r Reason) Verdict {
 }
 
 // hasKey 是否已识别出调用方 Key。
-func (v Verdict) hasKey() bool { return v.KeyID != uuid.Nil }
+func (v Verdict) hasKey() bool { return v.APIKeyID != uuid.Nil }

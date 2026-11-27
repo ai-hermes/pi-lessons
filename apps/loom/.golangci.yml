@@ -1,28 +1,84 @@
-# golangci-lint v2：固化命名、错误处理、行宽等约定，防止回退。
+# yaml-language-server: $schema=https://golangci-lint.run/jsonschema/golangci.jsonschema.json
 version: "2"
 
 run:
   timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+  allow-parallel-runners: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
 
 linters:
   default: none
   enable:
-    - errcheck
+    # Correctness and error handling.
     - govet
     - staticcheck
     - unused
     - ineffassign
-    - errorlint     # errors.Is / errors.As，禁止直接比较错误
-    - errname       # 哨兵错误 ErrXxx、错误类型 XxxError
-    - revive        # 命名、导出符号注释、receiver 一致性
-    - gocritic
-    - misspell
+    - errcheck
+    - errorlint
+    - nilerr
+    - forcetypeassert
+    - durationcheck
+    - copyloopvar
+
+    # Resources, context and security.
     - bodyclose
-    - nolintlint
+    - noctx
+    - sqlclosecheck
+    - rowserrcheck
+    - containedctx
+    - fatcontext
+    - gosec
+    - bidichk
+
+    # API and code clarity.
+    - gocritic
+    - revive
+    - misspell
+    - dupword
+    - predeclared
+    - errname
+    - asciicheck
+    - whitespace
+    - unconvert
+    - perfsprint
     - lll
+
+    # Structured logging.
+    - sloglint
+    - loggercheck
+
+    # Tests and suppressions.
+    - testifylint
+    - thelper
+    - usetesting
+    - nolintlint
+
+    # Modern Go.
+    - modernize
+    - intrange
+    - usestdlibvars
+
   settings:
+    errcheck:
+      check-type-assertions: true
+    gosec:
+      # Dedicated secret scanners are less noisy; G101 misidentifies telemetry attribute names.
+      excludes: [G101]
+    gocritic:
+      enabled-tags: [diagnostic, style, performance]
+      # hugeParam/rangeValCopy are profiling decisions, not correctness checks.
+      disabled-checks: [commentFormatting, unnamedResult, hugeParam, rangeValCopy]
     lll:
       line-length: 120
+    nolintlint:
+      require-explanation: true
+      require-specific: true
     revive:
       rules:
         - name: exported
@@ -33,21 +89,34 @@ linters:
         - name: error-naming
         - name: indent-error-flow
         - name: unused-parameter
-    gocritic:
-      enabled-tags: [diagnostic, style]
-      disabled-checks: [commentFormatting, unnamedResult]
+    sloglint:
+      no-mixed-args: true
+      key-naming-case: snake
+      static-msg: true
+    testifylint:
+      enable-all: true
+
   exclusions:
     generated: strict
     paths:
       - internal/store/sqlcgen
     rules:
+      # Tests may use long fixture strings and need not document every test-only exported helper.
       - path: _test\.go
         linters: [lll, revive]
 
 formatters:
   enable:
-    - gofmt
+    - gofumpt
     - goimports
   settings:
+    gofumpt:
+      extra:
+        group-params: true
+        clothe-returns: true
     goimports:
       local-prefixes: [github.com/ai-hermes/pi-lessons/apps/loom]
+  exclusions:
+    generated: strict
+    paths:
+      - internal/store/sqlcgen

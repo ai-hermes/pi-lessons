@@ -33,10 +33,11 @@ func (s *GRPCServer) Check(ctx context.Context, req *authv3.CheckRequest) (*auth
 		}
 	}
 
-	verdict := s.gate.Admit(ctx, s.opts.request(headers, []byte(httpReq.GetBody()), "grpc", httpReq.GetPath()))
-	resp := s.opts.response(verdict)
+	admissionReq := s.opts.admissionRequest(headers, []byte(httpReq.GetBody()), "grpc", httpReq.GetPath())
+	verdict := s.gate.Admit(ctx, admissionReq)
+	resp := s.opts.checkResponse(verdict)
 
-	if resp.allowed {
+	if resp.isAllowed {
 		return &authv3.CheckResponse{
 			Status: &status.Status{Code: int32(codes.OK)},
 			HttpResponse: &authv3.CheckResponse_OkResponse{
@@ -49,7 +50,9 @@ func (s *GRPCServer) Check(ctx context.Context, req *authv3.CheckRequest) (*auth
 		Status: &status.Status{Code: int32(codes.PermissionDenied)},
 		HttpResponse: &authv3.CheckResponse_DeniedResponse{
 			DeniedResponse: &authv3.DeniedHttpResponse{
-				Status:  &typev3.HttpStatus{Code: typev3.StatusCode(resp.status)},
+				Status: &typev3.HttpStatus{
+					Code: typev3.StatusCode(resp.status), //nolint:gosec // Config validation restricts HTTP status to 100..599.
+				},
 				Headers: headerOptions(resp.headers),
 				Body:    string(resp.body),
 			},

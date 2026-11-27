@@ -5,8 +5,8 @@ package extauth
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/admission"
@@ -24,7 +24,7 @@ type Headers struct {
 	Model           string   // 入：网关预提取的模型名；出：本次定价的模型名
 
 	Account        string // 出：账户名
-	KeyID          string // 出：Key ID
+	APIKeyID       string // 出：Key ID
 	RequestID      string // 出：loom 请求 ID（结算关联键）
 	QuotaRemaining string // 出：剩余额度（nano-USD）
 	DenyReason     string // 出：拒绝原因
@@ -38,16 +38,16 @@ type Options struct {
 	BodyLimit  int64 // HTTP 门面读取请求体的上限
 }
 
-// response 是 Verdict 的线上形态。
-type response struct {
-	allowed bool
-	status  int
-	headers map[string]string
-	body    []byte
+// checkResponse 是 Verdict 的 extAuth 线上形态。
+type checkResponse struct {
+	isAllowed bool
+	status    int
+	headers   map[string]string
+	body      []byte
 }
 
-// request 从请求头构造 admission.Request；headers 的键须为小写。
-func (o Options) request(headers map[string]string, body []byte, protocol, path string) admission.Request {
+// admissionRequest 从 extAuth 请求数据构造领域层的 admission.Request；headers 的键须为小写。
+func (o Options) admissionRequest(headers map[string]string, body []byte, protocol, path string) admission.Request {
 	return admission.Request{
 		Credential:      credential(headers, o.Headers.Credentials),
 		ModelHint:       headers[o.Headers.Model],
@@ -58,11 +58,11 @@ func (o Options) request(headers map[string]string, body []byte, protocol, path 
 	}
 }
 
-// response 把 Verdict 翻译为线上响应。
-func (o Options) response(v admission.Verdict) response {
+// checkResponse 把领域层的 Verdict 翻译为 extAuth 线上响应。
+func (o Options) checkResponse(v admission.Verdict) checkResponse {
 	h := o.Headers
 	if !v.Allowed {
-		return response{
+		return checkResponse{
 			status:  o.statusFor(v.Reason),
 			headers: map[string]string{h.DenyReason: string(v.Reason)},
 			body:    errorBody(v.Reason),
@@ -70,16 +70,16 @@ func (o Options) response(v admission.Verdict) response {
 	}
 	headers := map[string]string{
 		h.Account:   v.AccountName,
-		h.KeyID:     v.KeyID.String(),
+		h.APIKeyID:  v.APIKeyID.String(),
 		h.RequestID: v.RequestID,
 	}
 	if v.Model != "" {
 		headers[h.Model] = v.Model
 	}
 	if v.RemainingNanos != nil {
-		headers[h.QuotaRemaining] = fmt.Sprintf("%d", *v.RemainingNanos)
+		headers[h.QuotaRemaining] = strconv.FormatInt(*v.RemainingNanos, 10)
 	}
-	return response{allowed: true, status: http.StatusOK, headers: headers}
+	return checkResponse{isAllowed: true, status: http.StatusOK, headers: headers}
 }
 
 func (o Options) statusFor(r admission.Reason) int {
@@ -108,8 +108,9 @@ var denyMessages = map[admission.Reason]string{
 	admission.ReasonUnknownKey:        "unknown API key",
 	admission.ReasonExpiredKey:        "API key expired",
 	admission.ReasonInactive:          "account or API key is disabled",
-	admission.ReasonModelNotAllowed:   "model not allowed for this API key",
+	admission.ReasonModelNotAllowed:   "model not isAllowed for this API key",
 	admission.ReasonModelNotPriced:    "model has no pricing configured",
+	admission.ReasonGroupNotPriced:    "account group has no pricing configured",
 	admission.ReasonInsufficientQuota: "insufficient quota",
 	admission.ReasonInternalError:     "internal error",
 }
@@ -120,7 +121,7 @@ func errorBody(r admission.Reason) []byte {
 	switch r {
 	case admission.ReasonInsufficientQuota:
 		errType = "quota_error"
-	case admission.ReasonModelNotAllowed, admission.ReasonModelNotPriced:
+	case admission.ReasonModelNotAllowed, admission.ReasonModelNotPriced, admission.ReasonGroupNotPriced:
 		errType = "model_error"
 	case admission.ReasonInternalError:
 		errType = "server_error"

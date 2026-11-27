@@ -2,7 +2,10 @@
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 TAG      ?= $(VERSION)-$(shell date +%Y%m%d%H%M%S)
 
-.PHONY: build test vet lint fmt sqlc cross catalog check deploy deploy-fresh smoke run mock tidy clean
+GOLANGCI_LINT_VERSION ?= v2.15.0
+GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
+.PHONY: build test vet lint lint-fix lint-config fmt sqlc cross catalog check deploy deploy-fresh smoke run mock tidy clean
 
 build:            ## 本机构建
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/loom ./cmd/loom && go build -o bin/loom-mock ./cmd/loom-mock
@@ -13,11 +16,17 @@ test:             ## 单元测试（含 race 检测）
 vet:
 	go vet ./...
 
-lint:             ## golangci-lint（规则见 .golangci.yml）
-	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run ./...
+lint: lint-config ## 运行固定版本的 golangci-lint
+	$(GOLANGCI_LINT) run ./...
 
-fmt:
-	gofmt -w cmd internal pkg
+lint-fix: lint-config ## 自动修复安全的 lint / formatter 问题
+	$(GOLANGCI_LINT) run --fix ./...
+
+lint-config:      ## 校验 .golangci.yml 与当前版本兼容
+	$(GOLANGCI_LINT) config verify
+
+fmt:              ## gofumpt + goimports（生成代码除外）
+	$(GOLANGCI_LINT) fmt ./...
 
 tidy:
 	go mod tidy

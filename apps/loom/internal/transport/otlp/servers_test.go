@@ -11,18 +11,18 @@ import (
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/pricing"
 )
 
-var testAttributes = Attributes{
-	InputTokens:  "gen_ai.usage.input_tokens",
-	OutputTokens: "gen_ai.usage.output_tokens",
-	CachedTokens: "gen_ai.usage.cache_read.input_tokens",
-	GatewayCost:  "agw.ai.usage.cost.total",
-	Model:        "gen_ai.request.model",
-	LoomModel:    "loom.model",
-	Provider:     "gen_ai.provider.name",
-	Protocol:     "protocol",
-	RequestID:    "loom.request.id",
-	KeyID:        "loom.key.id",
-	Account:      "loom.client.id",
+var testAttributeNames = AttributeNames{
+	InputTokens:      "gen_ai.usage.input_tokens",
+	OutputTokens:     "gen_ai.usage.output_tokens",
+	CachedTokens:     "gen_ai.usage.cache_read.input_tokens",
+	AgentGatewayCost: "agw.ai.usage.cost.total",
+	Model:            "gen_ai.request.model",
+	LoomModel:        "loom.model",
+	Provider:         "gen_ai.provider.name",
+	Protocol:         "protocol",
+	RequestID:        "loom.request.id",
+	APIKeyID:         "loom.key.id",
+	Account:          "loom.client.id",
 }
 
 func kv(key string, v any) *commonpb.KeyValue {
@@ -38,7 +38,7 @@ func kv(key string, v any) *commonpb.KeyValue {
 	return &commonpb.KeyValue{Key: key, Value: value}
 }
 
-func TestAccessLogToUsage(t *testing.T) {
+func TestAccessLogToUsageReport(t *testing.T) {
 	record := &logspb.LogRecord{
 		TimeUnixNano: 1_700_000_000_000_000_000,
 		TraceId:      make([]byte, 16),
@@ -56,16 +56,16 @@ func TestAccessLogToUsage(t *testing.T) {
 		},
 	}
 
-	u, protocol := testAttributes.usage(record, nil)
+	u, protocol := testAttributeNames.usageReport(record, nil)
 
 	assert.Equal(t, "llm", protocol)
 	assert.Equal(t, Channel, u.Channel)
 	assert.Equal(t, "req-1", u.RequestID)
 	assert.Equal(t, "alice", u.AccountName)
-	assert.Equal(t, "11111111-2222-3333-4444-555555555555", u.KeyID.String())
-	assert.Equal(t, pricing.Tokens{Input: 1000, Cached: 200, Output: 500}, u.Tokens)
-	require.NotNil(t, u.GatewayCostNanos)
-	assert.Equal(t, int64(1_820_000), *u.GatewayCostNanos)
+	assert.Equal(t, "11111111-2222-3333-4444-555555555555", u.APIKeyID.String())
+	assert.Equal(t, pricing.TokenUsage{Input: 1000, Cached: 200, Output: 500}, u.TokenUsage)
+	require.NotNil(t, u.AgentGatewayCostNanos)
+	assert.Equal(t, int64(1_820_000), *u.AgentGatewayCostNanos)
 	assert.Len(t, u.TraceID, 32)
 	assert.Equal(t, "0102030405060708", u.SpanID)
 }
@@ -73,7 +73,7 @@ func TestAccessLogToUsage(t *testing.T) {
 func TestAccessLogFallsBackToLoomModel(t *testing.T) {
 	record := &logspb.LogRecord{Attributes: []*commonpb.KeyValue{kv("loom.model", "lab-image")}}
 
-	u, _ := testAttributes.usage(record, nil)
+	u, _ := testAttributeNames.usageReport(record, nil)
 
 	assert.Equal(t, "lab-image", u.Model)
 }

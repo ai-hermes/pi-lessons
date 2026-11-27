@@ -34,7 +34,9 @@ func (d *DB) Migrate(ctx context.Context, action MigrationAction) ([]string, err
 	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationLockID); err != nil {
 		return nil, fmt.Errorf("acquire migration lock: %w", err)
 	}
-	defer func() { _, _ = conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", migrationLockID) }()
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", migrationLockID)
+	}()
 
 	provider, err := goose.NewProvider(goose.DialectPostgres, stdlib.OpenDB(*d.conn), migrations.FS)
 	if err != nil {

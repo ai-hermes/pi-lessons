@@ -6,6 +6,9 @@
 #   model_price       按次计费（USD/次），设置后优先于倍率（图片、视频）
 #   groups.<g>.ratio  分组倍率，账户 group 字段决定
 #
+# 取值口径（与 one-api / new-api 一致）：未填写取 defaults（分组取 1）；0 表示免费，免费请求不预扣；
+# 负数是配置错误，pricing.yaml 加载失败（热加载时保留上一版价目表）。
+#
 # 下面除 lab-* 外均为示例数值，上线前替换为真实价格。
 
 defaults:
@@ -13,6 +16,7 @@ defaults:
   completion_ratio: 1
   cache_ratio: 1
   unknown_model: deny            # deny | default：未定价模型拒绝，还是按 defaults 计价
+  unknown_group: deny            # deny | default：groups 未定义的账户分组拒绝，还是按 default 分组计价
 
 groups:
   default: {ratio: 1}
