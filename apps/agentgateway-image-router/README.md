@@ -23,6 +23,10 @@ body-aware routing seam.
 | Public model | Upstream endpoint | Response channel |
 | --- | --- | --- |
 | `gpt-image-2` | `https://third-party-upstream.example.com/v1/images/generations` | `thirdparty-image` |
+
+The third-party upstream address and the `thirdparty-*` Secret / channel names in this repository are
+placeholders. Set the real address through `THIRDPARTY_IMAGE_URL` (deployment env) and the real
+`baseURL` in `deploy/agentgateway-model-pool.yaml` at deploy time; keep those values out of Git.
 | `doubao-seedream-*` | `https://ark.cn-beijing.volces.com/api/v3/images/generations` | `ark-media-payg` |
 | any other model | rejected before an upstream call | none |
 
