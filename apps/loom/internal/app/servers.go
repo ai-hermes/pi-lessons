@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/pprof"
 	"os/signal"
 	"strings"
 	"sync"
@@ -23,6 +22,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 
+	"github.com/ai-hermes/pi-lessons/apps/loom/internal/operator"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/transport/adminapi"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/transport/extauth"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/transport/otlp"
@@ -144,18 +144,19 @@ func (s *Service) dataServer(grpcHealth *health.Server) (*http.Server, *grpc.Ser
 	}, gs
 }
 
-// opsServer 构建运维面：管理 API、指标、探针、pprof。
+// opsServer 构建运维面：管理 API、指标、探针，以及开启时需要认证的 pprof。
 func (s *Service) opsServer(adminToken string) *http.Server {
+	operators := operator.New(s.db, adminToken)
+	admin := adminapi.New(s.accounts, operators, adminapi.Options{Pprof: s.cfg.Server.Pprof, Log: s.log}).Handler()
+
 	mux := http.NewServeMux()
-	mux.Handle("/v1/", adminapi.New(s.accounts, adminToken).Handler())
+	mux.Handle("/v1/", admin)
+	if s.cfg.Server.Pprof {
+		mux.Handle("/debug/pprof/", admin)
+	}
 	mux.Handle("GET /metrics", promhttp.HandlerFor(s.metrics.Registry, promhttp.HandlerOpts{}))
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
-	mux.HandleFunc("/debug/pprof/", pprof.Index)
-	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	return &http.Server{Addr: s.cfg.Server.OpsListen, Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 }
 

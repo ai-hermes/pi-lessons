@@ -65,14 +65,29 @@ func (d *DB) UpdateAPIKey(ctx context.Context, id uuid.UUID, s store.APIKeySetti
 	return d.GetAPIKey(ctx, row.ID)
 }
 
-// SetAPIKeyQuota 见 store.Store；与清空预扣在同一事务内完成。
-func (d *DB) SetAPIKeyQuota(ctx context.Context, id uuid.UUID, limit *int64, used int64) error {
+// SetAPIKeyQuota 见 store.Store；清空预扣、修改额度与写入额度变更流水在同一事务内完成。
+func (d *DB) SetAPIKeyQuota(ctx context.Context, id uuid.UUID, change store.QuotaChange) error {
 	return d.inTx(ctx, "SetAPIKeyQuota", func(q *sqlcgen.Queries) error {
+		before, err := q.LockKeyQuota(ctx, id)
+		if err != nil {
+			return d.fail("SetAPIKeyQuota.lock", err)
+		}
 		if _, err := q.DeleteKeyReservations(ctx, id); err != nil {
 			return d.fail("SetAPIKeyQuota.deleteReservations", err)
 		}
-		params := sqlcgen.SetKeyQuotaParams{ID: id, QuotaLimit: limit, QuotaUsed: used}
-		err := q.SetKeyQuota(ctx, params)
-		return d.fail("SetAPIKeyQuota", err)
+		params := sqlcgen.SetKeyQuotaParams{ID: id, QuotaLimit: change.LimitNanos, QuotaUsed: change.UsedNanos}
+		if err := q.SetKeyQuota(ctx, params); err != nil {
+			return d.fail("SetAPIKeyQuota", err)
+		}
+		return d.fail("SetAPIKeyQuota.adjustment", q.InsertQuotaAdjustment(ctx, sqlcgen.InsertQuotaAdjustmentParams{
+			AccountID:   before.AccountID,
+			KeyID:       &id,
+			Kind:        string(store.QuotaReset),
+			LimitBefore: before.QuotaLimit,
+			LimitAfter:  change.LimitNanos,
+			UsedBefore:  before.QuotaUsed,
+			UsedAfter:   change.UsedNanos,
+			Actor:       change.Actor,
+		}))
 	})
 }

@@ -24,6 +24,10 @@ type Store struct {
 	audit       []store.Audit
 	pricing     map[string]store.ModelPrice
 	nextID      int64
+
+	quotaAdjustments []store.QuotaAdjustment
+	adminTokens      []*store.AdminToken
+	adminAudit       []store.AdminAudit
 }
 
 // New 创建空存储。
@@ -118,19 +122,40 @@ func (m *Store) UpdateAccount(_ context.Context, id uuid.UUID, s store.AccountSe
 }
 
 // AddAccountQuotaLimit 见 store.Store。
-func (m *Store) AddAccountQuotaLimit(_ context.Context, id uuid.UUID, delta int64) (store.Account, error) {
+func (m *Store) AddAccountQuotaLimit(
+	_ context.Context,
+	id uuid.UUID,
+	delta int64,
+	actor string,
+) (store.Account, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.accounts[id]
 	if !ok {
 		return store.Account{}, store.ErrNotFound
 	}
+	before := a.QuotaLimit
 	v := delta
 	if a.QuotaLimit != nil {
 		v += *a.QuotaLimit
 	}
 	a.QuotaLimit, a.UpdatedAt = &v, time.Now()
+	m.appendAdjustmentLocked(store.QuotaAdjustment{
+		AccountID:   id,
+		Kind:        store.QuotaTopUp,
+		LimitBefore: before,
+		LimitAfter:  a.QuotaLimit,
+		UsedBefore:  a.QuotaUsed,
+		UsedAfter:   a.QuotaUsed,
+		Actor:       actor,
+	})
 	return *a, nil
+}
+
+func (m *Store) appendAdjustmentLocked(adj store.QuotaAdjustment) {
+	m.nextID++
+	adj.ID, adj.Time = m.nextID, time.Now()
+	m.quotaAdjustments = append(m.quotaAdjustments, adj)
 }
 
 func reserve(limit *int64, used, reserved, nanos int64) (store.QuotaState, bool) {
@@ -141,14 +166,23 @@ func reserve(limit *int64, used, reserved, nanos int64) (store.QuotaState, bool)
 }
 
 // SetAccountQuota 见 store.Store。
-func (m *Store) SetAccountQuota(_ context.Context, id uuid.UUID, limit *int64, used int64) error {
+func (m *Store) SetAccountQuota(_ context.Context, id uuid.UUID, change store.QuotaChange) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.accounts[id]
 	if !ok {
 		return store.ErrNotFound
 	}
-	a.QuotaLimit, a.QuotaUsed, a.Reserved, a.UpdatedAt = limit, used, 0, time.Now()
+	m.appendAdjustmentLocked(store.QuotaAdjustment{
+		AccountID:   id,
+		Kind:        store.QuotaReset,
+		LimitBefore: a.QuotaLimit,
+		LimitAfter:  change.LimitNanos,
+		UsedBefore:  a.QuotaUsed,
+		UsedAfter:   change.UsedNanos,
+		Actor:       change.Actor,
+	})
+	a.QuotaLimit, a.QuotaUsed, a.Reserved, a.UpdatedAt = change.LimitNanos, change.UsedNanos, 0, time.Now()
 	for k, r := range m.reserv {
 		if r.AccountID == id {
 			delete(m.reserv, k)
@@ -158,14 +192,26 @@ func (m *Store) SetAccountQuota(_ context.Context, id uuid.UUID, limit *int64, u
 }
 
 // SetAPIKeyQuota 见 store.Store。
-func (m *Store) SetAPIKeyQuota(_ context.Context, id uuid.UUID, limit *int64, used int64) error {
+func (m *Store) SetAPIKeyQuota(_ context.Context, id uuid.UUID, change store.QuotaChange) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	apiKey, ok := m.apiKeys[id]
 	if !ok {
 		return store.ErrNotFound
 	}
-	apiKey.QuotaLimit, apiKey.QuotaUsed, apiKey.Reserved, apiKey.UpdatedAt = limit, used, 0, time.Now()
+	apiKeyID := id
+	m.appendAdjustmentLocked(store.QuotaAdjustment{
+		AccountID:   apiKey.AccountID,
+		APIKeyID:    &apiKeyID,
+		Kind:        store.QuotaReset,
+		LimitBefore: apiKey.QuotaLimit,
+		LimitAfter:  change.LimitNanos,
+		UsedBefore:  apiKey.QuotaUsed,
+		UsedAfter:   change.UsedNanos,
+		Actor:       change.Actor,
+	})
+	apiKey.QuotaLimit, apiKey.QuotaUsed, apiKey.Reserved = change.LimitNanos, change.UsedNanos, 0
+	apiKey.UpdatedAt = time.Now()
 	for rk, r := range m.reserv {
 		if r.APIKeyID == id {
 			delete(m.reserv, rk)
@@ -589,4 +635,103 @@ func (m *Store) DeleteModelPricing(_ context.Context, model string) error {
 	defer m.mu.Unlock()
 	delete(m.pricing, model)
 	return nil
+}
+
+// ListQuotaAdjustments 见 store.Store。
+func (m *Store) ListQuotaAdjustments(
+	_ context.Context,
+	f store.QuotaAdjustmentFilter,
+	limit int,
+) ([]store.QuotaAdjustment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []store.QuotaAdjustment{}
+	for _, adj := range slices.Backward(m.quotaAdjustments) {
+		if f.AccountID != nil && adj.AccountID != *f.AccountID {
+			continue
+		}
+		if f.APIKeyID != nil && (adj.APIKeyID == nil || *adj.APIKeyID != *f.APIKeyID) {
+			continue
+		}
+		out = append(out, adj)
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+// CreateAdminToken 见 store.Store。
+func (m *Store) CreateAdminToken(_ context.Context, t store.AdminToken) (store.AdminToken, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, existing := range m.adminTokens {
+		if existing.Name == t.Name || existing.TokenHash == t.TokenHash {
+			return store.AdminToken{}, store.ErrConflict
+		}
+	}
+	t.CreatedAt = time.Now()
+	m.adminTokens = append(m.adminTokens, &t)
+	return t, nil
+}
+
+// GetAdminTokenByHash 见 store.Store。
+func (m *Store) GetAdminTokenByHash(_ context.Context, hash string) (store.AdminToken, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.adminTokens {
+		if t.TokenHash == hash && t.RevokedAt == nil {
+			return *t, nil
+		}
+	}
+	return store.AdminToken{}, store.ErrNotFound
+}
+
+// ListAdminTokens 见 store.Store。
+func (m *Store) ListAdminTokens(context.Context) ([]store.AdminToken, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]store.AdminToken, 0, len(m.adminTokens))
+	for _, t := range m.adminTokens {
+		out = append(out, *t)
+	}
+	return out, nil
+}
+
+// RevokeAdminToken 见 store.Store。
+func (m *Store) RevokeAdminToken(_ context.Context, id uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.adminTokens {
+		if t.ID == id && t.RevokedAt == nil {
+			now := time.Now()
+			t.RevokedAt = &now
+			return nil
+		}
+	}
+	return store.ErrNotFound
+}
+
+// InsertAdminAudit 见 store.Store。
+func (m *Store) InsertAdminAudit(_ context.Context, row store.AdminAudit) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nextID++
+	row.ID, row.Time = m.nextID, time.Now()
+	m.adminAudit = append(m.adminAudit, row)
+	return nil
+}
+
+// ListAdminAudit 见 store.Store。
+func (m *Store) ListAdminAudit(_ context.Context, limit int) ([]store.AdminAudit, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []store.AdminAudit{}
+	for _, row := range slices.Backward(m.adminAudit) {
+		out = append(out, row)
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
 }

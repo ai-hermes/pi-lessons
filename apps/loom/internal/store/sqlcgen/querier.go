@@ -17,6 +17,7 @@ type Querier interface {
 	BackfillGatewayCost(ctx context.Context, arg BackfillGatewayCostParams) (int64, error)
 	CountReservations(ctx context.Context) (int64, error)
 	CreateAccount(ctx context.Context, arg CreateAccountParams) (Account, error)
+	CreateAdminToken(ctx context.Context, arg CreateAdminTokenParams) (AdminToken, error)
 	CreateKey(ctx context.Context, arg CreateKeyParams) (ApiKey, error)
 	CreateReservation(ctx context.Context, arg CreateReservationParams) error
 	DeleteAccountReservations(ctx context.Context, accountID uuid.UUID) (int64, error)
@@ -25,21 +26,30 @@ type Querier interface {
 	DeleteReservation(ctx context.Context, requestID string) error
 	GetAccount(ctx context.Context, id uuid.UUID) (Account, error)
 	GetAccountByName(ctx context.Context, name string) (Account, error)
+	GetAdminTokenByHash(ctx context.Context, tokenHash string) (AdminToken, error)
 	GetKey(ctx context.Context, id uuid.UUID) (GetKeyRow, error)
 	GetKeyByHash(ctx context.Context, keyHash string) (GetKeyByHashRow, error)
 	GetModelPricing(ctx context.Context, model string) (ModelPricing, error)
 	GetReservation(ctx context.Context, requestID string) (Reservation, error)
+	InsertAdminAudit(ctx context.Context, arg InsertAdminAuditParams) error
+	InsertQuotaAdjustment(ctx context.Context, arg InsertQuotaAdjustmentParams) error
 	ListAccounts(ctx context.Context, lim int32) ([]Account, error)
+	ListAdminAudit(ctx context.Context, limit int32) ([]AdminAudit, error)
+	ListAdminTokens(ctx context.Context) ([]AdminToken, error)
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuthAudit, error)
 	ListKeys(ctx context.Context, arg ListKeysParams) ([]ListKeysRow, error)
 	ListModelPricing(ctx context.Context) ([]ModelPricing, error)
+	ListQuotaAdjustments(ctx context.Context, arg ListQuotaAdjustmentsParams) ([]QuotaAdjustment, error)
 	ListReservations(ctx context.Context, lim int32) ([]Reservation, error)
 	ListUsage(ctx context.Context, arg ListUsageParams) ([]UsageEvent, error)
+	LockAccountQuota(ctx context.Context, id uuid.UUID) (LockAccountQuotaRow, error)
 	LockExpiredReservations(ctx context.Context, arg LockExpiredReservationsParams) ([]Reservation, error)
+	LockKeyQuota(ctx context.Context, id uuid.UUID) (LockKeyQuotaRow, error)
 	ReleaseAccountReservation(ctx context.Context, arg ReleaseAccountReservationParams) error
 	ReleaseKeyReservation(ctx context.Context, arg ReleaseKeyReservationParams) error
 	ReserveAccountQuota(ctx context.Context, arg ReserveAccountQuotaParams) (ReserveAccountQuotaRow, error)
 	ReserveKeyQuota(ctx context.Context, arg ReserveKeyQuotaParams) (ReserveKeyQuotaRow, error)
+	RevokeAdminToken(ctx context.Context, id uuid.UUID) (int64, error)
 	SetAccountQuota(ctx context.Context, arg SetAccountQuotaParams) error
 	SetKeyQuota(ctx context.Context, arg SetKeyQuotaParams) error
 	SettleAccountQuota(ctx context.Context, arg SettleAccountQuotaParams) error

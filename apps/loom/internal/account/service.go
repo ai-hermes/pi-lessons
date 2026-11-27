@@ -28,14 +28,15 @@ type Store interface {
 	ListAccounts(ctx context.Context, limit int) ([]store.Account, error)
 	CreateAccount(ctx context.Context, a store.Account) (store.Account, error)
 	UpdateAccount(ctx context.Context, id uuid.UUID, s store.AccountSettings) (store.Account, error)
-	AddAccountQuotaLimit(ctx context.Context, id uuid.UUID, delta int64) (store.Account, error)
-	SetAccountQuota(ctx context.Context, id uuid.UUID, limit *int64, used int64) error
+	AddAccountQuotaLimit(ctx context.Context, id uuid.UUID, delta int64, actor string) (store.Account, error)
+	SetAccountQuota(ctx context.Context, id uuid.UUID, change store.QuotaChange) error
 
 	GetAPIKey(ctx context.Context, id uuid.UUID) (store.APIKey, error)
 	ListAPIKeys(ctx context.Context, accountID *uuid.UUID, limit int) ([]store.APIKey, error)
 	CreateAPIKey(ctx context.Context, k store.APIKey) (store.APIKey, error)
 	UpdateAPIKey(ctx context.Context, id uuid.UUID, s store.APIKeySettings) (store.APIKey, error)
-	SetAPIKeyQuota(ctx context.Context, id uuid.UUID, limit *int64, used int64) error
+	SetAPIKeyQuota(ctx context.Context, id uuid.UUID, change store.QuotaChange) error
+	ListQuotaAdjustments(ctx context.Context, f store.QuotaAdjustmentFilter, limit int) ([]store.QuotaAdjustment, error)
 
 	ListModelPricing(ctx context.Context) ([]store.ModelPrice, error)
 	UpsertModelPricing(ctx context.Context, p store.ModelPrice) error

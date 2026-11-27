@@ -101,7 +101,7 @@ func (s *Service) UpdateAPIKey(ctx context.Context, id uuid.UUID, in APIKeyUpdat
 
 // ResetAPIKeyQuota 设置 Key 额度并清空其预扣。
 func (s *Service) ResetAPIKeyQuota(ctx context.Context, id uuid.UUID, in QuotaReset) (store.APIKey, error) {
-	if err := s.store.SetAPIKeyQuota(ctx, id, in.LimitNanos, in.UsedNanos); err != nil {
+	if err := s.store.SetAPIKeyQuota(ctx, id, in.change(ctx)); err != nil {
 		return store.APIKey{}, err
 	}
 	s.caches.InvalidateAPIKey(ctx, id)
