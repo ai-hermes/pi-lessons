@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ai-hermes/pi-lessons/apps/loom/internal/operator"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/pricing"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store"
 )
@@ -27,10 +28,23 @@ type UpdateAccountInput struct {
 	QuotaNanos *int64       `json:"quota_limit_nanos"`
 }
 
-// QuotaReset 直接设置额度上限与已用量，并清空预扣（运维与验收复位用）。
+// QuotaReset 直接设置额度上限与已用量，并清空预扣（运维与验收复位用）；每次修改写入额度变更流水。
 type QuotaReset struct {
 	LimitNanos *int64 `json:"quota_limit_nanos"`
 	UsedNanos  int64  `json:"quota_used_nanos"`
+}
+
+func (in QuotaReset) change(ctx context.Context) store.QuotaChange {
+	return store.QuotaChange{LimitNanos: in.LimitNanos, UsedNanos: in.UsedNanos, Actor: operator.ActorName(ctx)}
+}
+
+// ListQuotaAdjustments 列出额度变更流水（新的在前）。
+func (s *Service) ListQuotaAdjustments(
+	ctx context.Context,
+	f store.QuotaAdjustmentFilter,
+	limit int,
+) ([]store.QuotaAdjustment, error) {
+	return s.store.ListQuotaAdjustments(ctx, f, limit)
 }
 
 // CreateAccount 创建账户。
@@ -88,12 +102,12 @@ func (s *Service) TopUp(ctx context.Context, id uuid.UUID, nanos int64) (store.A
 	if nanos <= 0 {
 		return store.Account{}, fmt.Errorf("%w: nanos must be positive", ErrInvalidInput)
 	}
-	return s.store.AddAccountQuotaLimit(ctx, id, nanos)
+	return s.store.AddAccountQuotaLimit(ctx, id, nanos, operator.ActorName(ctx))
 }
 
 // ResetAccountQuota 设置账户额度并清空其预扣。
 func (s *Service) ResetAccountQuota(ctx context.Context, id uuid.UUID, in QuotaReset) (store.Account, error) {
-	if err := s.store.SetAccountQuota(ctx, id, in.LimitNanos, in.UsedNanos); err != nil {
+	if err := s.store.SetAccountQuota(ctx, id, in.change(ctx)); err != nil {
 		return store.Account{}, err
 	}
 	return s.store.GetAccount(ctx, id)

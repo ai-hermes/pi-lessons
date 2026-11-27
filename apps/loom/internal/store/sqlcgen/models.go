@@ -24,6 +24,27 @@ type Account struct {
 	UpdatedAt  time.Time
 }
 
+type AdminAudit struct {
+	ID      int64
+	Time    time.Time
+	Actor   string
+	Method  string
+	Route   string
+	Target  string
+	Request string
+	Status  int32
+}
+
+type AdminToken struct {
+	ID           uuid.UUID
+	Name         string
+	TokenHash    string
+	TokenPreview string
+	Role         string
+	CreatedAt    time.Time
+	RevokedAt    *time.Time
+}
+
 type ApiKey struct {
 	ID             uuid.UUID
 	AccountID      uuid.UUID
@@ -64,6 +85,19 @@ type ModelPricing struct {
 	ReserveOutputTokens *int
 	Enabled             bool
 	UpdatedAt           time.Time
+}
+
+type QuotaAdjustment struct {
+	ID          int64
+	Time        time.Time
+	AccountID   uuid.UUID
+	KeyID       *uuid.UUID
+	Kind        string
+	LimitBefore *int64
+	LimitAfter  *int64
+	UsedBefore  int64
+	UsedAfter   int64
+	Actor       string
 }
 
 type Reservation struct {

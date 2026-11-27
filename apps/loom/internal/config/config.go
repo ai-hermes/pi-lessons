@@ -40,6 +40,8 @@ type Server struct {
 	// OpsListen 运维面：管理 API、/metrics、/healthz、/readyz、pprof；不对网关开放。
 	OpsListen       string        `koanf:"ops_listen"`
 	ShutdownTimeout time.Duration `koanf:"shutdown_timeout"`
+	// Pprof 在运维面暴露 /debug/pprof（需要 read 角色的管理 token），默认关闭。
+	Pprof bool `koanf:"pprof"`
 }
 
 // Log 日志。

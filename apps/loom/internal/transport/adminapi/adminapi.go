@@ -1,10 +1,18 @@
-// Package adminapi 是 loom 的管理 HTTP API（gin），挂在运维端口的 /v1 下，需要管理 token。
+// Package adminapi 是 loom 的管理 HTTP API（gin），挂在运维端口的 /v1 下。
+//
+// 认证：Authorization: Bearer <token>（或 X-Admin-Token）。GET 请求需要 read 角色，其余方法需要 write 角色；
+// 每个写请求记录一条管理操作审计（请求体脱敏）。
 package adminapi
 
 import (
-	"crypto/subtle"
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"strconv"
 	"strings"
 	"time"
@@ -13,32 +21,48 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/account"
+	"github.com/ai-hermes/pi-lessons/apps/loom/internal/operator"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store"
 )
 
 const (
 	defaultListLimit = 200
 	maxListLimit     = 1000
+
+	maxAuditedBody = 64 << 10
+	auditTimeout   = 2 * time.Second
 )
+
+// redactedFields 是审计时脱敏的请求体字段。
+var redactedFields = map[string]bool{"plaintext": true, "token": true, "password": true, "secret": true}
+
+// Options 管理 API 参数。
+type Options struct {
+	Pprof bool // 是否在 /debug/pprof 暴露 pprof（需要 read 角色）
+	Log   *slog.Logger
+}
 
 // API 管理 API。
 type API struct {
-	accounts *account.Service
-	token    string
+	accounts  *account.Service
+	operators *operator.Service
+	opts      Options
 }
 
 // New 创建管理 API。
-func New(accounts *account.Service, token string) *API {
-	return &API{accounts: accounts, token: token}
+func New(accounts *account.Service, operators *operator.Service, opts Options) *API {
+	return &API{accounts: accounts, operators: operators, opts: opts}
 }
 
-// Handler 返回挂载好全部 /v1 路由的 http.Handler。
+// Handler 返回挂载好 /v1 路由（以及开启时的 /debug/pprof）的 http.Handler。
 func (a *API) Handler() http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
+	// 让 gin.Context 作为 context.Context 传给下游时能取到请求 context 中的值（如操作者）
+	r.ContextWithFallback = true
 	r.Use(gin.Recovery())
 
-	v1 := r.Group("/v1", a.requireToken)
+	v1 := r.Group("/v1", a.authenticate, a.auditWrites)
 	v1.GET("/accounts", a.listAccounts)
 	v1.POST("/accounts", a.createAccount)
 	v1.GET("/accounts/:id", a.getAccount)
@@ -52,6 +76,7 @@ func (a *API) Handler() http.Handler {
 	v1.GET("/keys/:id", a.getAPIKey)
 	v1.PATCH("/keys/:id", a.updateAPIKey)
 	v1.POST("/keys/:id/quota", a.resetAPIKeyQuota)
+	v1.GET("/quota-adjustments", a.listQuotaAdjustments)
 
 	v1.GET("/pricing", a.getPricing)
 	v1.PUT("/pricing/:model", a.upsertPrice)
@@ -61,24 +86,106 @@ func (a *API) Handler() http.Handler {
 	v1.GET("/usage/events", a.listUsage)
 	v1.GET("/usage/summary", a.usageSummary)
 	v1.GET("/admission/audit", a.listAudit)
-	v1.GET("/auth/audit", a.listAudit) // 兼容旧路径
 	v1.GET("/reservations", a.listReservations)
+
+	v1.GET("/admin/tokens", a.listAdminTokens)
+	v1.POST("/admin/tokens", a.issueAdminToken)
+	v1.DELETE("/admin/tokens/:id", a.revokeAdminToken)
+	v1.GET("/admin/audit", a.listAdminAudit)
+
+	if a.opts.Pprof {
+		debug := r.Group("/debug/pprof", a.authenticate)
+		debug.GET("/*profile", gin.WrapF(servePprof))
+	}
 	return r
 }
 
-func (a *API) requireToken(c *gin.Context) {
+// servePprof 按路径分发到 net/http/pprof 的各个 handler。
+func servePprof(w http.ResponseWriter, r *http.Request) {
+	switch strings.TrimPrefix(r.URL.Path, "/debug/pprof/") {
+	case "cmdline":
+		pprof.Cmdline(w, r)
+	case "profile":
+		pprof.Profile(w, r)
+	case "symbol":
+		pprof.Symbol(w, r)
+	case "trace":
+		pprof.Trace(w, r)
+	default:
+		pprof.Index(w, r)
+	}
+}
+
+// authenticate 认证操作者并按方法检查角色：GET / HEAD 需要 read，其余需要 write。
+func (a *API) authenticate(c *gin.Context) {
 	token := c.GetHeader("X-Admin-Token")
 	if auth := c.GetHeader("Authorization"); len(auth) > 7 && strings.EqualFold(auth[:7], "bearer ") {
 		token = strings.TrimSpace(auth[7:])
 	}
-	if subtle.ConstantTimeCompare([]byte(token), []byte(a.token)) != 1 {
-		abort(c, http.StatusUnauthorized, "unauthorized", "admin token required")
+	op, err := a.operators.Authenticate(c, token)
+	switch {
+	case errors.Is(err, operator.ErrUnauthenticated):
+		abort(c, http.StatusUnauthorized, "unauthorized", "valid admin token required")
+		return
+	case err != nil:
+		fail(c, err)
 		return
 	}
+	required := operator.RoleWrite
+	if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead {
+		required = operator.RoleRead
+	}
+	if !op.Role.Allows(required) {
+		abort(c, http.StatusForbidden, "forbidden", "admin token role "+string(op.Role)+" cannot "+c.Request.Method)
+		return
+	}
+	c.Request = c.Request.WithContext(operator.WithOperator(c.Request.Context(), op))
 	c.Next()
 }
 
-// ---- accounts ----
+// auditWrites 为每个写请求记录操作者、路由、目标、脱敏后的请求体与响应码。
+func (a *API) auditWrites(c *gin.Context) {
+	if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead {
+		c.Next()
+		return
+	}
+	body, _ := io.ReadAll(io.LimitReader(c.Request.Body, maxAuditedBody))
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+	c.Next()
+
+	op, _ := operator.FromContext(c.Request.Context())
+	row := store.AdminAudit{
+		Actor:   op.Name,
+		Method:  c.Request.Method,
+		Route:   c.FullPath(),
+		Target:  c.Param("id") + c.Param("model"),
+		Request: redact(body),
+		Status:  c.Writer.Status(),
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), auditTimeout)
+	defer cancel()
+	if err := a.operators.RecordAudit(ctx, row); err != nil && a.opts.Log != nil {
+		a.opts.Log.Error("record admin audit failed", "err", err, "route", row.Route, "actor", row.Actor)
+	}
+}
+
+// redact 脱敏 JSON 请求体的敏感字段；非 JSON 对象的请求体不记录内容。
+func redact(body []byte) string {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return ""
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return ""
+	}
+	for name := range fields {
+		if redactedFields[strings.ToLower(name)] {
+			fields[name] = json.RawMessage(`"***"`)
+		}
+	}
+	out, _ := json.Marshal(fields)
+	return string(out)
+}
 
 func (a *API) listAccounts(c *gin.Context) {
 	rows, err := a.accounts.ListAccounts(c, listLimit(c))
@@ -371,7 +478,7 @@ func listLimit(c *gin.Context) int {
 // fail 把领域错误映射为 HTTP 状态码。
 func fail(c *gin.Context, err error) {
 	switch {
-	case errors.Is(err, account.ErrInvalidInput):
+	case errors.Is(err, account.ErrInvalidInput), errors.Is(err, operator.ErrInvalidInput):
 		abort(c, http.StatusBadRequest, "bad_request", err.Error())
 	case errors.Is(err, account.ErrNotFound):
 		abort(c, http.StatusNotFound, "not_found", err.Error())
@@ -385,4 +492,61 @@ func fail(c *gin.Context, err error) {
 
 func abort(c *gin.Context, status int, code, message string) {
 	c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"code": code, "message": message}})
+}
+
+// ---- 额度变更流水 ----
+
+func (a *API) listQuotaAdjustments(c *gin.Context) {
+	filter := store.QuotaAdjustmentFilter{AccountID: queryID(c, "account_id"), APIKeyID: queryID(c, "key_id")}
+	rows, err := a.accounts.ListQuotaAdjustments(c, filter, listLimit(c))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"adjustments": rows})
+}
+
+// ---- 管理 token 与审计 ----
+
+func (a *API) listAdminTokens(c *gin.Context) {
+	tokens, err := a.operators.ListTokens(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"tokens": tokens})
+}
+
+func (a *API) issueAdminToken(c *gin.Context) {
+	var in operator.IssueTokenInput
+	if !bind(c, &in) {
+		return
+	}
+	issued, err := a.operators.IssueToken(c, in)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"token": issued.Token, "plaintext": issued.Plaintext})
+}
+
+func (a *API) revokeAdminToken(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	if err := a.operators.RevokeToken(c, id); err != nil {
+		fail(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (a *API) listAdminAudit(c *gin.Context) {
+	rows, err := a.operators.ListAudit(c, listLimit(c))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"audit": rows})
 }

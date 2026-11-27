@@ -296,8 +296,8 @@ func TestAdmitPrefersModelHint(t *testing.T) {
 func TestAdmitConcurrentReservationsNeverOverdraw(t *testing.T) {
 	f := newFixture(t, pricing.ReserveEstimate{Input: 256, Output: 256}) // 预扣 768,000
 	limit := int64(3_840_000)                                            // 恰好 5 次
-	require.NoError(t, f.st.SetAPIKeyQuota(context.Background(), f.alice.ID, &limit, 0))
-	require.NoError(t, f.st.SetAccountQuota(context.Background(), f.alice.AccountID, nil, 0))
+	require.NoError(t, f.st.SetAPIKeyQuota(context.Background(), f.alice.ID, store.QuotaChange{LimitNanos: &limit}))
+	require.NoError(t, f.st.SetAccountQuota(context.Background(), f.alice.AccountID, store.QuotaChange{}))
 
 	var allowed, denied atomic.Int32
 	var wg sync.WaitGroup

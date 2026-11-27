@@ -217,8 +217,70 @@ type UsageFilter struct {
 	Since     *time.Time
 }
 
-// HashAPIKey 返回 API Key 明文的存储形式（sha256 十六进制）；数据库只保存摘要。
-func HashAPIKey(plaintext string) string {
+// QuotaAdjustmentKind 是额度变更的类型。
+type QuotaAdjustmentKind string
+
+// 额度变更类型取值。
+const (
+	QuotaTopUp QuotaAdjustmentKind = "top_up" // 增加上限
+	QuotaReset QuotaAdjustmentKind = "reset"  // 直接设置上限与已用量，并清空预扣
+)
+
+// QuotaChange 是管理员对额度的一次直接设置；与修改在同一事务中写入额度变更流水。
+type QuotaChange struct {
+	LimitNanos *int64 // 新上限；nil 表示不限
+	UsedNanos  int64
+	Actor      string
+}
+
+// QuotaAdjustment 是一条额度变更流水（只追加）。API Key 的变更同时记录所属账户。
+type QuotaAdjustment struct {
+	ID          int64               `json:"id"`
+	Time        time.Time           `json:"time"`
+	AccountID   uuid.UUID           `json:"account_id"`
+	APIKeyID    *uuid.UUID          `json:"key_id"`
+	Kind        QuotaAdjustmentKind `json:"kind"`
+	LimitBefore *int64              `json:"limit_before_nanos"`
+	LimitAfter  *int64              `json:"limit_after_nanos"`
+	UsedBefore  int64               `json:"used_before_nanos"`
+	UsedAfter   int64               `json:"used_after_nanos"`
+	Actor       string              `json:"actor"`
+}
+
+// QuotaAdjustmentFilter 额度变更流水的查询条件。
+type QuotaAdjustmentFilter struct {
+	AccountID *uuid.UUID
+	APIKeyID  *uuid.UUID
+}
+
+// AdminToken 是一把管理 token；库中只存哈希，明文只在签发时返回一次。
+type AdminToken struct {
+	ID           uuid.UUID  `json:"id"`
+	Name         string     `json:"name"`
+	TokenHash    string     `json:"-"`
+	TokenPreview string     `json:"token_preview"`
+	Role         string     `json:"role"`
+	CreatedAt    time.Time  `json:"created_at"`
+	RevokedAt    *time.Time `json:"revoked_at"`
+}
+
+// AdminAudit 是一条管理操作审计。
+type AdminAudit struct {
+	ID      int64     `json:"id"`
+	Time    time.Time `json:"time"`
+	Actor   string    `json:"actor"`
+	Method  string    `json:"method"`
+	Route   string    `json:"route"`
+	Target  string    `json:"target"`
+	Request string    `json:"request"` // 已脱敏
+	Status  int       `json:"status"`
+}
+
+// HashAPIKey 返回 API Key 明文的存储形式；数据库只保存摘要。
+func HashAPIKey(plaintext string) string { return HashSecret(plaintext) }
+
+// HashSecret 返回高熵随机凭据（API Key、管理 token）的存储形式：sha256 十六进制。
+func HashSecret(plaintext string) string {
 	sum := sha256.Sum256([]byte(plaintext))
 	return hex.EncodeToString(sum[:])
 }
@@ -238,9 +300,10 @@ type Store interface {
 	ListAccounts(ctx context.Context, limit int) ([]Account, error)
 	CreateAccount(ctx context.Context, a Account) (Account, error)
 	UpdateAccount(ctx context.Context, id uuid.UUID, s AccountSettings) (Account, error)
-	AddAccountQuotaLimit(ctx context.Context, id uuid.UUID, delta int64) (Account, error)
-	// SetAccountQuota 管理用：直接设置额度上限与已用量，清空预扣。
-	SetAccountQuota(ctx context.Context, id uuid.UUID, limit *int64, used int64) error
+	// AddAccountQuotaLimit 增加账户额度上限，并在同一事务中写入额度变更流水。
+	AddAccountQuotaLimit(ctx context.Context, id uuid.UUID, delta int64, actor string) (Account, error)
+	// SetAccountQuota 管理用：直接设置额度上限与已用量，清空预扣，并写入额度变更流水。
+	SetAccountQuota(ctx context.Context, id uuid.UUID, change QuotaChange) error
 
 	// keys
 	GetAPIKeyByHash(ctx context.Context, hash string) (APIKey, error)
@@ -248,8 +311,8 @@ type Store interface {
 	ListAPIKeys(ctx context.Context, accountID *uuid.UUID, limit int) ([]APIKey, error)
 	CreateAPIKey(ctx context.Context, k APIKey) (APIKey, error)
 	UpdateAPIKey(ctx context.Context, id uuid.UUID, s APIKeySettings) (APIKey, error)
-	// SetAPIKeyQuota 管理用：直接设置额度上限与已用量，清空预扣。
-	SetAPIKeyQuota(ctx context.Context, id uuid.UUID, limit *int64, used int64) error
+	// SetAPIKeyQuota 管理用：直接设置额度上限与已用量，清空预扣，并写入额度变更流水。
+	SetAPIKeyQuota(ctx context.Context, id uuid.UUID, change QuotaChange) error
 
 	// quota（原子操作）
 	ReserveAPIKeyQuota(ctx context.Context, apiKeyID uuid.UUID, nanos int64) (QuotaState, error)
@@ -284,4 +347,15 @@ type Store interface {
 	DeleteModelPricing(ctx context.Context, model string) error
 
 	Close()
+
+	// 额度变更流水与管理面
+	ListQuotaAdjustments(ctx context.Context, f QuotaAdjustmentFilter, limit int) ([]QuotaAdjustment, error)
+	CreateAdminToken(ctx context.Context, t AdminToken) (AdminToken, error)
+	// GetAdminTokenByHash 只返回未吊销的 token。
+	GetAdminTokenByHash(ctx context.Context, hash string) (AdminToken, error)
+	ListAdminTokens(ctx context.Context) ([]AdminToken, error)
+	// RevokeAdminToken 吊销 token；不存在或已吊销时返回 ErrNotFound。
+	RevokeAdminToken(ctx context.Context, id uuid.UUID) error
+	InsertAdminAudit(ctx context.Context, row AdminAudit) error
+	ListAdminAudit(ctx context.Context, limit int) ([]AdminAudit, error)
 }

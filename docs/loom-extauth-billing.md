@@ -11,7 +11,7 @@
 | 集群 | `st2-aii`（kind），集群名 `agentgateway`，宿主机 `192.168.16.62` |
 | 命名空间 | `loom`（数据面 Gateway、loom、loom-mock、PostgreSQL）；controller 在 `agentgateway` |
 | 数据面入口 | NodePort `30080` → 宿主机 `http://127.0.0.1:14001` |
-| loom 端口 | `8080` 数据面（h2c，仅供网关）：extAuth HTTP `/check` 与 gRPC `ext_authz`、RLS 结算、OTLP 补账；`9090` 运维面：管理 API `/v1`、`/metrics`、`/healthz`、`/readyz`、pprof |
+| loom 端口 | `8080` 数据面（h2c，仅供网关）：extAuth HTTP `/check` 与 gRPC `ext_authz`、RLS 结算、OTLP 补账；`9090` 运维面：管理 API `/v1`、`/metrics`、`/healthz`、`/readyz`，`server.pprof: true` 时另有需要认证的 `/debug/pprof` |
 | 宿主机工具 | `/opt/agentgateway/k8s/bin/{kind,kubectl,helm}`、`docker`；无 go |
 | 部署目录 | 宿主机 `/opt/agentgateway/loom/{build,k8s,configs}` |
 | 本机入口 | `apps/loom`，`deploy/deploy.sh` 一键交叉编译 + 部署，`deploy/smoke.sh` 执行验收矩阵 |
@@ -108,7 +108,7 @@ cd apps/loom
 deploy/smoke.sh
 ```
 
-矩阵共 84 项检查，覆盖：鉴权拒绝矩阵、按量计费与预扣、分组倍率、按次计费、PG 兜底定价、embeddings、并发预扣、凭据头清理、gRPC 门面、管理 API 与指标、ConfigMap 热加载、RLS 同步结算与单通道独立性、FailClosed。脚本开头会通过管理 API 复位 `alice`、`erin` 的额度，可重复执行。
+矩阵共 99 项检查，覆盖：鉴权拒绝矩阵、按量计费与预扣、分组倍率、按次计费、PG 兜底定价、embeddings、并发预扣、凭据头清理、gRPC 门面、管理 API 与指标、ConfigMap 热加载、RLS 同步结算与单通道独立性、多副本缓存失效、管理面角色与审计、FailClosed。脚本开头会通过管理 API 复位 `alice`、`erin` 的额度，可重复执行。
 
 **通过标准：** 末行输出 `RESULT: PASS=82 FAIL=0`。
 
@@ -183,7 +183,18 @@ curl -s -X POST -H "$H" -H 'content-type: application/json' localhost:9090/v1/ke
   -d '{"account_id":"<uuid>","name":"prod","quota_limit_nanos":10000000000,"model_allowlist":["lab-model"]}'
 ```
 
-创建 Key 的响应里 `plaintext` 只出现一次。`POST /v1/accounts/:id/topup` 增加额度上限；`POST /v1/accounts/:id/quota` 与 `POST /v1/keys/:id/quota` 直接设置上限/已用量并清空预扣（验收复位用）。
+创建 Key 的响应里 `plaintext` 只出现一次。`POST /v1/accounts/:id/topup` 增加额度上限；`POST /v1/accounts/:id/quota` 与 `POST /v1/keys/:id/quota` 直接设置上限/已用量并清空预扣（验收复位用）。三者都在同一事务中写入额度变更流水（操作者、变更前后的上限与已用量），用 `GET /v1/quota-adjustments?account_id=<uuid>` 或 `?key_id=<uuid>` 查询。
+
+配置里的 `admin.token` 是引导 token（读写权限），只用于初始化与紧急情况；日常使用按角色签发的 token，明文只在签发时返回一次：
+
+```bash
+curl -s -X POST -H "$H" -H 'content-type: application/json' localhost:9090/v1/admin/tokens -d '{"name":"grafana","role":"read"}'
+curl -s -H "$H" localhost:9090/v1/admin/tokens | jq                 # 列出（含已吊销），不含明文
+curl -s -X DELETE -H "$H" localhost:9090/v1/admin/tokens/<uuid>      # 吊销，立即生效
+curl -s -H "$H" localhost:9090/v1/admin/audit | jq                  # 管理操作审计（写操作，请求体已脱敏）
+```
+
+`read` 角色只能发 `GET` 请求，其余方法需要 `write` 角色；越权返回 `403`，token 无效或已吊销返回 `401`。
 
 ### 4.3 修改价格
 

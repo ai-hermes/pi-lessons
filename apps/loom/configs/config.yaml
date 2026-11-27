@@ -6,6 +6,7 @@ server:
   listen: ":8080"        # 数据面（h2c）：extauth HTTP /check + gRPC ext_authz、ratelimit、OTLP，仅供网关调用
   ops_listen: ":9090"    # 运维面：管理 API /v1、/metrics、/healthz、/readyz、/debug/pprof
   shutdown_timeout: 15s
+  pprof: false                  # true 时在运维面暴露 /debug/pprof（需要 read 角色的管理 token）
 
 log:
   level: info

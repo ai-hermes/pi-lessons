@@ -623,10 +623,12 @@ OTLP access log 是遥测链路（批量、可丢），不适合做账本的数�
 
 ### 19.7 管理面安全
 
-- [ ] 管理 token 支持多个、库中只存哈希，分只读与读写两种角色，支持轮换与吊销；OIDC 暂不接入。
-- [ ] 管理操作审计：记录操作者、时间、对象、变更前后值。
-- [ ] 额度变更流水：`TopUp`、`ResetAccountQuota`、`ResetAPIKeyQuota` 写入只追加的流水表，作为以后充值、退款、对账的基础。
-- [ ] pprof 默认关闭，开启时仅限有角色的 token 访问；API Key 支持可选的 IP 白名单。
+- [x] 管理 token（`internal/operator`，表 `admin_tokens`）：配置中的 `admin.token` 为引导 token（`write`）；其余 token 经 `POST /v1/admin/tokens` 签发，库中只存哈希，分 `read` / `write` 两种角色，`DELETE /v1/admin/tokens/:id` 吊销后立即生效（认证不缓存）。OIDC 暂不接入。
+- [x] 管理操作审计（表 `admin_audit`，`GET /v1/admin/audit`）：每个写请求记录操作者、方法、路由、目标、脱敏后的请求体与响应码。
+- [x] 额度变更流水（表 `quota_adjustments`，`GET /v1/quota-adjustments`）：`TopUp`、`ResetAccountQuota`、`ResetAPIKeyQuota` 在同一事务中锁行读取变更前的值、修改额度并写入流水（操作者、变更前后的上限与已用量），作为以后充值、退款、对账的基础。
+- [x] pprof 默认关闭（`server.pprof`），开启后挂在管理 API 认证之后，需要 `read` 角色。
+- [x] 验收：迁移 `0004` 在滚动升级中自动执行；`deploy/smoke.sh` 第 16 节验证读写角色、即时吊销、流水与审计中的操作者、pprof 默认关闭（smoke 共 99 项）。
+- [ ] API Key 支持可选的 IP 白名单。
 
 ### 19.8 多副本一致性
 

@@ -228,7 +228,40 @@ check "other replicas invalidated remotely" $((REPLICAS - 1)) $(( $(invalidation
 check "re-enable key" 200 "$(patch_key_on "$POD_A" active)"
 check "re-enabled key accepted immediately" 200 "$(code -H "x-api-key: $SYNC_KEY" $BASE/echo)"
 
-echo "### 16. FailClosed：loom 副本缩到 0 → 拒绝；恢复 → 放行"
+echo "### 16. 管理面：分角色 token、即时吊销、额度变更流水、操作审计、pprof 默认关闭"
+kubectl -n loom port-forward deploy/loom 19091:9090 >/dev/null 2>&1 & OPS_PF=$!
+sleep 2
+OPS=http://127.0.0.1:19091
+# ops <token> <method> <path> [json]：返回 "<http_code> <body>"
+ops() {
+  curl -s -w ' %{http_code}' -X "$2" -H "Authorization: Bearer $1" -H 'Content-Type: application/json' \
+    ${4:+-d "$4"} "$OPS$3"
+}
+status_of() { echo "${1##* }"; }
+SUFFIX=$(date +%s)
+issue() { # issue <name> <role> → "<id> <plaintext>"
+  ops "$ADMIN_TOKEN" POST /v1/admin/tokens "{\"name\":\"$1-$SUFFIX\",\"role\":\"$2\"}" \
+    | sed 's/ [0-9]*$//' | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["token"]["id"], d["plaintext"])'
+}
+read -r READER_ID READER <<<"$(issue smoke-reader read)"
+read -r WRITER_ID WRITER <<<"$(issue smoke-writer write)"
+check "read token can list accounts" 200 "$(status_of "$(ops "$READER" GET /v1/accounts)")"
+check "read token cannot write" 403 "$(status_of "$(ops "$READER" POST /v1/accounts '{"name":"x"}')")"
+check "revoke read token" 204 "$(status_of "$(ops "$ADMIN_TOKEN" DELETE "/v1/admin/tokens/$READER_ID")")"
+check "revoked token rejected immediately" 401 "$(status_of "$(ops "$READER" GET /v1/accounts)")"
+LIMIT_BEFORE=$(q "select coalesce(quota_limit, 0) from accounts where name='cache-sync'")
+check "top up with write token" 200 "$(status_of "$(ops "$WRITER" POST "/v1/accounts/$SYNC_AID/topup" '{"nanos":7}')")"
+check "quota ledger records actor and before/after" "top_up|smoke-writer-$SUFFIX|$((LIMIT_BEFORE + 7))" \
+  "$(q "select kind || '|' || actor || '|' || limit_after from quota_adjustments where account_id='$SYNC_AID' order by id desc limit 1")"
+check "admin audit records the top-up" "smoke-writer-$SUFFIX|/v1/accounts/:id/topup|200" \
+  "$(q "select actor || '|' || route || '|' || status from admin_audit order by id desc limit 1")"
+check "smoke resets are in the quota ledger" yes \
+  "$(q "select count(*) from quota_adjustments a join accounts c on c.id = a.account_id where c.name = 'alice' and a.kind = 'reset' and a.actor = 'bootstrap'" | awk '{print ($1 > 0) ? "yes" : "no"}')"
+check "pprof is off by default" 404 "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ADMIN_TOKEN" "$OPS/debug/pprof/")"
+ops "$ADMIN_TOKEN" DELETE "/v1/admin/tokens/$WRITER_ID" >/dev/null
+kill "$OPS_PF" 2>/dev/null; wait "$OPS_PF" 2>/dev/null
+
+echo "### 17. FailClosed：loom 副本缩到 0 → 拒绝；恢复 → 放行"
   kubectl -n loom scale deploy/loom --replicas=0 >/dev/null
   sleep 8
   C=$(code -H "x-api-key: $(key dave)" $BASE/echo)

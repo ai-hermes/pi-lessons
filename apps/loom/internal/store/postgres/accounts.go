@@ -54,21 +54,59 @@ func (d *DB) UpdateAccount(ctx context.Context, id uuid.UUID, s store.AccountSet
 	return toAccount(row), d.fail("UpdateAccount", err)
 }
 
-// AddAccountQuotaLimit 见 store.Store。
-func (d *DB) AddAccountQuotaLimit(ctx context.Context, id uuid.UUID, delta int64) (store.Account, error) {
-	params := sqlcgen.AddAccountQuotaLimitParams{ID: id, QuotaLimit: &delta}
-	row, err := d.q.AddAccountQuotaLimit(ctx, params)
-	return toAccount(row), d.fail("AddAccountQuotaLimit", err)
+// AddAccountQuotaLimit 见 store.Store：锁行读取变更前的值，增加上限并写入额度变更流水。
+func (d *DB) AddAccountQuotaLimit(
+	ctx context.Context,
+	id uuid.UUID,
+	delta int64,
+	actor string,
+) (account store.Account, err error) {
+	err = d.inTx(ctx, "AddAccountQuotaLimit", func(q *sqlcgen.Queries) error {
+		before, err := q.LockAccountQuota(ctx, id)
+		if err != nil {
+			return d.fail("AddAccountQuotaLimit.lock", err)
+		}
+		params := sqlcgen.AddAccountQuotaLimitParams{ID: id, QuotaLimit: &delta}
+		row, err := q.AddAccountQuotaLimit(ctx, params)
+		if err != nil {
+			return d.fail("AddAccountQuotaLimit", err)
+		}
+		account = toAccount(row)
+		return d.fail("AddAccountQuotaLimit.adjustment", q.InsertQuotaAdjustment(ctx, sqlcgen.InsertQuotaAdjustmentParams{
+			AccountID:   id,
+			Kind:        string(store.QuotaTopUp),
+			LimitBefore: before.QuotaLimit,
+			LimitAfter:  account.QuotaLimit,
+			UsedBefore:  before.QuotaUsed,
+			UsedAfter:   account.QuotaUsed,
+			Actor:       actor,
+		}))
+	})
+	return account, err
 }
 
-// SetAccountQuota 见 store.Store；与清空预扣在同一事务内完成。
-func (d *DB) SetAccountQuota(ctx context.Context, id uuid.UUID, limit *int64, used int64) error {
+// SetAccountQuota 见 store.Store；清空预扣、修改额度与写入额度变更流水在同一事务内完成。
+func (d *DB) SetAccountQuota(ctx context.Context, id uuid.UUID, change store.QuotaChange) error {
 	return d.inTx(ctx, "SetAccountQuota", func(q *sqlcgen.Queries) error {
+		before, err := q.LockAccountQuota(ctx, id)
+		if err != nil {
+			return d.fail("SetAccountQuota.lock", err)
+		}
 		if _, err := q.DeleteAccountReservations(ctx, id); err != nil {
 			return d.fail("SetAccountQuota.deleteReservations", err)
 		}
-		params := sqlcgen.SetAccountQuotaParams{ID: id, QuotaLimit: limit, QuotaUsed: used}
-		err := q.SetAccountQuota(ctx, params)
-		return d.fail("SetAccountQuota", err)
+		params := sqlcgen.SetAccountQuotaParams{ID: id, QuotaLimit: change.LimitNanos, QuotaUsed: change.UsedNanos}
+		if err := q.SetAccountQuota(ctx, params); err != nil {
+			return d.fail("SetAccountQuota", err)
+		}
+		return d.fail("SetAccountQuota.adjustment", q.InsertQuotaAdjustment(ctx, sqlcgen.InsertQuotaAdjustmentParams{
+			AccountID:   id,
+			Kind:        string(store.QuotaReset),
+			LimitBefore: before.QuotaLimit,
+			LimitAfter:  change.LimitNanos,
+			UsedBefore:  before.QuotaUsed,
+			UsedAfter:   change.UsedNanos,
+			Actor:       change.Actor,
+		}))
 	})
 }
