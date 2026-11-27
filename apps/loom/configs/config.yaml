@@ -97,6 +97,13 @@ otlp:
     key_id: loom.key.id
     account: loom.client.id
 
+retention:                      # 数据增长维护：多副本时同一任务只由一个副本执行
+  interval: 10m                 # 每轮：建分区 → 汇总 usage_daily → 清理过期分区与幂等记录
+  partitions_ahead_months: 3    # usage_events / auth_audit 提前建好的月份分区数
+  usage_events_days: 180        # 明细保留期；按整月分区删除，且只删已汇总进 usage_daily 的部分
+  auth_audit_days: 90           # 准入审计保留期（对公众运营时按日志留存要求调整）
+  settled_requests_days: 7      # 结算幂等记录保留期，须大于 OTLP 补账的最大延迟
+
 admin:
   token_file: /etc/loom/admin-token
   key_prefix: loom-

@@ -329,7 +329,41 @@ check "concurrency: rejections counted by scope" yes "$([ "$THR_REJECTED" -ge 1 
 throttle_limits '{}' '{}'
 check "no limits → 200" 200 "$(thr_code "$(thr_chat)")"
 
-echo "### 19. FailClosed：loom 副本缩到 0 → 拒绝；恢复 → 放行"
+echo "### 19. 数据增长：按月分区、结算幂等表、日汇总（明细删除后汇总仍在）、准入审计聚合"
+AHEAD=$(date -u -d "$(date -u +%Y-%m-01) +3 month" +y%Ym%m)
+check "usage_events partitioned 3 months ahead" t "$(q "select to_regclass('usage_events_$AHEAD') is not null")"
+check "auth_audit partitioned 3 months ahead" t "$(q "select to_regclass('auth_audit_$AHEAD') is not null")"
+check "settlements are recorded for idempotency" t "$(q "select count(*) > 0 from settled_requests where settled_at > now() - interval '1 hour'")"
+
+PROBE_KEY=loom-retention-probe-0000000001
+printf 'accounts:\n  - name: retention-probe\n    keys:\n      - name: default\n        plaintext: %s\n' "$PROBE_KEY" \
+  | kubectl -n loom exec -i deploy/loom -- loom seed --config /etc/loom/config.yaml --file /dev/stdin >/dev/null
+PROBE_AID=$(q "select id from accounts where name = 'retention-probe'")
+PROBE_KID=$(q "select id from api_keys where account_id = '$PROBE_AID'")
+q "delete from usage_daily where account_id = '$PROBE_AID'" >/dev/null
+q "delete from usage_events where account_id = '$PROBE_AID'" >/dev/null
+# 昨天（UTC）的一条明细：每轮维护都会重算水位线前一天，立即执行一轮即可汇总进 usage_daily
+q "insert into usage_events (time, request_id, account_id, key_id, model, input_tokens, output_tokens, cost_nanos, settled)
+   values (date_trunc('day', now() at time zone 'utc') at time zone 'utc' - interval '12 hours',
+           'retention-probe-' || extract(epoch from now())::bigint, '$PROBE_AID', '$PROBE_KID', 'lab-model', 10, 5, 777, true)" >/dev/null
+MAINT=$(admin_post /v1/admin/maintenance '{}')
+check "on-demand maintenance: rollup" ok "$(echo "$MAINT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tasks"]["rollup"])')"
+check "on-demand maintenance: partitions" ok "$(echo "$MAINT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tasks"]["partitions"])')"
+check "yesterday rolled up into usage_daily" 777 "$(q "select cost_nanos from usage_daily where account_id = '$PROBE_AID' and day = (now() at time zone 'utc')::date - 1")"
+probe_cost() { admin "/v1/usage/summary?account_id=$PROBE_AID" | python3 -c 'import json,sys; print(json.load(sys.stdin)["total"]["cost_nanos"])'; }
+check "summary before details are pruned" 777 "$(probe_cost)"
+q "delete from usage_events where account_id = '$PROBE_AID'" >/dev/null
+check "summary after details are pruned (served by usage_daily)" 777 "$(probe_cost)"
+
+# 未识别出 Key 的拒绝按分钟聚合成一行；等这一分钟结束、写入协程刷新后再查
+fresh_window
+for i in $(seq 1 20); do curl -s -o /dev/null --max-time 5 -H "x-api-key: flood-xyz-$i-unknown-key" "$BASE/echo"; done
+sleep $((62 - $(date +%-S)))
+# 每个副本各自聚合：一分钟内最多“副本数”行，合计仍是 20
+REPLICAS=$(kubectl -n loom get deploy loom -o jsonpath='{.spec.replicas}')
+check "20 unknown-key denials folded into at most one row per replica" "yes|20" "$(q "select (count(*) <= $REPLICAS)::text || '|' || coalesce(sum(count), 0) from auth_audit where credential_preview = 'flood-xy' and time > now() - interval '5 minutes'" | sed 's/^true/yes/; s/^false/no/')"
+
+echo "### 20. FailClosed：loom 副本缩到 0 → 拒绝；恢复 → 放行"
   kubectl -n loom scale deploy/loom --replicas=0 >/dev/null
   sleep 8
   C=$(code -H "x-api-key: $(key dave)" $BASE/echo)

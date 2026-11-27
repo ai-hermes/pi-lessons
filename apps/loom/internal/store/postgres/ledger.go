@@ -117,6 +117,9 @@ func (d *DB) ReleaseExpiredReservations(ctx context.Context, now time.Time, limi
 }
 
 func usageEventParams(ev store.UsageEvent) sqlcgen.SettleUsageParams {
+	if ev.Time.IsZero() {
+		ev.Time = time.Now() // 与 memstore 一致；零值会落到不存在的分区
+	}
 	params := sqlcgen.SettleUsageParams{
 		Time:             ev.Time,
 		RequestID:        optionalText(ev.RequestID),

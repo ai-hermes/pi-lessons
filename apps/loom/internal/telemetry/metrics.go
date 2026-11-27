@@ -39,6 +39,11 @@ type Metrics struct {
 	// throttle
 	ThrottleRejections *prometheus.CounterVec // {scope, limit}
 
+	// maintenance
+	MaintenanceRuns        *prometheus.CounterVec // {task, result}
+	MaintenanceLastSuccess *prometheus.GaugeVec   // {task}
+	AuditAggregated        prometheus.Counter
+
 	// transport
 	RateLimitCalls    *prometheus.CounterVec // {phase}
 	OTLPQueueDepth    prometheus.Gauge
@@ -131,6 +136,20 @@ func NewMetrics(version, commit string) *Metrics {
 			"loom_throttle_rejections_total",
 			"Requests denied as rate_limited; scope=api_key|account, limit=rpm|tpm|concurrency.",
 			"scope", "limit",
+		),
+		MaintenanceRuns: counterVec(
+			"loom_maintenance_runs_total",
+			"Maintenance task runs; result=ok|skipped (another replica holds the task)|error.",
+			"task", "result",
+		),
+		MaintenanceLastSuccess: gaugeVec(
+			"loom_maintenance_last_success_timestamp_seconds",
+			"Unix time of the last run that completed or was covered by another replica.",
+			"task",
+		),
+		AuditAggregated: counter(
+			"loom_audit_aggregated_requests_total",
+			"Unidentified-credential denials folded into aggregated auth_audit rows instead of one row each.",
 		),
 		ReserveCompensations: counterVec(
 			"loom_ledger_reserve_compensations_total",
@@ -227,6 +246,9 @@ func NewMetrics(version, commit string) *Metrics {
 		m.ReservationsExpired,
 		m.ReserveCompensations,
 		m.ThrottleRejections,
+		m.MaintenanceRuns,
+		m.MaintenanceLastSuccess,
+		m.AuditAggregated,
 		m.CostMismatch,
 		m.RateLimitCalls,
 		m.OTLPQueueDepth,

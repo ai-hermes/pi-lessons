@@ -56,6 +56,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.prices.Run,
 		s.ledger.RunReaper,
 		s.limiter.Run,
+		s.upkeep.Run,
 		s.gate.RunAuditWriter,
 		s.queue.Run,
 		s.caches.Run,
@@ -148,7 +149,12 @@ func (s *Service) dataServer(grpcHealth *health.Server) (*http.Server, *grpc.Ser
 // opsServer 构建运维面：管理 API、指标、探针，以及开启时需要认证的 pprof。
 func (s *Service) opsServer(adminToken string) *http.Server {
 	operators := operator.New(s.db, adminToken)
-	admin := adminapi.New(s.accounts, operators, adminapi.Options{Pprof: s.cfg.Server.Pprof, Log: s.log}).Handler()
+	adminOpts := adminapi.Options{
+		Pprof:       s.cfg.Server.Pprof,
+		Log:         s.log,
+		Maintenance: s.upkeep,
+	}
+	admin := adminapi.New(s.accounts, operators, adminOpts).Handler()
 
 	mux := http.NewServeMux()
 	mux.Handle("/v1/", admin)

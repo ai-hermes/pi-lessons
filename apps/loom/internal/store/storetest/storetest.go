@@ -41,6 +41,10 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"quota adjustments", testQuotaAdjustments},
 		{"admin tokens", testAdminTokens},
 		{"admin audit", testAdminAudit},
+		// 以下用例会推进全局的汇总水位线、删除旧分区，放在最后
+		{"settled requests bound the idempotency window", testSettledRequestsRetention},
+		{"audit keeps aggregated rows and drops old ones", testAuditRetention},
+		{"daily rollup keeps summaries after details are pruned", testUsageRetention},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.run(t, newStore(t)) })
@@ -714,4 +718,102 @@ func testRateCounters(t *testing.T, s store.Store) {
 	require.NoError(t, s.AcquireRate(ctx, window, claims(100, new(int64(1)), tpm)), "deleted windows start over")
 	err = s.AcquireRate(ctx, next, claims(1, rpm, tpm))
 	require.ErrorAs(t, err, &limited, "windows from before are kept")
+}
+
+func settleAt(t *testing.T, s store.Store, apiKey store.APIKey, requestID string, at time.Time, cost int64) bool {
+	t.Helper()
+	inserted, err := s.SettleUsage(ctx, store.UsageEvent{
+		Time:         at,
+		RequestID:    requestID,
+		APIKeyID:     &apiKey.ID,
+		AccountID:    &apiKey.AccountID,
+		Model:        "m",
+		InputTokens:  10,
+		OutputTokens: 5,
+		CostNanos:    cost,
+	})
+	require.NoError(t, err)
+	return inserted
+}
+
+func testSettledRequestsRetention(t *testing.T, s store.Store) {
+	apiKey := newAPIKey(t, s, newAccount(t, s, nil).ID, nil)
+	requestID := unique("req")
+	require.True(t, settleAt(t, s, apiKey, requestID, time.Now(), 1))
+	require.False(t, settleAt(t, s, apiKey, requestID, time.Now(), 1), "a duplicate report inside the window is ignored")
+
+	_, err := s.PruneSettledRequests(ctx, time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	backfilled, err := s.BackfillAgentGatewayCost(ctx, requestID, 7)
+	require.NoError(t, err)
+	assert.False(t, backfilled, "requests past the window are no longer backfilled")
+	assert.True(t, settleAt(t, s, apiKey, requestID, time.Now(), 1),
+		"past the window a duplicate is no longer recognised; the window must exceed the OTLP delay")
+}
+
+func testAuditRetention(t *testing.T, s store.Store) {
+	old := time.Now().AddDate(0, 0, -400)
+	_, err := s.EnsurePartitions(ctx, old, time.Now().AddDate(0, 3, 0))
+	require.NoError(t, err)
+	preview := unique("sk")
+	require.NoError(t, s.InsertAudit(ctx, []store.Audit{
+		{Time: old, Protocol: "http", Reason: "unknown_api_key", CredentialPreview: preview, Count: 3},
+		{Time: time.Now(), Protocol: "http", Reason: "unknown_api_key", CredentialPreview: preview, Count: 37},
+	}))
+
+	_, err = s.PruneAudit(ctx, time.Now().AddDate(0, 0, -90))
+	require.NoError(t, err)
+	rows, err := s.ListAudit(ctx, nil, 1000)
+	require.NoError(t, err)
+	var counts []int
+	for _, row := range rows {
+		if row.CredentialPreview == preview {
+			counts = append(counts, row.Count)
+		}
+	}
+	assert.Equal(t, []int{37}, counts, "the aggregated row survives with its count; the old one is pruned")
+}
+
+func testUsageRetention(t *testing.T, s store.Store) {
+	now := time.Now()
+	old := now.AddDate(0, 0, -400)
+	_, err := s.EnsurePartitions(ctx, old, now.AddDate(0, 3, 0))
+	require.NoError(t, err)
+	apiKey := newAPIKey(t, s, newAccount(t, s, nil).ID, nil)
+	require.True(t, settleAt(t, s, apiKey, unique("req"), old, 100))
+	require.True(t, settleAt(t, s, apiKey, unique("req"), now.AddDate(0, 0, -2), 20))
+	require.True(t, settleAt(t, s, apiKey, unique("req"), now, 3))
+	summary := func() (requests, cost int64) {
+		rows, err := s.SummaryUsage(ctx, store.UsageFilter{APIKeyID: &apiKey.ID})
+		require.NoError(t, err)
+		for _, row := range rows {
+			requests, cost = requests+row.Requests, cost+row.CostNanos
+		}
+		return requests, cost
+	}
+	r, c := summary()
+	assert.Equal(t, [2]int64{3, 123}, [2]int64{r, c})
+
+	today := now.UTC().Truncate(24 * time.Hour)
+	require.NoError(t, s.RollupUsageDaily(ctx, old.Add(-24*time.Hour), today))
+	through, ok, err := s.UsageRollupWatermark(ctx)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.False(t, through.Before(today))
+	r, c = summary()
+	assert.Equal(t, [2]int64{3, 123}, [2]int64{r, c}, "daily rows before the watermark plus details after it")
+
+	_, err = s.PruneUsageEvents(ctx, now.AddDate(0, 0, -180))
+	require.NoError(t, err)
+	events, err := s.ListUsage(ctx, &apiKey.ID, nil, 100)
+	require.NoError(t, err)
+	assert.Len(t, events, 2, "the 400-day-old detail is gone")
+	r, c = summary()
+	assert.Equal(t, [2]int64{3, 123}, [2]int64{r, c}, "the summary still covers it through usage_daily")
+
+	since := now.Add(-time.Hour)
+	rows, err := s.SummaryUsage(ctx, store.UsageFilter{APIKeyID: &apiKey.ID, Since: &since})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, int64(3), rows[0].CostNanos, "since after the watermark is exact")
 }

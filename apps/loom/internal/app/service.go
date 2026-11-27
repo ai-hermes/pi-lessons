@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/cachesync"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/config"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/ledger"
+	"github.com/ai-hermes/pi-lessons/apps/loom/internal/maintenance"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/pricing"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store/postgres"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/telemetry"
@@ -45,6 +47,7 @@ type Service struct {
 	accounts *account.Service
 	queue    *otlp.Queue
 	caches   *cachesync.Syncer
+	upkeep   *maintenance.Runner
 
 	ready atomic.Bool
 }
@@ -132,6 +135,16 @@ func wire(cfg *config.Config, db *postgres.DB, metrics *telemetry.Metrics, log *
 	}
 	caches := cachesync.New(db, localCaches, metrics, log)
 
+	retention := cfg.Retention
+	const day = 24 * time.Hour
+	housekeeping := maintenance.New(maintenance.Options{
+		Interval:              retention.Interval,
+		PartitionsAheadMonths: retention.PartitionsAheadMonths,
+		UsageEventsRetention:  time.Duration(retention.UsageEventsDays) * day,
+		AuditRetention:        time.Duration(retention.AuthAuditDays) * day,
+		IdempotencyRetention:  time.Duration(retention.SettledRequestsDays) * day,
+	}, db, metrics, log)
+
 	return &Service{
 		cfg:      cfg,
 		log:      log,
@@ -144,6 +157,7 @@ func wire(cfg *config.Config, db *postgres.DB, metrics *telemetry.Metrics, log *
 		accounts: account.New(db, prices, cfg.Admin.KeyPrefix, caches),
 		queue:    queue,
 		caches:   caches,
+		upkeep:   housekeeping,
 	}, nil
 }
 

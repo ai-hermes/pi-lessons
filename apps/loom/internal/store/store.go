@@ -21,6 +21,9 @@ var ErrConflict = errors.New("store: already exists")
 // ErrInsufficientQuota 条件预扣失败：剩余额度不足，或 API Key / 账户已停用、已过期。
 var ErrInsufficientQuota = errors.New("store: insufficient quota")
 
+// ErrMaintenanceBusy 另一个副本正在执行同一维护任务。
+var ErrMaintenanceBusy = errors.New("store: maintenance task is running elsewhere")
+
 // ErrCommitOutcomeUnknown 提交请求已发出但没收到确认（连接断开、context 到期）：事务可能已提交，也可能没有。
 // 调用方需要按幂等键核对或补偿，不能当作“未生效”。
 var ErrCommitOutcomeUnknown = errors.New("store: commit outcome unknown")
@@ -204,6 +207,9 @@ type Audit struct {
 	Model           string     `json:"model"`
 	Allowed         bool       `json:"allowed"`
 	Reason          string     `json:"reason"`
+	// 未识别出 Key 的拒绝按凭据前缀与分钟聚合成一行：CredentialPreview 是凭据前缀（溢出组为 *），Count 是合并的请求数。
+	CredentialPreview string `json:"credential_preview,omitempty"`
+	Count             int    `json:"count"`
 }
 
 // ModelPrice PG 兜底定价行。
@@ -237,6 +243,14 @@ type UsageFilter struct {
 	AccountID *uuid.UUID
 	APIKeyID  *uuid.UUID
 	Since     *time.Time
+}
+
+// Matches 判断一行汇总的归属是否满足过滤条件（不含时间）。
+func (f UsageFilter) Matches(accountID, apiKeyID uuid.UUID) bool {
+	if f.AccountID != nil && accountID != *f.AccountID {
+		return false
+	}
+	return f.APIKeyID == nil || apiKeyID == *f.APIKeyID
 }
 
 // QuotaAdjustmentKind 是额度变更的类型。
@@ -365,6 +379,21 @@ type Store interface {
 	AddRateTokens(ctx context.Context, window time.Time, claims []RateClaim) error
 	// DeleteRateWindows 删除 before 之前开始的窗口，返回删除条数。
 	DeleteRateWindows(ctx context.Context, before time.Time) (int64, error)
+
+	// data growth（由 maintenance 包定期调用；多副本时同一任务同一时刻只有一个副本执行，其余返回 ErrMaintenanceBusy）
+	// EnsurePartitions 为按月分区的表（usage_events、auth_audit）建好 [from, to] 覆盖的月份分区，返回新建数；无分区的实现为空操作。
+	EnsurePartitions(ctx context.Context, from, to time.Time) (int, error)
+	// RollupUsageDaily 重算 [from, to) 内各 UTC 日的日汇总（可重复执行），并把汇总水位线推进到 to。
+	// SummaryUsage 在水位线之前查日汇总，之后查明细。
+	RollupUsageDaily(ctx context.Context, from, to time.Time) error
+	// UsageRollupWatermark 返回汇总水位线；从未汇总过时 ok 为 false。
+	UsageRollupWatermark(ctx context.Context) (through time.Time, ok bool, err error)
+	// PruneUsageEvents / PruneAudit 删除 before 之前的明细；按月分区的实现只删除整月都早于 before 的分区。
+	// 返回删除的单位数（分区数或行数，取决于实现），仅用于日志。
+	PruneUsageEvents(ctx context.Context, before time.Time) (int64, error)
+	PruneAudit(ctx context.Context, before time.Time) (int64, error)
+	// PruneSettledRequests 删除 before 之前结算的幂等记录；此后同一 request_id 的重复上报不再能识别。
+	PruneSettledRequests(ctx context.Context, before time.Time) (int64, error)
 
 	// usage
 	ListUsage(ctx context.Context, apiKeyID *uuid.UUID, since *time.Time, limit int) ([]UsageEvent, error)

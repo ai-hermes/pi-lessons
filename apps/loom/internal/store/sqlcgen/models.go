@@ -71,16 +71,18 @@ type ApiKey struct {
 }
 
 type AuthAudit struct {
-	ID              int64
-	Time            time.Time
-	RequestID       string
-	ClientRequestID string
-	KeyID           *uuid.UUID
-	AccountID       *uuid.UUID
-	Protocol        string
-	Model           string
-	Allowed         bool
-	Reason          string
+	ID                int64
+	Time              time.Time
+	RequestID         string
+	ClientRequestID   string
+	KeyID             *uuid.UUID
+	AccountID         *uuid.UUID
+	Protocol          string
+	Model             string
+	Allowed           bool
+	Reason            string
+	CredentialPreview string
+	Count             int32
 }
 
 type ModelPricing struct {
@@ -126,6 +128,25 @@ type Reservation struct {
 	CreatedAt time.Time
 }
 
+type SettledRequest struct {
+	RequestID string
+	UsageTime time.Time
+	SettledAt time.Time
+}
+
+type UsageDaily struct {
+	Day              pgtype.Date
+	AccountID        uuid.UUID
+	KeyID            uuid.UUID
+	Model            string
+	Requests         int64
+	InputTokens      int64
+	OutputTokens     int64
+	CachedTokens     int64
+	CostNanos        int64
+	GatewayCostNanos int64
+}
+
 type UsageEvent struct {
 	ID               int64
 	Time             time.Time
@@ -151,4 +172,9 @@ type UsageEvent struct {
 	CompletionRatio  *float64
 	CacheRatio       *float64
 	ModelPrice       *float64
+}
+
+type UsageRollup struct {
+	Singleton bool
+	Through   time.Time
 }

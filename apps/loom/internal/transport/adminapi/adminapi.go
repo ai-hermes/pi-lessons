@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/account"
+	"github.com/ai-hermes/pi-lessons/apps/loom/internal/maintenance"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/operator"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store"
 )
@@ -40,6 +41,13 @@ var redactedFields = map[string]bool{"plaintext": true, "token": true, "password
 type Options struct {
 	Pprof bool // 是否在 /debug/pprof 暴露 pprof（需要 read 角色）
 	Log   *slog.Logger
+	// Maintenance 立即执行一轮数据维护；为 nil 时 POST /v1/admin/maintenance 返回 501。
+	Maintenance Maintainer
+}
+
+// Maintainer 执行一轮数据维护（maintenance.Runner 实现），返回各任务的结果。
+type Maintainer interface {
+	RunOnce(ctx context.Context) maintenance.Report
 }
 
 // API 管理 API。
@@ -92,6 +100,7 @@ func (a *API) Handler() http.Handler {
 	v1.POST("/admin/tokens", a.issueAdminToken)
 	v1.DELETE("/admin/tokens/:id", a.revokeAdminToken)
 	v1.GET("/admin/audit", a.listAdminAudit)
+	v1.POST("/admin/maintenance", a.runMaintenance)
 
 	if a.opts.Pprof {
 		debug := r.Group("/debug/pprof", a.authenticate)
@@ -549,4 +558,13 @@ func (a *API) listAdminAudit(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"audit": rows})
+}
+
+// runMaintenance 立即执行一轮数据维护（建分区、日汇总、保留期清理），用于运维与验收；平时由后台每 retention.interval 执行。
+func (a *API) runMaintenance(c *gin.Context) {
+	if a.opts.Maintenance == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "maintenance is not configured"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"tasks": a.opts.Maintenance.RunOnce(c)})
 }

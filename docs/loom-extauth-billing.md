@@ -141,9 +141,9 @@ cd apps/loom
 deploy/smoke.sh
 ```
 
-矩阵共 117 项检查，覆盖：鉴权拒绝矩阵、按量计费与预扣、分组倍率、按次计费、PG 兜底定价、embeddings、并发预扣、凭据头清理、gRPC 门面、管理 API 与指标、ConfigMap 热加载、RLS 同步结算与单通道独立性、多副本缓存失效、管理面角色与审计、超时预算（PG 行锁下准入在截止时间内拒绝且无残留预扣）、客户级限流（RPM / TPM / 并发）、FailClosed。两种 PG 形态都适用。脚本开头会通过管理 API 复位 `alice`、`erin` 的额度，可重复执行。
+矩阵共 126 项检查，覆盖：鉴权拒绝矩阵、按量计费与预扣、分组倍率、按次计费、PG 兜底定价、embeddings、并发预扣、凭据头清理、gRPC 门面、管理 API 与指标、ConfigMap 热加载、RLS 同步结算与单通道独立性、多副本缓存失效、管理面角色与审计、超时预算（PG 行锁下准入在截止时间内拒绝且无残留预扣）、客户级限流（RPM / TPM / 并发）、数据增长（分区、幂等表、日汇总、审计聚合）、FailClosed。两种 PG 形态都适用。脚本开头会通过管理 API 复位 `alice`、`erin` 的额度，可重复执行。
 
-**通过标准：** 末行输出 `RESULT: PASS=117 FAIL=0`。
+**通过标准：** 末行输出 `RESULT: PASS=126 FAIL=0`。
 
 ### 3.2 关键结果实测
 
@@ -285,7 +285,28 @@ curl -X PATCH -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: applicat
 
 **通过标准：** 配置后 `GET /v1/accounts/<id>` 返回的 `rate_limits` 与配置一致；`deploy/smoke.sh` 第 18 节全部 PASS。
 
-### 4.6 停止服务
+### 4.6 数据保留与汇总
+
+`usage_events`、`auth_audit` 按月分区；loom 每 `retention.interval`（默认 10 分钟）执行一轮维护：提前建好 3 个月的分区、把明细汇总进 `usage_daily`、按保留期删除过期分区与幂等记录。多副本时每个任务只由一个副本执行。
+
+| 数据 | 保留期（配置项） | 默认 |
+| --- | --- | --- |
+| `usage_events` 明细 | `retention.usage_events_days` | `180` 天，按整月删除，且只删已汇总的部分 |
+| `usage_daily` 日汇总 | 永久 | — |
+| `auth_audit` 准入审计 | `retention.auth_audit_days` | `90` 天 |
+| `settled_requests` 幂等记录 | `retention.settled_requests_days` | `7` 天，须大于 OTLP 补账的最大延迟 |
+
+立即执行一轮（例如调整保留期后）：
+
+```bash
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:9090/v1/admin/maintenance
+```
+
+**通过标准：** 返回的 `tasks` 中每项为 `ok` 或 `skipped`（另一副本正在执行）；`select through from usage_rollup` 为当天 UTC 零点。
+
+用量汇总接口 `GET /v1/usage/summary` 对汇总水位线（当天零点）之前的日子查 `usage_daily`，`since` 早于水位线时按 UTC 日对齐。准入审计中未识别出 Key 的拒绝按分钟聚合，`count` 是合并的请求数，`credential_preview` 是凭据前 8 位（`*` 为溢出组）。
+
+### 4.7 停止服务
 
 ```bash
 kubectl -n loom scale deploy/loom --replicas=0
@@ -309,4 +330,6 @@ kubectl -n loom scale deploy/loom --replicas=0
 - 现象：宿主机拉取 `ghcr.io/cloudnative-pg/*` 或 `quay.io/jetstack/*` 长时间无进度。从网盘 `bd://deploy/images/` 离线导入，见 2.3。
 - 现象：配置了 TPM 后请求总是 `429 api_key/tpm` 或 `account/tpm`。先查 `tpm` 是否小于单次预扣估值（`reserve_tokens` 的输入 + 输出，默认 2,048）；准入按估值计入，上限小于估值时任何请求都无法通过。
 - 现象：`in_flight` 长时间不归零、并发名额被占满。先查是否有未结算的预扣（`reservations` 表）；正常情况下 RLS 在响应结束时结算，两条用量通道都没送达时要等 `reservation_ttl`（15 分钟）由 reaper 释放。
+- 现象：结算报 `no partition of relation "usage_events" found for row`。先查告警 `LoomMaintenanceFailing` / `LoomMaintenanceStale` 与指标 `loom_maintenance_runs_total{task="partitions"}`；分区维护连续失败超过提前量（3 个月）才会出现。处理：修复后执行 `POST /v1/admin/maintenance`。
+- 现象：用量汇总比明细多。`usage_daily` 永久保留，明细超过保留期后被删除，汇总仍包含这些日子，属正常；核对单笔时只能在明细保留期内进行。
 - 现象：某模型只改了 PG `model_pricing` 表但价格没变。先查 `GET /v1/pricing` 的 `pg` 段；PG 兜底有 `pricing_ttl`（30s）正缓存，管理 API 写入会主动清缓存，直接改库需等缓存过期。
