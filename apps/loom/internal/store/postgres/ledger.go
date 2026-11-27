@@ -205,3 +205,29 @@ func usageEventParams(ev store.UsageEvent) sqlcgen.SettleUsageParams {
 	}
 	return params
 }
+
+// ReserveQuota 见 store.Store：一条 SQL 完成两级预扣与预扣记录；任一级不满足时回滚事务。
+func (d *DB) ReserveQuota(ctx context.Context, r store.Reservation) (reserved store.QuotaReservation, err error) {
+	err = d.inTx(ctx, "ReserveQuota", func(q *sqlcgen.Queries) error {
+		row, err := q.ReserveQuota(ctx, sqlcgen.ReserveQuotaParams{
+			Nanos:     r.Nanos,
+			KeyID:     r.APIKeyID,
+			AccountID: r.AccountID,
+			RequestID: r.RequestID,
+			Model:     r.Model,
+			ExpiresAt: r.ExpiresAt,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.ErrInsufficientQuota // 回滚已执行的部分
+		}
+		if err != nil {
+			return d.fail("ReserveQuota", err)
+		}
+		reserved = store.QuotaReservation{
+			APIKey:  store.QuotaState{Limit: row.KeyQuotaLimit, Used: row.KeyQuotaUsed, Reserved: row.KeyReserved},
+			Account: store.QuotaState{Limit: row.AccountQuotaLimit, Used: row.AccountQuotaUsed, Reserved: row.AccountReserved},
+		}
+		return nil
+	})
+	return reserved, err
+}

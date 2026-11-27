@@ -743,3 +743,34 @@ func (m *Store) ListAdminAudit(_ context.Context, limit int) ([]store.AdminAudit
 	}
 	return out, nil
 }
+
+// ReserveQuota 见 store.Store：在同一把锁内检查两级条件，全部满足才同时生效。
+func (m *Store) ReserveQuota(ctx context.Context, r store.Reservation) (store.QuotaReservation, error) {
+	if err := ctx.Err(); err != nil {
+		return store.QuotaReservation{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	apiKey, keyOK := m.apiKeys[r.APIKeyID]
+	account, accountOK := m.accounts[r.AccountID]
+	if !keyOK || !accountOK {
+		return store.QuotaReservation{}, store.ErrInsufficientQuota
+	}
+	expired := apiKey.ExpiresAt != nil && apiKey.ExpiresAt.Before(time.Now())
+	if apiKey.Status != store.StatusActive || expired || account.Status != store.StatusActive {
+		return store.QuotaReservation{}, store.ErrInsufficientQuota
+	}
+	keyState, keyOK := reserve(apiKey.QuotaLimit, apiKey.QuotaUsed, apiKey.Reserved, r.Nanos)
+	accountState, accountOK := reserve(account.QuotaLimit, account.QuotaUsed, account.Reserved, r.Nanos)
+	if !keyOK || !accountOK {
+		return store.QuotaReservation{}, store.ErrInsufficientQuota
+	}
+	now := time.Now()
+	apiKey.Reserved, apiKey.LastUsedAt = keyState.Reserved, &now
+	account.Reserved = accountState.Reserved
+	if r.CreatedAt.IsZero() {
+		r.CreatedAt = now
+	}
+	m.reserv[r.RequestID] = r
+	return store.QuotaReservation{APIKey: keyState, Account: accountState}, nil
+}

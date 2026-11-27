@@ -126,6 +126,12 @@ func (q QuotaState) Remaining() (int64, bool) {
 	return *q.Limit - q.Used - q.Reserved, true
 }
 
+// QuotaReservation 是一次成功预扣后两级额度的快照。
+type QuotaReservation struct {
+	APIKey  QuotaState
+	Account QuotaState
+}
+
 // Reservation 鉴权阶段写入的预扣记录。
 type Reservation struct {
 	RequestID string    `json:"request_id"`
@@ -319,6 +325,10 @@ type Store interface {
 	ReleaseAPIKeyReservation(ctx context.Context, apiKeyID uuid.UUID, nanos int64) error
 	ReserveAccountQuota(ctx context.Context, accountID uuid.UUID, nanos int64) (QuotaState, error)
 	ReleaseAccountReservation(ctx context.Context, accountID uuid.UUID, nanos int64) error
+
+	// ReserveQuota 单事务：API Key 与账户两级条件预扣，并写入预扣记录；任一级不满足（额度不足、已停用、已过期、
+	// 不存在）时整体回滚并返回 ErrInsufficientQuota，不留下任何冻结。r.Nanos 必须大于 0。
+	ReserveQuota(ctx context.Context, r Reservation) (QuotaReservation, error)
 
 	// reservations
 	CreateReservation(ctx context.Context, r Reservation) error

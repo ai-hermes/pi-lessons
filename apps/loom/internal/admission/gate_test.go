@@ -376,3 +376,29 @@ func TestAdmitDeniesUndefinedGroup(t *testing.T) {
 	assert.Zero(t, v.ReservedNanos)
 	assert.True(t, f.admit(ghost, "").Allowed, "non-model requests only authenticate")
 }
+
+// blockingStore 的 API Key 查询一直阻塞到 context 结束，模拟 PG 变慢或行锁。
+type blockingStore struct{ Store }
+
+func (blockingStore) GetAPIKeyByHash(ctx context.Context, _ string) (store.APIKey, error) {
+	<-ctx.Done()
+	return store.APIKey{}, ctx.Err()
+}
+
+func TestAdmitGivesUpAtItsDeadline(t *testing.T) {
+	f := newFixture(t, pricing.ReserveEstimate{Input: 1024, Output: 1024})
+	f.gate = New(
+		Options{Timeout: 50 * time.Millisecond},
+		blockingStore{f.gate.store},
+		f.gate.pricer,
+		f.gate.quotaReserver,
+		f.gate.metrics,
+		f.gate.log,
+	)
+
+	start := time.Now()
+	v := f.admit(f.bob, "lab-model")
+
+	assert.Equal(t, ReasonInternalError, v.Reason)
+	assert.Less(t, time.Since(start), time.Second, "admission returns at its own deadline, before the gateway's 2s")
+}

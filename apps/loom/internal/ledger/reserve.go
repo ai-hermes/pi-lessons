@@ -17,8 +17,9 @@ type ReservationHold struct {
 	Remaining *int64
 }
 
-// ReserveQuota 对 Key 与账户做原子预扣，并记录预扣以便结算或过期释放。
-// 任一级额度不足返回 ErrInsufficientQuota，且不留下任何冻结。
+// ReserveQuota 对 API Key 与账户做原子预扣并记录预扣，以便结算或过期释放。
+// 两级预扣与预扣记录在同一个事务中完成：任一级额度不足返回 ErrInsufficientQuota，
+// context 被取消（例如准入超时）时整体回滚，都不会留下冻结。
 func (l *Ledger) ReserveQuota(
 	ctx context.Context,
 	apiKey store.APIKey,
@@ -26,60 +27,34 @@ func (l *Ledger) ReserveQuota(
 	requestID string,
 ) (ReservationHold, error) {
 	nanos := unitPrice.ReserveNanos
-	keyState, err := l.store.ReserveAPIKeyQuota(ctx, apiKey.ID, nanos)
-	if err != nil {
-		return ReservationHold{}, fmt.Errorf("reserve apiKey quota: %w", err)
-	}
-	accountState, err := l.store.ReserveAccountQuota(ctx, apiKey.AccountID, nanos)
-	if err != nil {
-		l.undoAPIKeyReservation(ctx, apiKey, nanos)
-		return ReservationHold{}, fmt.Errorf("reserve account quota: %w", err)
-	}
-
-	if nanos > 0 {
-		now := time.Now()
-		err := l.store.CreateReservation(ctx, store.Reservation{
-			RequestID: requestID,
-			APIKeyID:  apiKey.ID,
-			AccountID: apiKey.AccountID,
-			Model:     unitPrice.Model,
-			Nanos:     nanos,
-			ExpiresAt: now.Add(l.opts.ReservationTTL),
-			CreatedAt: now,
-		})
+	if nanos <= 0 {
+		// 免费请求不预扣，只读出两级额度用于返回剩余额度
+		keyState, err := l.store.ReserveAPIKeyQuota(ctx, apiKey.ID, 0)
 		if err != nil {
-			l.undoAPIKeyReservation(ctx, apiKey, nanos)
-			l.undoAccountReservation(ctx, apiKey, nanos)
-			return ReservationHold{}, fmt.Errorf("record reservation: %w", err)
+			return ReservationHold{}, fmt.Errorf("read api key quota: %w", err)
 		}
+		accountState, err := l.store.ReserveAccountQuota(ctx, apiKey.AccountID, 0)
+		if err != nil {
+			return ReservationHold{}, fmt.Errorf("read account quota: %w", err)
+		}
+		return ReservationHold{Remaining: minRemaining(keyState, accountState)}, nil
 	}
 
+	now := time.Now()
+	reserved, err := l.store.ReserveQuota(ctx, store.Reservation{
+		RequestID: requestID,
+		APIKeyID:  apiKey.ID,
+		AccountID: apiKey.AccountID,
+		Model:     unitPrice.Model,
+		Nanos:     nanos,
+		ExpiresAt: now.Add(l.opts.ReservationTTL),
+		CreatedAt: now,
+	})
+	if err != nil {
+		return ReservationHold{}, fmt.Errorf("reserve quota: %w", err)
+	}
 	l.metrics.ReservedNanos.WithLabelValues(unitPrice.Model).Add(float64(nanos))
-	return ReservationHold{Nanos: nanos, Remaining: minRemaining(keyState, accountState)}, nil
-}
-
-// undoAPIKeyReservation / undoAccountReservation 在预扣中途失败时撤销已冻结的额度。此时还没有预扣记录，RunReaper 无法兜底，
-// 撤销失败只能记录日志、人工核对。
-func (l *Ledger) undoAPIKeyReservation(ctx context.Context, apiKey store.APIKey, nanos int64) {
-	if err := l.store.ReleaseAPIKeyReservation(ctx, apiKey.ID, nanos); err != nil {
-		l.log.Error(
-			"undo apiKey reservation failed",
-			"err", err,
-			"key_id", apiKey.ID,
-			"nanos", nanos,
-		)
-	}
-}
-
-func (l *Ledger) undoAccountReservation(ctx context.Context, apiKey store.APIKey, nanos int64) {
-	if err := l.store.ReleaseAccountReservation(ctx, apiKey.AccountID, nanos); err != nil {
-		l.log.Error(
-			"undo account reservation failed",
-			"err", err,
-			"account_id", apiKey.AccountID,
-			"nanos", nanos,
-		)
-	}
+	return ReservationHold{Nanos: nanos, Remaining: minRemaining(reserved.APIKey, reserved.Account)}, nil
 }
 
 func minRemaining(states ...store.QuotaState) *int64 {

@@ -261,7 +261,24 @@ check "pprof is off by default" 404 "$(curl -s -o /dev/null -w '%{http_code}' -H
 ops "$ADMIN_TOKEN" DELETE "/v1/admin/tokens/$WRITER_ID" >/dev/null
 kill "$OPS_PF" 2>/dev/null; wait "$OPS_PF" 2>/dev/null
 
-echo "### 17. FailClosed：loom 副本缩到 0 → 拒绝；恢复 → 放行"
+echo "### 17. 超时预算：PG 行锁时准入在自己的截止时间（1.5s）内拒绝，预扣整体回滚"
+# 第 16 节的充值让 cache-sync 有了上限；复位为不限额并清空预扣，保证请求真的走到被锁的行
+admin_post "/v1/accounts/$SYNC_AID/quota" '{"quota_limit_nanos":null,"quota_used_nanos":0}' >/dev/null
+admin_post "/v1/keys/$SYNC_KID/quota" '{"quota_limit_nanos":null,"quota_used_nanos":0}' >/dev/null
+kubectl -n loom exec deploy/loom-postgres -- psql -U loom -d loom -qc \
+  "BEGIN; SELECT 1 FROM accounts WHERE name = 'cache-sync' FOR UPDATE; SELECT pg_sleep(6); COMMIT;" >/dev/null 2>&1 &
+LOCK=$!
+sleep 1.5
+OUT=$(curl -s -o /dev/null -D - -w 'time=%{time_total}\n' --max-time 30 -H "x-api-key: $SYNC_KEY" -H 'content-type: application/json' \
+  -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' "$BASE/v1/chat/completions" | tr -d '\r')
+check "locked account row → 500" 500 "$(echo "$OUT" | awk 'NR==1{print $2}')"
+check "deny reason internal_error" internal_error "$(echo "$OUT" | awk -F': ' 'tolower($1)=="x-loom-deny-reason"{print $2}')"
+check "answered before the gateway's 2s extAuth timeout" yes "$(echo "$OUT" | sed -n 's/^time=//p' | awk '{print ($1 < 2.0) ? "yes" : "no"}')"
+wait "$LOCK"
+check "no reservation leaked after the timeout" "0|0|0" "$(q "select k.reserved || '|' || a.reserved || '|' || (select count(*) from reservations r where r.account_id = a.id) from accounts a join api_keys k on k.account_id = a.id where a.name = 'cache-sync'")"
+check "requests succeed once the lock is gone" 200 "$(code -H "x-api-key: $SYNC_KEY" -H 'content-type: application/json' -d '{"model":"lab-model","messages":[{"role":"user","content":"hi"}]}' $BASE/v1/chat/completions)"
+
+echo "### 18. FailClosed：loom 副本缩到 0 → 拒绝；恢复 → 放行"
   kubectl -n loom scale deploy/loom --replicas=0 >/dev/null
   sleep 8
   C=$(code -H "x-api-key: $(key dave)" $BASE/echo)

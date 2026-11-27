@@ -49,6 +49,9 @@ type Querier interface {
 	ReleaseKeyReservation(ctx context.Context, arg ReleaseKeyReservationParams) error
 	ReserveAccountQuota(ctx context.Context, arg ReserveAccountQuotaParams) (ReserveAccountQuotaRow, error)
 	ReserveKeyQuota(ctx context.Context, arg ReserveKeyQuotaParams) (ReserveKeyQuotaRow, error)
+	// 一次往返完成两级预扣与预扣记录。数据修改 CTE 的每个子语句都会执行：
+	// 任一级不满足时结果为空行，调用方必须回滚事务以撤销已执行的部分。
+	ReserveQuota(ctx context.Context, arg ReserveQuotaParams) (ReserveQuotaRow, error)
 	RevokeAdminToken(ctx context.Context, id uuid.UUID) (int64, error)
 	SetAccountQuota(ctx context.Context, arg SetAccountQuotaParams) error
 	SetKeyQuota(ctx context.Context, arg SetKeyQuotaParams) error

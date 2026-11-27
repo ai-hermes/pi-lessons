@@ -26,6 +26,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"api keys", testAPIKeys},
 		{"reserve respects the limit", testReserveRespectsLimit},
 		{"reserve rejects inactive key and account", testReserveRejectsInactive},
+		{"two-level reserve is all or nothing", testReserveQuotaIsAtomic},
 		{"settle replaces reservation and is idempotent", testSettleIsIdempotent},
 		{"settle without reservation charges directly", testSettleWithoutReservation},
 		{"release expired reservations", testReleaseExpired},
@@ -197,6 +198,44 @@ func testReserveRejectsInactive(t *testing.T, s store.Store) {
 
 	_, err = s.ReserveAPIKeyQuota(ctx, uuid.New(), 1)
 	require.ErrorIs(t, err, store.ErrInsufficientQuota, "an unknown key reserves nothing")
+}
+
+func testReserveQuotaIsAtomic(t *testing.T, s store.Store) {
+	account := newAccount(t, s, new(int64(100)))
+	apiKey := newAPIKey(t, s, account.ID, new(int64(1000)))
+	reservation := func(nanos int64) store.Reservation {
+		return store.Reservation{
+			RequestID: unique("req"),
+			APIKeyID:  apiKey.ID,
+			AccountID: account.ID,
+			Model:     "m",
+			Nanos:     nanos,
+			ExpiresAt: time.Now().Add(time.Hour),
+		}
+	}
+
+	ok := reservation(60)
+	reserved, err := s.ReserveQuota(ctx, ok)
+	require.NoError(t, err)
+	assert.Equal(t, int64(60), reserved.APIKey.Reserved)
+	assert.Equal(t, int64(60), reserved.Account.Reserved)
+	_, err = s.GetReservation(ctx, ok.RequestID)
+	require.NoError(t, err)
+
+	tooMuchForAccount := reservation(60) // API Key 还剩 940，账户只剩 40
+	_, err = s.ReserveQuota(ctx, tooMuchForAccount)
+	require.ErrorIs(t, err, store.ErrInsufficientQuota)
+	_, keyReserved, _, accountReserved := quotaOf(t, s, apiKey.ID)
+	assert.Equal(t, [2]int64{60, 60}, [2]int64{keyReserved, accountReserved}, "the api key part is rolled back too")
+	_, err = s.GetReservation(ctx, tooMuchForAccount.RequestID)
+	require.ErrorIs(t, err, store.ErrNotFound)
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = s.ReserveQuota(cancelled, reservation(10))
+	require.Error(t, err)
+	_, keyReserved, _, accountReserved = quotaOf(t, s, apiKey.ID)
+	assert.Equal(t, [2]int64{60, 60}, [2]int64{keyReserved, accountReserved}, "a cancelled reserve changes nothing")
 }
 
 func reserveFor(t *testing.T, s store.Store, apiKey store.APIKey, nanos int64, expiresAt time.Time) string {

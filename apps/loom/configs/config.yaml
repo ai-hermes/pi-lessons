@@ -27,10 +27,11 @@ migrations:
   auto: true
 
 admission:
+  timeout: 1500ms               # 单次准入截止时间，须小于网关 extAuth 超时（AgentGateway 默认 2s）；超时按 internal_error 拒绝
   key_cache:
     enabled: true
     size: 10000
-    ttl: 5s              # 停用 Key 最迟 ttl 后在所有副本生效（管理 API 只会清当前副本的缓存）
+    ttl: 5s              # 管理操作经 LISTEN/NOTIFY 立即清理所有副本；ttl 是广播断线时的兜底
     negative_ttl: 5s
   audit_queue: 4096
 

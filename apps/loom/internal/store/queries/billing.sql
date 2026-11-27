@@ -96,3 +96,37 @@ DELETE FROM model_pricing WHERE model = $1;
 UPDATE usage_events
 SET gateway_cost_nanos = $2
 WHERE request_id = $1 AND gateway_cost_nanos IS NULL;
+
+-- name: ReserveQuota :one
+-- 一次往返完成两级预扣与预扣记录。数据修改 CTE 的每个子语句都会执行：
+-- 任一级不满足时结果为空行，调用方必须回滚事务以撤销已执行的部分。
+WITH api_key AS (
+    UPDATE api_keys
+    SET reserved = api_keys.reserved + sqlc.arg(nanos), last_used_at = now(), updated_at = now()
+    WHERE api_keys.id = sqlc.arg(key_id)
+      AND api_keys.status = 'active'
+      AND (api_keys.expires_at IS NULL OR api_keys.expires_at > now())
+      AND (api_keys.quota_limit IS NULL
+           OR api_keys.quota_limit - api_keys.quota_used - api_keys.reserved >= sqlc.arg(nanos))
+    RETURNING api_keys.quota_limit, api_keys.quota_used, api_keys.reserved
+), account AS (
+    UPDATE accounts
+    SET reserved = accounts.reserved + sqlc.arg(nanos), updated_at = now()
+    WHERE accounts.id = sqlc.arg(account_id)
+      AND accounts.status = 'active'
+      AND (accounts.quota_limit IS NULL
+           OR accounts.quota_limit - accounts.quota_used - accounts.reserved >= sqlc.arg(nanos))
+    RETURNING accounts.quota_limit, accounts.quota_used, accounts.reserved
+), reservation AS (
+    INSERT INTO reservations (request_id, key_id, account_id, model, nanos, expires_at)
+    VALUES (sqlc.arg(request_id), sqlc.arg(key_id), sqlc.arg(account_id), sqlc.arg(model), sqlc.arg(nanos),
+            sqlc.arg(expires_at))
+    RETURNING request_id
+)
+SELECT api_key.quota_limit AS key_quota_limit,
+       api_key.quota_used  AS key_quota_used,
+       api_key.reserved    AS key_reserved,
+       account.quota_limit AS account_quota_limit,
+       account.quota_used  AS account_quota_used,
+       account.reserved    AS account_reserved
+FROM api_key, account, reservation;
