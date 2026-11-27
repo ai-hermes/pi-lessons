@@ -12,9 +12,8 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-ssh "${HOST}" 'bash -s' -- <<'REMOTE'
+ssh "${HOST}" "SKIP_FAILCLOSED=${SKIP_FAILCLOSED} SKIP_RELOAD=${SKIP_RELOAD} bash -s" <<'REMOTE'
 set -u
-SKIP_FAILCLOSED=0; SKIP_RELOAD=0
 export PATH=/opt/agentgateway/k8s/bin:$PATH
 BASE=http://127.0.0.1:14001
 ADMIN_TOKEN=loom-admin-token-change-me
@@ -195,7 +194,41 @@ sleep 4
 check "both channels: otlp backfills gateway cost on rls-settled row" 1820000 "$(q "select gateway_cost_nanos from usage_events where model='lab-model' and account_id=(select id from accounts where name='dave') order by id desc limit 1")"
 
 if [ "$SKIP_FAILCLOSED" = 0 ]; then
-echo "### 15. FailClosed：loom 副本缩到 0 → 拒绝；恢复 → 放行"
+echo "### 15. 多副本缓存失效：只在一个副本上停用 Key，所有副本立即拒绝（不等缓存 TTL）"
+SYNC_KEY=loom-cache-sync-000000000000001
+printf 'accounts:\n  - name: cache-sync\n    keys:\n      - name: default\n        plaintext: %s\n' "$SYNC_KEY" \
+  | kubectl -n loom exec -i deploy/loom -- loom seed --config /etc/loom/config.yaml --file /dev/stdin >/dev/null
+sleep 1 # seed 也会广播失效消息，等它送达后再取指标基线
+SYNC_AID=$(admin /v1/accounts | python3 -c "import json,sys; print(next(a['id'] for a in json.load(sys.stdin)['accounts'] if a['name']=='cache-sync'))")
+SYNC_KID=$(admin "/v1/accounts/$SYNC_AID/keys" | python3 -c "import json,sys; print(json.load(sys.stdin)['keys'][0]['id'])")
+# invalidations <origin>：所有副本上 kind=api_key、指定 origin 的失效次数之和
+invalidations() {
+  for pod in $(kubectl -n loom get pods -l app=loom -o name); do
+    kubectl -n loom exec "$pod" -- wget -qO- http://127.0.0.1:9090/metrics 2>/dev/null
+  done | awk -v o="$1" '$1 ~ "^loom_cache_invalidations_total\\{" && $1 ~ "kind=\"api_key\"" && $1 ~ "origin=\""o"\"" {s+=$2} END {printf "%d", s}'
+}
+# patch_key_on <pod> <status>：经 port-forward 只在指定副本上调用管理 API
+patch_key_on() {
+  kubectl -n loom port-forward "$1" 19090:9090 >/dev/null 2>&1 & local pf=$!
+  sleep 2
+  curl -s -o /dev/null -w '%{http_code}' -X PATCH -H "Authorization: Bearer $ADMIN_TOKEN" \
+    -H 'Content-Type: application/json' -d "{\"status\":\"$2\"}" "http://127.0.0.1:19090/v1/keys/$SYNC_KID"
+  kill "$pf" 2>/dev/null; wait "$pf" 2>/dev/null
+}
+REPLICAS=$(kubectl -n loom get pods -l app=loom --no-headers | wc -l | tr -d ' ')
+POD_A=$(kubectl -n loom get pods -l app=loom -o name | head -1)
+for i in 1 2 3 4; do code -H "x-api-key: $SYNC_KEY" $BASE/echo >/dev/null; done   # 让 Key 进入缓存
+LOCAL0=$(invalidations local); REMOTE0=$(invalidations remote)
+check "disable key via one replica" 200 "$(patch_key_on "$POD_A" disabled)"
+DENIED=0
+for i in $(seq 1 10); do [ "$(code -H "x-api-key: $SYNC_KEY" $BASE/echo)" = 403 ] && DENIED=$((DENIED+1)); done
+check "all 10 immediate requests denied on every replica" 10 "$DENIED"
+check "publisher replica invalidated locally once" 1 $(( $(invalidations local) - LOCAL0 ))
+check "other replicas invalidated remotely" $((REPLICAS - 1)) $(( $(invalidations remote) - REMOTE0 ))
+check "re-enable key" 200 "$(patch_key_on "$POD_A" active)"
+check "re-enabled key accepted immediately" 200 "$(code -H "x-api-key: $SYNC_KEY" $BASE/echo)"
+
+echo "### 16. FailClosed：loom 副本缩到 0 → 拒绝；恢复 → 放行"
   kubectl -n loom scale deploy/loom --replicas=0 >/dev/null
   sleep 8
   C=$(code -H "x-api-key: $(key dave)" $BASE/echo)

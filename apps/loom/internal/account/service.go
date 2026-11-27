@@ -50,40 +50,28 @@ type Store interface {
 // PriceBook 是管理操作需要的价目表能力。
 type PriceBook interface {
 	PriceConfig() *pricing.PriceConfig
-	InvalidateFallbackCache(model string)
 	AgentGatewayCatalog(ctx context.Context) (pricing.AgentGatewayCatalog, error)
 }
 
-// CacheInvalidator 在 API Key 或账户被修改后清除本副本内的缓存（准入缓存、结算归属缓存）。
+// CacheInvalidator 在 API Key、账户或兜底定价被修改后清除缓存（本副本与其他副本）。
 type CacheInvalidator interface {
-	InvalidateAPIKey(apiKeyID uuid.UUID)
-	InvalidateAccount(accountID uuid.UUID)
+	InvalidateAPIKey(ctx context.Context, apiKeyID uuid.UUID)
+	InvalidateAccount(ctx context.Context, accountID uuid.UUID)
+	InvalidateModelPrice(ctx context.Context, model string)
 }
 
 // Service 管理操作。
 type Service struct {
 	store     Store
 	prices    PriceBook
-	caches    []CacheInvalidator
+	caches    CacheInvalidator
 	keyPrefix string
 }
 
-// New 创建管理服务；caches 可以为空（如 seed 命令不常驻、没有缓存）。
-func New(storage Store, prices PriceBook, keyPrefix string, caches ...CacheInvalidator) *Service {
+// New 创建管理服务。
+func New(storage Store, prices PriceBook, keyPrefix string, caches CacheInvalidator) *Service {
 	if keyPrefix == "" {
 		keyPrefix = "loom-"
 	}
 	return &Service{store: storage, prices: prices, caches: caches, keyPrefix: keyPrefix}
-}
-
-func (s *Service) invalidateAPIKey(id uuid.UUID) {
-	for _, cache := range s.caches {
-		cache.InvalidateAPIKey(id)
-	}
-}
-
-func (s *Service) invalidateAccount(id uuid.UUID) {
-	for _, cache := range s.caches {
-		cache.InvalidateAccount(id)
-	}
 }

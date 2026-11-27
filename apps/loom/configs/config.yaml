@@ -13,6 +13,7 @@ log:
 
 postgres:
   dsn_file: /etc/loom/pg-dsn
+  # listen_dsn: 跨副本缓存失效用 LISTEN 长连接；主 DSN 经过事务模式连接池（PgBouncer 等）时指向可直连的地址
   min_conns: 2
   max_conns: 20
   max_conn_lifetime: 30m

@@ -71,7 +71,7 @@ func (s *Service) UpdateAccount(ctx context.Context, id uuid.UUID, in UpdateAcco
 	if err != nil {
 		return store.Account{}, err
 	}
-	s.invalidateAccount(id)
+	s.caches.InvalidateAccount(ctx, id)
 	return account, nil
 }
 

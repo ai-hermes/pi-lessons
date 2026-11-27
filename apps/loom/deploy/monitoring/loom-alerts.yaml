@@ -25,6 +25,12 @@ groups:
         annotations:
           summary: 'PG 操作 {{ $labels.op }} 持续报错。'
 
+      - alert: LoomCacheSyncReconnecting
+        expr: sum(increase(loom_cache_sync_reconnects_total[10m])) > 2
+        labels: {severity: warning}
+        annotations:
+          summary: 跨副本缓存失效的 LISTEN 连接反复断开；断开期间其他副本的修改要等缓存 TTL 才生效。
+
       - alert: LoomStorePoolSaturated
         expr: max(loom_store_pool_acquired_conns / loom_store_pool_max_conns) > 0.9
         for: 5m

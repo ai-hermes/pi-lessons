@@ -95,7 +95,7 @@ func (s *Service) UpdateAPIKey(ctx context.Context, id uuid.UUID, in APIKeyUpdat
 	if err != nil {
 		return store.APIKey{}, err
 	}
-	s.invalidateAPIKey(id)
+	s.caches.InvalidateAPIKey(ctx, id)
 	return apiKey, nil
 }
 
@@ -104,7 +104,7 @@ func (s *Service) ResetAPIKeyQuota(ctx context.Context, id uuid.UUID, in QuotaRe
 	if err := s.store.SetAPIKeyQuota(ctx, id, in.LimitNanos, in.UsedNanos); err != nil {
 		return store.APIKey{}, err
 	}
-	s.invalidateAPIKey(id)
+	s.caches.InvalidateAPIKey(ctx, id)
 	return s.store.GetAPIKey(ctx, id)
 }
 

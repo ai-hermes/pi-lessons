@@ -52,6 +52,7 @@ type Log struct {
 type Postgres struct {
 	DSN              string        `koanf:"dsn"`
 	DSNFile          string        `koanf:"dsn_file"`
+	ListenDSN        string        `koanf:"listen_dsn"` // 可选：LISTEN 用的直连地址（主 DSN 经过事务模式连接池时）
 	MinConns         int32         `koanf:"min_conns"`
 	MaxConns         int32         `koanf:"max_conns"`
 	MaxConnLifetime  time.Duration `koanf:"max_conn_lifetime"`

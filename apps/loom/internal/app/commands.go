@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/account"
+	"github.com/ai-hermes/pi-lessons/apps/loom/internal/cachesync"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/config"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/pricing"
 	"github.com/ai-hermes/pi-lessons/apps/loom/internal/store/postgres"
@@ -47,7 +48,9 @@ func Seed(ctx context.Context, cfg *config.Config, path string) ([]string, error
 	if err != nil {
 		return nil, fmt.Errorf("load pricing: %w", err)
 	}
-	return account.New(db, prices, cfg.Admin.KeyPrefix).Seed(ctx, path)
+	// seed 进程没有缓存，只负责广播，让在线副本立即看到变更
+	caches := cachesync.New(db, cachesync.Caches{}, metrics, log)
+	return account.New(db, prices, cfg.Admin.KeyPrefix, caches).Seed(ctx, path)
 }
 
 // RenderAgentGatewayCatalog 把 pricing.yaml 渲染为 agentgateway modelCatalog 的 catalog.json。
