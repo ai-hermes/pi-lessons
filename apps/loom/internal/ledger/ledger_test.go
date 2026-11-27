@@ -36,6 +36,7 @@ groups:
   vip:     {ratio: 0.9}
 models:
   lab-model: {model_ratio: 0.5, completion_ratio: 2, cache_ratio: 0.1}
+  lab-image: {model_price: 0.001}
 `
 
 func newFixture(t *testing.T) *fixture {
@@ -223,4 +224,73 @@ func TestUsageTimeFallsBackToSettlementTime(t *testing.T) {
 	assert.Equal(t, now, usageTime(time.Time{}, now), "zero time")
 	assert.Equal(t, now, usageTime(now.Add(-2*time.Hour), now), "too late to be rolled up into its own day")
 	assert.Equal(t, now, usageTime(now.Add(time.Hour), now), "clock skew into the future")
+}
+
+// settleWithoutUsage 预扣后以“没有任何用量、状态码为 status”结算，返回账户已用额度与结算记录。
+func settleWithoutUsage(t *testing.T, f *fixture, model string, status int) (int64, store.UsageEvent) {
+	t.Helper()
+	unitPrice, err := f.prices.Lookup(context.Background(), model, "default")
+	require.NoError(t, err)
+	requestID := uuid.NewString()
+	_, err = f.ledger.ReserveQuota(context.Background(), ReserveRequest{APIKey: f.apiKey, UnitPrice: unitPrice, RequestID: requestID})
+	require.NoError(t, err)
+
+	inserted, err := f.ledger.Settle(context.Background(), UsageReport{
+		RequestID: requestID,
+		APIKeyID:  f.apiKey.ID,
+		Model:     model,
+		Status:    status,
+		Channel:   "test",
+	})
+	require.NoError(t, err)
+	require.True(t, inserted)
+
+	apiKey, err := f.st.GetAPIKey(context.Background(), f.apiKey.ID)
+	require.NoError(t, err)
+	assert.Zero(t, apiKey.Reserved, "the hold is always released")
+	events, err := f.st.ListUsage(context.Background(), &f.apiKey.ID, nil, 1)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	return apiKey.QuotaUsed, events[0]
+}
+
+func TestIncompleteResponseIsChargedAtTheReserveEstimate(t *testing.T) {
+	f := newFixture(t)
+
+	used, event := settleWithoutUsage(t, f, "lab-model", 200)
+
+	assert.Equal(t, int64(3_072_000), used, "a stream cut before its usage chunk costs the reserve estimate")
+	assert.Equal(t, store.BillingByReserveEstimate, event.BillingBasis)
+	incomplete := testutil.ToFloat64(f.metrics.IncompleteResponses.WithLabelValues("lab-model"))
+	assert.InDelta(t, 1, incomplete, 0)
+}
+
+func TestResponsesWithoutUsageThatAreNotIncomplete(t *testing.T) {
+	cases := []struct {
+		name   string
+		model  string
+		status int
+		want   int64
+	}{
+		{"upstream error is free", "lab-model", 400, 0},
+		{"server error is free", "lab-model", 503, 0},
+		{"unknown status (older gateway policy) stays free", "lab-model", 0, 0},
+		{"per-call models do not depend on tokens", "lab-image", 200, 1_000_000},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			used, event := settleWithoutUsage(t, newFixture(t), c.model, c.status)
+			assert.Equal(t, c.want, used)
+			assert.Equal(t, store.BillingByUsage, event.BillingBasis)
+		})
+	}
+}
+
+func TestIncompleteResponsePolicyFree(t *testing.T) {
+	f := newFixtureWith(t, Options{IncompleteResponse: IncompleteFree})
+
+	used, event := settleWithoutUsage(t, f, "lab-model", 200)
+
+	assert.Zero(t, used)
+	assert.Equal(t, store.BillingByUsage, event.BillingBasis)
 }

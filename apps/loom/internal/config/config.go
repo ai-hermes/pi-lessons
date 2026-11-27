@@ -132,7 +132,9 @@ type Ledger struct {
 	ReaperInterval  time.Duration   `koanf:"reaper_interval"`
 	ReaperBatch     int             `koanf:"reaper_batch"`
 	CostSource      string          `koanf:"cost_source"` // loom | gateway_prefer
-	OwnerCacheTTL   time.Duration   `koanf:"owner_cache_ttl"`
+	// IncompleteResponse 状态 2xx 却没有用量的响应（流在最后的 usage chunk 前中断）：charge_reserve | free
+	IncompleteResponse string        `koanf:"incomplete_response"`
+	OwnerCacheTTL      time.Duration `koanf:"owner_cache_ttl"`
 }
 
 // ReserveEstimate 准入阶段预扣使用的 token 估值。
@@ -170,6 +172,7 @@ type OTLPAttributeNames struct {
 	RequestID        string `koanf:"request_id"`
 	APIKeyID         string `koanf:"key_id"`
 	Account          string `koanf:"account"`
+	Status           string `koanf:"status"`
 }
 
 // Admin 管理 API。
@@ -257,7 +260,7 @@ func defaults() map[string]any {
 		"ledger": map[string]any{
 			"reserve_tokens":  map[string]any{"input": 1024, "output": 1024},
 			"reservation_ttl": "15m", "reaper_interval": "1m", "reaper_batch": 200,
-			"cost_source": "loom", "owner_cache_ttl": "60s",
+			"cost_source": "loom", "owner_cache_ttl": "60s", "incomplete_response": "charge_reserve",
 		},
 		"ratelimit": map[string]any{"domain": "loom-billing"},
 		"otlp": map[string]any{
@@ -276,6 +279,7 @@ func defaults() map[string]any {
 				"request_id":    "loom.request.id",
 				"key_id":        "loom.key.id",
 				"account":       "loom.client.id",
+				"status":        "http.status",
 			},
 		},
 		"admin": map[string]any{"key_prefix": "loom-"},
@@ -317,6 +321,9 @@ func (c *Config) validate() error {
 	}
 	if c.Ledger.ReserveEstimate.Input < 0 || c.Ledger.ReserveEstimate.Output < 0 {
 		errs = append(errs, errors.New("ledger.reserve_tokens must be >= 0"))
+	}
+	if r := c.Ledger.IncompleteResponse; r != "charge_reserve" && r != "free" {
+		errs = append(errs, fmt.Errorf("ledger.incomplete_response must be charge_reserve or free, got %q", r))
 	}
 	switch c.Ledger.CostSource {
 	case "loom", "gateway_prefer":

@@ -38,7 +38,7 @@ WITH claim AS (
                                route, gateway, input_tokens, output_tokens, cached_tokens,
                                cost_nanos, gateway_cost_nanos, pricing_source,
                                pricing_group, group_ratio, model_ratio, completion_ratio, cache_ratio, model_price,
-                               settled)
+                               billing_basis, settled)
     SELECT sqlc.arg(time)::timestamptz, sqlc.narg(request_id)::text, sqlc.arg(trace_id)::text,
            sqlc.arg(span_id)::text, sqlc.narg(account_id)::uuid, sqlc.narg(key_id)::uuid, sqlc.arg(model)::text,
            sqlc.arg(provider)::text, sqlc.arg(route)::text, sqlc.arg(gateway)::text,
@@ -46,7 +46,7 @@ WITH claim AS (
            sqlc.arg(cost_nanos)::bigint, sqlc.narg(gateway_cost_nanos)::bigint, sqlc.arg(pricing_source)::text,
            sqlc.narg(pricing_group)::text, sqlc.narg(group_ratio)::double precision, sqlc.narg(model_ratio)::double precision,
            sqlc.narg(completion_ratio)::double precision, sqlc.narg(cache_ratio)::double precision, sqlc.narg(model_price)::double precision,
-           true
+           sqlc.arg(billing_basis)::text, true
     WHERE sqlc.narg(request_id)::text IS NULL OR EXISTS (SELECT 1 FROM claim)
     RETURNING id
 )

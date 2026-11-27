@@ -172,6 +172,7 @@ type UsageEvent struct {
 	CompletionRatio  *float64
 	CacheRatio       *float64
 	ModelPrice       *float64
+	BillingBasis     string
 }
 
 type UsageRollup struct {

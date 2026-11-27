@@ -181,6 +181,8 @@ type UsageEvent struct {
 	CostNanos             int64      `json:"cost_nanos"`
 	AgentGatewayCostNanos *int64     `json:"gateway_cost_nanos"`
 	PricingSource         string     `json:"pricing_source"`
+	// BillingBasis 结算依据：usage（上游报告的用量）或 reserve_estimate（响应未完整结束，按预扣估值）。
+	BillingBasis BillingBasis `json:"billing_basis"`
 	// Pricing 是结算时的计价快照；模型未定价（金额为 0）时为 nil。
 	Pricing *PricingSnapshot `json:"pricing"`
 	Settled bool             `json:"settled"`
@@ -237,6 +239,15 @@ type UsageSummaryRow struct {
 	CostNanos             int64
 	AgentGatewayCostNanos int64
 }
+
+// BillingBasis 一次结算的计费依据。
+type BillingBasis string
+
+// 计费依据取值；也是 usage_events.billing_basis 列的取值。
+const (
+	BillingByUsage           BillingBasis = "usage"
+	BillingByReserveEstimate BillingBasis = "reserve_estimate"
+)
 
 // UsageFilter 聚合过滤条件。
 type UsageFilter struct {

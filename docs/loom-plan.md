@@ -709,7 +709,9 @@ OTLP access log 是遥测链路（批量、可丢），不适合做账本的数�
 
 发现：
 
-1. **客户端中途断开的流式请求按 0 结算（计费漏洞，待定策略）。** 方舟只在最后一个 chunk 返回 usage，客户端在此之前断开时，网关访问日志为 `http.status=200`、有首 token 耗时，但没有任何 token 数；loom 收到全 0 的用量，按 0 结算、释放预扣。上游通常仍对已生成的 token 计费（未在账单侧核实），调用方可借此免费使用。可区分的信号是“状态 2xx 且用量为 0”（上游报错时状态为 4xx/5xx）。可选策略：按预扣额结算（简单、偏保守，正常的“停止生成”也会被按估值计费）；只按输入估值结算；或由网关按已转发内容估算 token（需网关支持，new-api 的做法是对已收到的流式文本计数）。
+1. **客户端中途断开的流式请求按 0 结算（计费漏洞，已按方案 A 修复，见下）。** 方舟只在最后一个 chunk 返回 usage，客户端在此之前断开时，网关访问日志为 `http.status=200`、有首 token 耗时，但没有任何 token 数；loom 收到全 0 的用量，按 0 结算、释放预扣。上游通常仍对已生成的 token 计费（未在账单侧核实），调用方可借此免费使用。可区分的信号是“状态 2xx 且用量为 0”（上游报错时状态为 4xx/5xx）。可选策略：按预扣额结算（简单、偏保守，正常的“停止生成”也会被按估值计费）；只按输入估值结算；或由网关按已转发内容估算 token（需网关支持，new-api 的做法是对已收到的流式文本计数）。
 2. **思考模型的 `max_tokens` 不约束思考 token。** `max_tokens: 60` 时输出 `611`～`683` token，其中思考 `562`～`633`；按输出计费正确，但全局预扣估值（输出 1,024）可能低于实际，此类模型宜在 `pricing.yaml` 中单独调大 `reserve_tokens`。
 3. **流式请求即使未要求 usage，客户端也会收到 usage chunk**：网关为了计量向上游补上了 `stream_options.include_usage`，并原样转发给客户端；一般无害，个别严格的客户端可能需要兼容。
+修复（方案 A）：网关 RLS 策略增加 `kind=status` 描述符，`cost: 'default(response.code, 200)'`——流式结算的 CEL 上下文没有 `response`，而 AgentGateway 只对 2xx 响应走流式结算（`req.streaming && resp.status().is_success()`），所以缺省为 200；OTLP 读取 `http.status`。账本对按 token 计价、状态 2xx 且用量全为 0 的结算按准入时的预扣估值收费，`usage_events.billing_basis` 记为 `reserve_estimate`（迁移 `0007_billing_basis.sql`），指标 `loom_ledger_incomplete_responses_total{model}`；配置 `ledger.incomplete_response: charge_reserve | free`。上游 4xx/5xx、缺少状态码（旧网关策略）与按次计费的模型不受影响。验证：契约测试“客户端断开”由 0 变为 `3,072,000`、`reserve_estimate`，三种上游报错仍为 0（31/31）；真实方舟断开的流式请求按 `921,600`（与准入预扣一致）结算（25/25）。长期方案 C（网关按已转发内容估算 token）待向 AgentGateway 提贡献。
+
 4. **前缀缓存未命中**：同一 1,242 token 前缀连发两次，`cached_tokens` 均为 0（方舟的 Chat Completions 不做隐式前缀缓存），缓存计价路径仍只有 mock 覆盖。

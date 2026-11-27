@@ -371,6 +371,9 @@ func (m *Store) SettleUsage(_ context.Context, ev store.UsageEvent) (bool, error
 	}
 	m.nextID++
 	ev.ID, ev.Settled = m.nextID, true
+	if ev.BillingBasis == "" {
+		ev.BillingBasis = store.BillingByUsage
+	}
 	m.usageEvents = append(m.usageEvents, ev)
 	// 与 PostgreSQL 一致：有预扣时按预扣记录的两级结算；没有时按事件上的 Key 与账户累加，不存在的对象跳过
 	if r, ok := m.reserv[ev.RequestID]; ok && ev.APIKeyID != nil {

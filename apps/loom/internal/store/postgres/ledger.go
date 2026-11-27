@@ -137,6 +137,7 @@ func usageEventParams(ev store.UsageEvent) sqlcgen.SettleUsageParams {
 		CostNanos:        ev.CostNanos,
 		GatewayCostNanos: ev.AgentGatewayCostNanos,
 		PricingSource:    ev.PricingSource,
+		BillingBasis:     string(orUsage(ev.BillingBasis)),
 	}
 	if snap := ev.Pricing; snap != nil {
 		params.PricingGroup = optionalText(snap.Group)
@@ -235,4 +236,12 @@ func (d *DB) ReleaseReservation(ctx context.Context, requestID string) (released
 		return nil
 	})
 	return released, err
+}
+
+// orUsage 未指定计费依据时按 usage。
+func orUsage(basis store.BillingBasis) store.BillingBasis {
+	if basis == "" {
+		return store.BillingByUsage
+	}
+	return basis
 }

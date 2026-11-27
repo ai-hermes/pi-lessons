@@ -64,6 +64,15 @@ spec:
           - {name: model, expression: 'request.headers["x-loom-model"]'}
           - {name: kind, expression: '"completion"'}
           cost: '1'
+        # 上游响应状态码：区分上游报错（4xx/5xx，不计费）与流在最后的 usage chunk 前被中断（2xx 却没有用量）。
+        # 流式结算的 CEL 上下文没有 response，而网关只对 2xx 响应走流式结算，所以缺省为 200。
+        - unit: Tokens
+          entries:
+          - {name: request_id, expression: 'request.headers["x-loom-request-id"]'}
+          - {name: key_id, expression: 'request.headers["x-loom-key-id"]'}
+          - {name: model, expression: 'request.headers["x-loom-model"]'}
+          - {name: kind, expression: '"status"'}
+          cost: 'default(response.code, 200)'
     # 上游 429/5xx 重试 4 次，100ms backoff（与生产 Chat 路由一致）
     retry:
       attempts: 4
@@ -130,6 +139,15 @@ spec:
           - {name: model, expression: 'request.headers["x-loom-model"]'}
           - {name: kind, expression: '"completion"'}
           cost: '1'
+        # 上游响应状态码：区分上游报错（4xx/5xx，不计费）与流在最后的 usage chunk 前被中断（2xx 却没有用量）。
+        # 流式结算的 CEL 上下文没有 response，而网关只对 2xx 响应走流式结算，所以缺省为 200。
+        - unit: Tokens
+          entries:
+          - {name: request_id, expression: 'request.headers["x-loom-request-id"]'}
+          - {name: key_id, expression: 'request.headers["x-loom-key-id"]'}
+          - {name: model, expression: 'request.headers["x-loom-model"]'}
+          - {name: kind, expression: '"status"'}
+          cost: 'default(response.code, 200)'
 ---
 # 图片路由：按次计费；每客户端（x-loom-client-id）10 rpm、burst 2
 apiVersion: agentgateway.dev/v1alpha1

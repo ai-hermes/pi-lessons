@@ -99,7 +99,9 @@ func wire(cfg *config.Config, db *postgres.DB, metrics *telemetry.Metrics, log *
 		ReaperInterval: cfg.Ledger.ReaperInterval,
 		ReaperBatch:    cfg.Ledger.ReaperBatch,
 		CostSource:     ledger.CostSource(cfg.Ledger.CostSource),
-		OwnerCacheTTL:  cfg.Ledger.OwnerCacheTTL,
+
+		IncompleteResponse: ledger.IncompletePolicy(cfg.Ledger.IncompleteResponse),
+		OwnerCacheTTL:      cfg.Ledger.OwnerCacheTTL,
 	}
 	billingLedger := ledger.New(ledgerOpts, db, prices, metrics, log)
 	limiter := throttle.New(db, prices, metrics, log)

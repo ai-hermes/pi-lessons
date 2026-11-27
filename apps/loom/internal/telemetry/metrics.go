@@ -34,6 +34,7 @@ type Metrics struct {
 	ReservationsOpen     prometheus.Gauge
 	ReservationsExpired  prometheus.Counter
 	ReserveCompensations *prometheus.CounterVec // {result}
+	IncompleteResponses  *prometheus.CounterVec // {model}
 	CostMismatch         *prometheus.CounterVec // {model}
 
 	// throttle
@@ -151,6 +152,11 @@ func NewMetrics(version, commit string) *Metrics {
 			"loom_audit_aggregated_requests_total",
 			"Unidentified-credential denials folded into aggregated auth_audit rows instead of one row each.",
 		),
+		IncompleteResponses: counterVec(
+			"loom_ledger_incomplete_responses_total",
+			"Responses with a 2xx status but no usage (stream cut before its final chunk), settled at the reserve estimate.",
+			"model",
+		),
 		ReserveCompensations: counterVec(
 			"loom_ledger_reserve_compensations_total",
 			"Releases of reservations whose commit outcome was unknown; result=released|absent|failed.",
@@ -245,6 +251,7 @@ func NewMetrics(version, commit string) *Metrics {
 		m.ReservationsOpen,
 		m.ReservationsExpired,
 		m.ReserveCompensations,
+		m.IncompleteResponses,
 		m.ThrottleRejections,
 		m.MaintenanceRuns,
 		m.MaintenanceLastSuccess,

@@ -26,6 +26,8 @@ type UsageReport struct {
 
 	Model      string
 	TokenUsage pricing.TokenUsage
+	// Status 上游响应的 HTTP 状态码；0 表示通道没有提供。用于识别未完整结束的响应。
+	Status int
 	// AgentGatewayCostNanos 网关按其 modelCatalog 算出的金额，仅用于对账。
 	AgentGatewayCostNanos *int64
 
@@ -100,6 +102,7 @@ func (l *Ledger) correctTokenEstimate(ctx context.Context, report UsageReport, o
 type settlementCost struct {
 	nanos     int64
 	source    pricing.PriceSource
+	basis     store.BillingBasis
 	unitPrice *pricing.UnitPrice
 }
 
@@ -127,7 +130,21 @@ func (l *Ledger) calculateCost(ctx context.Context, report UsageReport, owner us
 	cost := settlementCost{
 		nanos:     unitPrice.Cost(report.TokenUsage),
 		source:    unitPrice.PriceSource,
+		basis:     store.BillingByUsage,
 		unitPrice: &unitPrice,
+	}
+	if l.opts.IncompleteResponse == IncompleteChargeReserve && incompleteResponse(report, unitPrice) {
+		// 状态 2xx 却没有任何用量：流式响应在最后的 usage chunk 之前被中断（多为客户端断开），
+		// 上游通常仍对已生成的 token 计费。按准入时的预扣估值结算，不让中途断开变成免费调用。
+		cost.nanos, cost.basis = unitPrice.ReserveNanos, store.BillingByReserveEstimate
+		l.metrics.IncompleteResponses.WithLabelValues(report.Model).Inc()
+		l.log.Info(
+			"settling an incomplete response at the reserve estimate",
+			"request_id", report.RequestID,
+			"status", report.Status,
+			"nanos", cost.nanos,
+		)
+		return cost, nil
 	}
 	agentGatewayNanos, hasAgentGatewayCost := agentGatewayCostWithGroupRatio(report, unitPrice)
 	if !hasAgentGatewayCost {
@@ -139,6 +156,13 @@ func (l *Ledger) calculateCost(ctx context.Context, report UsageReport, owner us
 	}
 	l.reconcileAgentGatewayCost(report, cost.nanos, agentGatewayNanos)
 	return cost, nil
+}
+
+// incompleteResponse 判断响应是否未完整结束：上游返回了 2xx（流已开始），却没有报告任何 token。
+// 按次计费的模型本就不依赖 token，上游报错（4xx/5xx）不计费，都不属于这种情况。
+func incompleteResponse(report UsageReport, unitPrice pricing.UnitPrice) bool {
+	succeeded := report.Status >= 200 && report.Status < 300
+	return succeeded && report.TokenUsage == (pricing.TokenUsage{}) && !unitPrice.PerCall && unitPrice.ReserveNanos > 0
 }
 
 // agentGatewayCostWithGroupRatio 把网关上报的金额乘上分组倍率；网关按 1 倍 catalog 计价，不含分组倍率。
@@ -206,6 +230,7 @@ func usageEvent(report UsageReport, owner usageOwner, cost settlementCost) store
 		CostNanos:             cost.nanos,
 		AgentGatewayCostNanos: report.AgentGatewayCostNanos,
 		PricingSource:         string(cost.source),
+		BillingBasis:          cost.basis,
 	}
 	if unitPrice := cost.unitPrice; unitPrice != nil {
 		ev.Pricing = &store.PricingSnapshot{
