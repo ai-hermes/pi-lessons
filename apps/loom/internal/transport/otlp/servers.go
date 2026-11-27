@@ -40,6 +40,7 @@ type AttributeNames struct {
 	RequestID        string
 	APIKeyID         string
 	Account          string
+	Status           string // 响应状态码
 }
 
 // LogsServer 实现 OTLP LogsService：解析 access log 并交给补账队列。
@@ -118,6 +119,7 @@ func (a AttributeNames) usageReport(
 		Provider:     values.str(a.Provider),
 		Route:        values.str(a.Route),
 		AgentGateway: values.str(a.AgentGateway),
+		Status:       int(values.int(a.Status)),
 		Time:         recordTime(record),
 		TraceID:      hexID(record.GetTraceId(), 16),
 		SpanID:       hexID(record.GetSpanId(), 8),

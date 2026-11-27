@@ -29,9 +29,9 @@ ssh 192.168.16.62 'export PATH=/opt/agentgateway/k8s/bin:$PATH; kubectl apply -f
 deploy/real/run.sh            # 可选 --model / --deepseek 指定方舟模型 ID
 ```
 
-脚本使用专用账户 `real-upstream`（额度 0.1 USD），按顺序执行 10 组场景，每组把客户端收到的 `usage` 与 loom 落库的结算逐项对比：非流式（思考模型）、关闭思考、两种流式写法、上游 400、客户端中途断开、DeepSeek、前缀缓存、TPM 按实际用量修正、账户扣减与结算总额。
+脚本使用专用账户 `real-upstream`（额度 0.1 USD），按顺序执行 10 组场景，每组把客户端收到的 `usage` 与 loom 落库的结算逐项对比：非流式（思考模型）、关闭思考、两种流式写法、上游 400、客户端中途断开（按预扣估值计费）、DeepSeek、前缀缓存、TPM 按实际用量修正、账户扣减与结算总额。
 
-**通过标准：** 末行 `RESULT: PASS=23 FAIL=0`；`NOTE` 行是需要人工关注的观察项，不计入失败。
+**通过标准：** 末行 `RESULT: PASS=25 FAIL=0`；`NOTE` 行是需要人工关注的观察项，不计入失败。
 
 ## 三、清理
 

@@ -98,6 +98,7 @@ func toUsageEvent(u sqlcgen.UsageEvent) store.UsageEvent {
 		CostNanos:             u.CostNanos,
 		AgentGatewayCostNanos: u.GatewayCostNanos,
 		PricingSource:         u.PricingSource,
+		BillingBasis:          store.BillingBasis(u.BillingBasis),
 		Settled:               u.Settled,
 	}
 	if u.GroupRatio != nil {

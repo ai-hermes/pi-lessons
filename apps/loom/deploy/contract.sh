@@ -71,14 +71,16 @@ echo "### 1. 正常响应：RLS 同步结算，OTLP 只补写网关金额"
 observe "non-stream 200"      200 rls 1820000 false
 observe "stream 200"          200 rls 1820000 true
 
-echo "### 2. 上游报错：token 用量为 0，completion 描述符让 RLS 立即结算为 0 并释放预扣"
+echo "### 2. 上游报错：token 用量为 0，completion 描述符让 RLS 立即结算；status 为 4xx/5xx，不计费并释放预扣"
 observe "upstream 503"        503 rls 0 false -H 'x-mock-status: 503'
 observe "upstream 400"        400 rls 0 false -H 'x-mock-status: 400'
 observe "stream upstream 503" 503 rls 0 true  -H 'x-mock-status: 503'
 
-echo "### 3. 客户端在带 usage 的结束 chunk 之前断开：网关拿不到用量，由 RLS 按 0 结算（已知计费缺口）"
-# curl 因 --max-time 主动断开时返回码记为 200（响应头已收到）
-observe "stream client abort" 200 rls 0 true  -H 'x-mock-stream-chunks: 10' -H 'x-mock-stream-delay-ms: 200' --max-time 0.5
+echo "### 3. 客户端在带 usage 的结束 chunk 之前断开：网关拿不到用量，RLS 带回状态 200，按预扣估值结算"
+# curl 因 --max-time 主动断开时返回码记为 200（响应头已收到）；lab-model 预扣估值 1024×1,000 + 1024×2,000 = 3,072,000
+observe "stream client abort" 200 rls 3072000 true  -H 'x-mock-stream-chunks: 10' -H 'x-mock-stream-delay-ms: 200' --max-time 0.5
+check "stream client abort: billed at the reserve estimate" reserve_estimate \
+  "$(q "select billing_basis from usage_events where account_id=$DAVE order by id desc limit 1")"
 
 q "delete from reservations where account_id=$DAVE" >/dev/null
 echo "RESULT: PASS=$PASS FAIL=$FAIL"

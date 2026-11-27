@@ -122,3 +122,21 @@ func TestSettlementFailureReturnsError(t *testing.T) {
 	assert.Equal(t, codeError, resp.OverallCode)
 	assert.Equal(t, codeError, resp.Statuses[0].Code)
 }
+
+func TestAmendCarriesTheUpstreamStatus(t *testing.T) {
+	settler := &fakeSettler{}
+	_, err := newServer(settler).ShouldRateLimit(context.Background(), &rlsv3.RateLimitRequest{
+		Domain: "loom-billing",
+		Descriptors: []*rlscommon.RateLimitDescriptor{
+			descriptor("req-1", "", "input", 0),
+			descriptor("req-1", "", "output", 0),
+			descriptor("req-1", "", "completion", 1),
+			descriptor("req-1", "", "status", 200),
+		},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, settler.got, 1)
+	assert.Equal(t, 200, settler.got[0].Status, "a 2xx response without usage is recognisable at settlement")
+	assert.Equal(t, pricing.TokenUsage{}, settler.got[0].TokenUsage)
+}

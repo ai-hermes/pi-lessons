@@ -32,6 +32,16 @@ const (
 	pricingSourceAgentGateway pricing.PriceSource = "gateway"
 )
 
+// IncompletePolicy 决定未完整结束的响应（状态 2xx 却没有用量）如何结算。
+type IncompletePolicy string
+
+const (
+	// IncompleteChargeReserve 按准入时的预扣估值结算（默认）。
+	IncompleteChargeReserve IncompletePolicy = "charge_reserve"
+	// IncompleteFree 按 0 结算。
+	IncompleteFree IncompletePolicy = "free"
+)
+
 // Store 是账本所需的持久化能力。
 type Store interface {
 	ReserveQuota(
@@ -67,7 +77,9 @@ type Options struct {
 	ReaperInterval time.Duration
 	ReaperBatch    int
 	CostSource     CostSource
-	OwnerCacheTTL  time.Duration // Key/账户归属缓存
+	// IncompleteResponse 未完整结束的响应如何结算；为空时按 charge_reserve。
+	IncompleteResponse IncompletePolicy
+	OwnerCacheTTL      time.Duration // Key/账户归属缓存
 }
 
 // Ledger 额度账本。
@@ -97,6 +109,9 @@ func New(opts Options, storage Store, pricer Pricer, metrics *telemetry.Metrics,
 	}
 	if opts.CostSource == "" {
 		opts.CostSource = CostSourceLoom
+	}
+	if opts.IncompleteResponse == "" {
+		opts.IncompleteResponse = IncompleteChargeReserve
 	}
 	return &Ledger{
 		opts:    opts,

@@ -41,6 +41,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"quota adjustments", testQuotaAdjustments},
 		{"admin tokens", testAdminTokens},
 		{"admin audit", testAdminAudit},
+		{"billing basis round trip", testBillingBasis},
 		// 以下用例会推进全局的汇总水位线、删除旧分区，放在最后
 		{"settled requests bound the idempotency window", testSettledRequestsRetention},
 		{"audit keeps aggregated rows and drops old ones", testAuditRetention},
@@ -734,6 +735,24 @@ func settleAt(t *testing.T, s store.Store, apiKey store.APIKey, requestID string
 	})
 	require.NoError(t, err)
 	return inserted
+}
+
+func testBillingBasis(t *testing.T, s store.Store) {
+	apiKey := newAPIKey(t, s, newAccount(t, s, nil).ID, nil)
+	estimated := usageEvent(apiKey, unique("req"), 3_072_000)
+	estimated.BillingBasis = store.BillingByReserveEstimate
+	for _, ev := range []store.UsageEvent{usageEvent(apiKey, unique("req"), 1), estimated} {
+		_, err := s.SettleUsage(ctx, ev)
+		require.NoError(t, err)
+	}
+	events, err := s.ListUsage(ctx, &apiKey.ID, nil, 10)
+	require.NoError(t, err)
+	bases := map[store.BillingBasis]int{}
+	for _, ev := range events {
+		bases[ev.BillingBasis]++
+	}
+	assert.Equal(t, map[store.BillingBasis]int{store.BillingByUsage: 1, store.BillingByReserveEstimate: 1}, bases,
+		"an unspecified basis is stored as usage")
 }
 
 func testSettledRequestsRetention(t *testing.T, s store.Store) {

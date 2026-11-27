@@ -436,7 +436,7 @@ func (q *Queries) ListReservations(ctx context.Context, lim int32) ([]Reservatio
 }
 
 const listUsage = `-- name: ListUsage :many
-SELECT id, time, request_id, trace_id, span_id, account_id, key_id, model, provider, route, gateway, input_tokens, output_tokens, cached_tokens, cost_nanos, gateway_cost_nanos, pricing_source, settled, pricing_group, group_ratio, model_ratio, completion_ratio, cache_ratio, model_price FROM usage_events
+SELECT id, time, request_id, trace_id, span_id, account_id, key_id, model, provider, route, gateway, input_tokens, output_tokens, cached_tokens, cost_nanos, gateway_cost_nanos, pricing_source, settled, pricing_group, group_ratio, model_ratio, completion_ratio, cache_ratio, model_price, billing_basis FROM usage_events
 WHERE ($1::uuid IS NULL OR key_id = $1)
   AND ($2::timestamptz IS NULL OR time >= $2)
 ORDER BY time DESC
@@ -483,6 +483,7 @@ func (q *Queries) ListUsage(ctx context.Context, arg ListUsageParams) ([]UsageEv
 			&i.CompletionRatio,
 			&i.CacheRatio,
 			&i.ModelPrice,
+			&i.BillingBasis,
 		); err != nil {
 			return nil, err
 		}
@@ -685,7 +686,7 @@ WITH claim AS (
                                route, gateway, input_tokens, output_tokens, cached_tokens,
                                cost_nanos, gateway_cost_nanos, pricing_source,
                                pricing_group, group_ratio, model_ratio, completion_ratio, cache_ratio, model_price,
-                               settled)
+                               billing_basis, settled)
     SELECT $2::timestamptz, $1::text, $3::text,
            $4::text, $5::uuid, $6::uuid, $7::text,
            $8::text, $9::text, $10::text,
@@ -693,7 +694,7 @@ WITH claim AS (
            $14::bigint, $15::bigint, $16::text,
            $17::text, $18::double precision, $19::double precision,
            $20::double precision, $21::double precision, $22::double precision,
-           true
+           $23::text, true
     WHERE $1::text IS NULL OR EXISTS (SELECT 1 FROM claim)
     RETURNING id
 )
@@ -723,6 +724,7 @@ type SettleUsageParams struct {
 	CompletionRatio  *float64
 	CacheRatio       *float64
 	ModelPrice       *float64
+	BillingBasis     string
 }
 
 // 幂等：先在 settled_requests 登记 request_id，主键冲突说明另一通道已结算；登记成功或没有 request_id 时才写明细。
@@ -750,6 +752,7 @@ func (q *Queries) SettleUsage(ctx context.Context, arg SettleUsageParams) (int64
 		arg.CompletionRatio,
 		arg.CacheRatio,
 		arg.ModelPrice,
+		arg.BillingBasis,
 	)
 	var id int64
 	err := row.Scan(&id)

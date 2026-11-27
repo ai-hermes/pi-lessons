@@ -71,6 +71,7 @@ ledger:
   reservation_ttl: 15m          # 两条用量通道都没送达时，预扣在此之后释放
   reaper_interval: 1m
   reaper_batch: 200
+  incomplete_response: charge_reserve  # 状态 2xx 却没有用量（流式请求在最后的 usage chunk 前被客户端断开）：按预扣估值结算；free 按 0
   cost_source: loom             # loom：以计价表为准；gateway_prefer：优先网关 agw.ai.usage.cost.total × 分组倍率
   owner_cache_ttl: 60s
 
@@ -96,6 +97,7 @@ otlp:
     request_id: loom.request.id
     key_id: loom.key.id
     account: loom.client.id
+    status: http.status
 
 retention:                      # 数据增长维护：多副本时同一任务只由一个副本执行
   interval: 10m                 # 每轮：建分区 → 汇总 usage_daily → 清理过期分区与幂等记录

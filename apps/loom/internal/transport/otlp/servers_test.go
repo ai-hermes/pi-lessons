@@ -23,6 +23,7 @@ var testAttributeNames = AttributeNames{
 	RequestID:        "loom.request.id",
 	APIKeyID:         "loom.key.id",
 	Account:          "loom.client.id",
+	Status:           "http.status",
 }
 
 func kv(key string, v any) *commonpb.KeyValue {
@@ -53,10 +54,12 @@ func TestAccessLogToUsageReport(t *testing.T) {
 			kv("loom.client.id", "alice"),
 			kv("loom.key.id", "11111111-2222-3333-4444-555555555555"),
 			kv("protocol", "llm"),
+			kv("http.status", int64(200)),
 		},
 	}
 
 	u, protocol := testAttributeNames.usageReport(record, nil)
+	assert.Equal(t, 200, u.Status)
 
 	assert.Equal(t, "llm", protocol)
 	assert.Equal(t, Channel, u.Channel)
