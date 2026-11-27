@@ -1,0 +1,86 @@
+# 可选：最小 Prometheus，只抓取 loom 命名空间里 app=loom 的 Pod 指标并加载 loom 告警规则。
+# 用于在没有监控体系的环境里验证告警规则；已有 Prometheus 时只需要 loom-alerts.yaml。
+# 规则文件由 deploy/monitoring/check.sh 生成 ConfigMap loom-alert-rules。
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: loom-prometheus, namespace: loom}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: loom-prometheus, namespace: loom}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: loom-prometheus, namespace: loom}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: loom-prometheus}
+subjects:
+  - {kind: ServiceAccount, name: loom-prometheus, namespace: loom}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: loom-prometheus-config, namespace: loom}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+    rule_files: [/etc/prometheus/rules/*.yaml]
+    scrape_configs:
+      - job_name: loom
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces: {names: [loom]}
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            regex: loom
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            regex: (.+);(.+)
+            replacement: $1:$2
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: loom-prometheus, namespace: loom}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: loom-prometheus}}
+  template:
+    metadata: {labels: {app: loom-prometheus}}
+    spec:
+      serviceAccountName: loom-prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.53.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=2d
+          ports: [{name: http, containerPort: 9090}]
+          readinessProbe:
+            httpGet: {path: /-/ready, port: http}
+          volumeMounts:
+            - {name: config, mountPath: /etc/prometheus/prometheus.yml, subPath: prometheus.yml}
+            - {name: rules, mountPath: /etc/prometheus/rules}
+            - {name: data, mountPath: /prometheus}
+      volumes:
+        - name: config
+          configMap: {name: loom-prometheus-config}
+        - name: rules
+          configMap: {name: loom-alert-rules}
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: loom-prometheus, namespace: loom}
+spec:
+  selector: {app: loom-prometheus}
+  ports: [{name: http, port: 9090, targetPort: http}]

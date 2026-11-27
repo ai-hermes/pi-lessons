@@ -1,0 +1,4 @@
+# 在模块根目录执行 go build ./cmd/<name> 产生的二进制
+/loom
+/loom-mock
+/loom-bench

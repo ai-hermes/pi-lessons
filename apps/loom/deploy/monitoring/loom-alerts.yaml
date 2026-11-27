@@ -1,0 +1,88 @@
+# loom 告警规则（Prometheus 原生规则格式）。
+# 使用 prometheus-operator 时，把 groups 原样放进 PrometheusRule 的 spec.groups。
+# 指标说明见 docs/loom-extauth-billing.md；阈值按自用规模给出，接入前按实际流量调整。
+groups:
+  - name: loom-availability
+    rules:
+      - alert: LoomDown
+        expr: sum(up{job="loom"}) < 1 or absent(up{job="loom"})
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: 没有可用的 loom 实例；extAuth 为 FailClosed，所有模型请求都会被拒绝。
+
+      - alert: LoomAdmissionInternalErrors
+        expr: sum(rate(loom_admission_decisions_total{reason="internal_error"}[5m])) > 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: 准入出现 internal_error（通常是 PG 不可用或超时），调用方收到 500。
+
+      - alert: LoomStoreErrors
+        expr: sum by (op) (rate(loom_store_errors_total[5m])) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: 'PG 操作 {{ $labels.op }} 持续报错。'
+
+      - alert: LoomStorePoolSaturated
+        expr: max(loom_store_pool_acquired_conns / loom_store_pool_max_conns) > 0.9
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: PG 连接池使用率超过 90%，准入延迟会随排队上升。
+
+  - name: loom-latency
+    rules:
+      - alert: LoomAdmissionLatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le) (rate(loom_admission_duration_seconds_bucket{stage="total"}[5m]))
+          ) > 0.1
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: 准入 p99 超过 100ms（压测基线：16 账户 64 并发约 100ms，单账户热点更高）。
+
+      - alert: LoomDenyRatioHigh
+        expr: |
+          sum(rate(loom_admission_decisions_total{allowed="false"}[10m]))
+            / sum(rate(loom_admission_decisions_total[10m])) > 0.2
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: 超过 20% 的请求被拒绝；按 reason 拆分查看是额度、凭据还是定价问题。
+
+  - name: loom-billing
+    rules:
+      - alert: LoomSettleErrors
+        expr: sum by (channel) (rate(loom_ledger_settle_errors_total[5m])) > 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: '{{ $labels.channel }} 通道结算失败，用量可能没有入账。'
+
+      - alert: LoomReservationsExpired
+        expr: increase(loom_ledger_reservations_expired_total[30m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: 有预扣在 reservation_ttl 内没有收到任何用量上报，被释放且未计费（RLS 与 OTLP 都未送达）。
+
+      - alert: LoomOTLPDropping
+        expr: sum(rate(loom_otlp_dropped_total[5m])) > 0
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: OTLP 补账队列持续丢弃；上游报错请求的预扣释放依赖 OTLP，丢弃会导致预扣冻结到 reservation_ttl。
+
+      - alert: LoomCostMismatch
+        expr: sum by (model) (increase(loom_ledger_cost_mismatch_total[1h])) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: '{{ $labels.model }} 的 loom 金额与网关金额（已乘分组倍率）不一致，检查 pricing.yaml 与网关 catalog 是否同源。'
+
+      - alert: LoomPricingReloadFailing
+        expr: sum(increase(loom_pricing_reloads_total{result="error"}[10m])) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: pricing.yaml 热加载失败，仍在使用上一版价目表；用 loom check-config 定位错误字段。

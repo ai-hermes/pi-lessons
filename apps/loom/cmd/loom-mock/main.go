@@ -1,9 +1,15 @@
 // Command loom-mock 是验收用的伪 OpenAI 后端：chat（流式 / 非流式）、embeddings、images 与 /echo。
 // token 用量固定（可由环境变量或请求体 mock_usage 覆盖），便于断言精确金额；
 // /echo 原样回显收到的请求头，用于验证网关是否删除了调用方凭据。
+//
+// 契约测试用请求头（chat）：
+//   - x-mock-status：非 2xx 时直接返回该状态码与 OpenAI 风格错误体，不产生用量；
+//   - x-mock-stream-chunks / x-mock-stream-delay-ms：流式输出的内容 chunk 数与间隔，
+//     用于在带 usage 的结束 chunk 之前断开客户端。
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -127,11 +133,20 @@ func chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if status := headerInt(r, "x-mock-status", http.StatusOK); status >= http.StatusMultipleChoices {
+		httpError(w, int(status), "mock_upstream_error", "upstream failure requested by x-mock-status")
+		return
+	}
+
 	tokenUsage := req.usage()
 	id := fmt.Sprintf("chatcmpl-mock-%d", time.Now().UnixNano())
 	stop := "stop"
 	if req.Stream {
-		streamChat(w, id, req.Model, tokenUsage)
+		pacing := streamPacing{
+			contentChunks: max(headerInt(r, "x-mock-stream-chunks", 1), 1),
+			delay:         time.Duration(headerInt(r, "x-mock-stream-delay-ms", 0)) * time.Millisecond,
+		}
+		streamChat(r.Context(), w, id, req.Model, tokenUsage, pacing)
 		return
 	}
 	writeJSON(w, completion{
@@ -144,24 +159,49 @@ func chat(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// streamChat 输出两个 SSE chunk：内容 chunk 与带 usage 的结束 chunk，最后是 [DONE]。
-func streamChat(w http.ResponseWriter, id, model string, tokenUsage openAIUsage) {
+// streamPacing 控制流式输出的节奏。
+type streamPacing struct {
+	contentChunks int64
+	delay         time.Duration
+}
+
+// streamChat 依次输出内容 chunk、带 usage 的结束 chunk 和 [DONE]；客户端断开后立即停止。
+func streamChat(
+	ctx context.Context,
+	w http.ResponseWriter,
+	id, model string,
+	tokenUsage openAIUsage,
+	pacing streamPacing,
+) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	flusher, _ := w.(http.Flusher)
 
 	stop := "stop"
-	chunks := []completion{
-		{Choices: []choice{{Delta: &message{Content: "OK"}}}},
-		{Choices: []choice{{Delta: &message{}, FinishReason: &stop}}, Usage: &tokenUsage},
+	chunks := make([]completion, 0, pacing.contentChunks+1)
+	for range pacing.contentChunks {
+		chunks = append(chunks, completion{Choices: []choice{{Delta: &message{Content: "OK"}}}})
 	}
-	for _, c := range chunks {
+	chunks = append(chunks, completion{
+		Choices: []choice{{Delta: &message{}, FinishReason: &stop}},
+		Usage:   &tokenUsage,
+	})
+	for i, c := range chunks {
+		if i > 0 && pacing.delay > 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(pacing.delay):
+			}
+		}
 		c.ID = id
 		c.Object = "chat.completion.chunk"
 		c.Created = time.Now().Unix()
 		c.Model = model
 		b, _ := json.Marshal(c)
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
+			return
+		}
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -250,6 +290,14 @@ func envInt(name string, fallback int64) int64 {
 func envString(name, fallback string) string {
 	if v := os.Getenv(name); v != "" {
 		return v
+	}
+	return fallback
+}
+
+// headerInt 读取整数请求头；缺失或非法时返回 fallback。
+func headerInt(r *http.Request, name string, fallback int64) int64 {
+	if n, err := strconv.ParseInt(r.Header.Get(name), 10, 64); err == nil {
+		return n
 	}
 	return fallback
 }
