@@ -148,11 +148,19 @@ note "chunks received before abort" "$CHUNKS"
 EV=$(loom_event "$T")
 note "loom settlement for the aborted stream (input|cached|output|cost); gateway saw status 200 but no usage" "$(echo "$EV" | cut -d'|' -f1-4)"
 # 预扣估值：1024 × 输入单价 + 1024 × 输出单价（loom 记录准入时的预扣额，结算按同一估值）
-check "aborted stream billed at the reserve estimate" reserve_estimate \
-  "$(q "select billing_basis from usage_events where account_id = '$AID' and time >= to_timestamp($T) order by time desc limit 1")"
-check "estimate equals the admission hold" "$(kubectl -n loom logs -l app=loom --since=2m --max-log-requests=4 \
-  | grep '"admission allowed"' | grep real-upstream | tail -1 | sed -E 's/.*"reserved_nanos":([0-9]+).*/\1/')" \
-  "$(echo "$EV" | cut -d'|' -f4)"
+HOLD=$(kubectl -n loom logs -l app=loom --since=2m --max-log-requests=4 \
+  | grep '"admission allowed"' | grep real-upstream | tail -1 | sed -E 's/.*"reserved_nanos":([0-9]+).*/\1/')
+if [ "$(kubectl -n loom get agentgatewaybackend ark-payg -o jsonpath='{.spec.ai.groups[0].providers[0].tokenize}' 2>/dev/null)" = true ]; then
+  # provider 开启 tokenize：网关按请求与已转发内容计数补上用量
+  check "aborted stream billed by the gateway estimate" gateway_estimate \
+    "$(q "select billing_basis from usage_events where account_id = '$AID' and time >= to_timestamp($T) order by time desc limit 1")"
+  check "estimate is far below the admission hold" yes \
+    "$(echo "$EV" | awk -F'|' -v hold="$HOLD" '{print ($4 > 0 && $4 < hold) ? "yes" : "no"}')"
+else
+  check "aborted stream billed at the reserve estimate" reserve_estimate \
+    "$(q "select billing_basis from usage_events where account_id = '$AID' and time >= to_timestamp($T) order by time desc limit 1")"
+  check "estimate equals the admission hold" "$HOLD" "$(echo "$EV" | cut -d'|' -f4)"
+fi
 sleep 2
 check "reservation released after abort" "0|0" "$(reserved)"
 check "no open reservations" 0 "$(open_reservations)"

@@ -31,9 +31,20 @@ deploy/real/run.sh            # 可选 --model / --deepseek 指定方舟模型 I
 
 脚本使用专用账户 `real-upstream`（额度 0.1 USD），按顺序执行 10 组场景，每组把客户端收到的 `usage` 与 loom 落库的结算逐项对比：非流式（思考模型）、关闭思考、两种流式写法、上游 400、客户端中途断开（按预扣估值计费）、DeepSeek、前缀缓存、TPM 按实际用量修正、账户扣减与结算总额。
 
-**通过标准：** 末行 `RESULT: PASS=25 FAIL=0`；`NOTE` 行是需要人工关注的观察项，不计入失败。
+**通过标准：** 末行 `RESULT: PASS=25 FAIL=0`（`ark-payg` 开启或关闭 tokenize 均适用）；`NOTE` 行是需要人工关注的观察项，不计入失败。
 
-## 三、清理
+## 三、网关用量估算的准确度
+
+需要支持流式用量估算的网关（provider 开启 `tokenize`）。脚本在宿主机上运行，每个用例先完整请求一次取输入真值，再发同一请求、收到 40 个 chunk 后断开，用方舟分词接口计算收到文本的真实 token 数作为输出真值，并对比 loom 的结算：
+
+```bash
+scp deploy/real/estimate.py 192.168.16.62:/opt/agentgateway/loom/estimate.py
+ssh 192.168.16.62 'export PATH=/opt/agentgateway/k8s/bin:$PATH; cd /opt/agentgateway/loom && python3 estimate.py'
+```
+
+**通过标准：** 每个用例的计费依据为 `gateway_estimate`；逐行输出输入、输出与金额的估算值、真值和偏差，结果另存 `/tmp/loom-estimate-results.json`。
+
+## 四、清理
 
 ```bash
 ssh 192.168.16.62 'export PATH=/opt/agentgateway/k8s/bin:$PATH; \

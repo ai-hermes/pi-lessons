@@ -276,6 +276,7 @@ func TestResponsesWithoutUsageThatAreNotIncomplete(t *testing.T) {
 		{"server error is free", "lab-model", 503, 0},
 		{"unknown status (older gateway policy) stays free", "lab-model", 0, 0},
 		{"per-call models do not depend on tokens", "lab-image", 200, 1_000_000},
+		{"per-call models are free when the upstream rejects the request", "lab-image", 400, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -322,4 +323,26 @@ func TestGatewayEstimatedUsageIsBilledByTokens(t *testing.T) {
 	assert.Equal(t, store.BillingByGatewayEstimate, events[0].BillingBasis)
 	estimated := testutil.ToFloat64(f.metrics.IncompleteResponses.WithLabelValues("lab-model", "gateway_estimate"))
 	assert.InDelta(t, 1, estimated, 0)
+}
+
+func TestUpstreamErrorsAreFreeEvenWithGatewayCountedInput(t *testing.T) {
+	f := newFixture(t)
+
+	_, err := f.ledger.Settle(context.Background(), UsageReport{
+		RequestID:  "req-400",
+		APIKeyID:   f.apiKey.ID,
+		Model:      "lab-model",
+		TokenUsage: pricing.TokenUsage{Input: 8}, // 网关请求侧的输入计数（tokenize）
+		Status:     400,
+		Channel:    "test",
+	})
+
+	require.NoError(t, err)
+	apiKey, err := f.st.GetAPIKey(context.Background(), f.apiKey.ID)
+	require.NoError(t, err)
+	assert.Zero(t, apiKey.QuotaUsed, "the provider does not bill a rejected request")
+	events, err := f.st.ListUsage(context.Background(), &f.apiKey.ID, nil, 1)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.Zero(t, events[0].InputTokens, "the gateway's request-side count is not upstream usage")
 }

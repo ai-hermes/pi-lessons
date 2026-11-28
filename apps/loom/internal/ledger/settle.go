@@ -50,6 +50,11 @@ func (l *Ledger) Settle(ctx context.Context, report UsageReport) (inserted bool,
 		}
 	}()
 
+	if report.Status >= 400 {
+		// 上游报错：网关不从错误响应里解析用量，此时的 token（开启 tokenize 时的请求侧输入计数）
+		// 不是上游实际消耗，不计入用量；按次计费的模型同样不收费。
+		report.TokenUsage = pricing.TokenUsage{}
+	}
 	owner, err := l.owners.resolve(ctx, report)
 	if err != nil {
 		return false, fmt.Errorf("resolve usage owner: %w", err)
@@ -134,6 +139,10 @@ func (l *Ledger) calculateCost(ctx context.Context, report UsageReport, owner us
 		source:    unitPrice.PriceSource,
 		basis:     store.BillingByUsage,
 		unitPrice: &unitPrice,
+	}
+	if report.Status >= 400 {
+		cost.nanos = 0 // 上游报错不计费（包括按次计费的模型），见 Settle
+		return cost, nil
 	}
 	if report.UsageEstimated && report.TokenUsage != (pricing.TokenUsage{}) {
 		// 网关按请求与已转发内容计数补上了缺失的用量：按估算的 token 正常计价，只标记依据
