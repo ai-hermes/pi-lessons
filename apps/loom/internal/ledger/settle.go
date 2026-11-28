@@ -28,6 +28,8 @@ type UsageReport struct {
 	TokenUsage pricing.TokenUsage
 	// Status 上游响应的 HTTP 状态码；0 表示通道没有提供。用于识别未完整结束的响应。
 	Status int
+	// UsageEstimated 用量由网关估算（上游没有报告，网关按请求与已转发内容计数），而非上游报告。
+	UsageEstimated bool
 	// AgentGatewayCostNanos 网关按其 modelCatalog 算出的金额，仅用于对账。
 	AgentGatewayCostNanos *int64
 
@@ -48,6 +50,11 @@ func (l *Ledger) Settle(ctx context.Context, report UsageReport) (inserted bool,
 		}
 	}()
 
+	if report.Status >= 400 {
+		// 上游报错：网关不从错误响应里解析用量，此时的 token（开启 tokenize 时的请求侧输入计数）
+		// 不是上游实际消耗，不计入用量；按次计费的模型同样不收费。
+		report.TokenUsage = pricing.TokenUsage{}
+	}
 	owner, err := l.owners.resolve(ctx, report)
 	if err != nil {
 		return false, fmt.Errorf("resolve usage owner: %w", err)
@@ -133,11 +140,21 @@ func (l *Ledger) calculateCost(ctx context.Context, report UsageReport, owner us
 		basis:     store.BillingByUsage,
 		unitPrice: &unitPrice,
 	}
+	if report.Status >= 400 {
+		cost.nanos = 0 // 上游报错不计费（包括按次计费的模型），见 Settle
+		return cost, nil
+	}
+	if report.UsageEstimated && report.TokenUsage != (pricing.TokenUsage{}) {
+		// 网关按请求与已转发内容计数补上了缺失的用量：按估算的 token 正常计价，只标记依据
+		cost.basis = store.BillingByGatewayEstimate
+		l.metrics.IncompleteResponses.WithLabelValues(report.Model, string(cost.basis)).Inc()
+		return cost, nil
+	}
 	if l.opts.IncompleteResponse == IncompleteChargeReserve && incompleteResponse(report, unitPrice) {
 		// 状态 2xx 却没有任何用量：流式响应在最后的 usage chunk 之前被中断（多为客户端断开），
 		// 上游通常仍对已生成的 token 计费。按准入时的预扣估值结算，不让中途断开变成免费调用。
 		cost.nanos, cost.basis = unitPrice.ReserveNanos, store.BillingByReserveEstimate
-		l.metrics.IncompleteResponses.WithLabelValues(report.Model).Inc()
+		l.metrics.IncompleteResponses.WithLabelValues(report.Model, string(cost.basis)).Inc()
 		l.log.Info(
 			"settling an incomplete response at the reserve estimate",
 			"request_id", report.RequestID,

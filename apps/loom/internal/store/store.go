@@ -181,7 +181,8 @@ type UsageEvent struct {
 	CostNanos             int64      `json:"cost_nanos"`
 	AgentGatewayCostNanos *int64     `json:"gateway_cost_nanos"`
 	PricingSource         string     `json:"pricing_source"`
-	// BillingBasis 结算依据：usage（上游报告的用量）或 reserve_estimate（响应未完整结束，按预扣估值）。
+	// BillingBasis 结算依据：usage（上游报告的用量）、gateway_estimate（网关估算的用量）
+	// 或 reserve_estimate（响应未完整结束且没有任何用量，按预扣估值）。
 	BillingBasis BillingBasis `json:"billing_basis"`
 	// Pricing 是结算时的计价快照；模型未定价（金额为 0）时为 nil。
 	Pricing *PricingSnapshot `json:"pricing"`
@@ -247,6 +248,8 @@ type BillingBasis string
 const (
 	BillingByUsage           BillingBasis = "usage"
 	BillingByReserveEstimate BillingBasis = "reserve_estimate"
+	// BillingByGatewayEstimate 上游没有报告用量，由网关按已转发内容计数估算（AgentGateway tokenize）。
+	BillingByGatewayEstimate BillingBasis = "gateway_estimate"
 )
 
 // UsageFilter 聚合过滤条件。

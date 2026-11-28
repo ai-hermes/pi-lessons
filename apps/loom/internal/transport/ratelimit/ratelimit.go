@@ -4,11 +4,12 @@
 //   - check：请求阶段，所有描述符 hits_addend=0；恒返回 OK，额度门禁在 extauth 准入阶段完成。
 //   - amend：响应完成后，描述符分别携带 input / cached / output token 数与 completion=1；收到后立即结算。
 //
-// 描述符 entries 约定：request_id、key_id、model、kind（input | cached | output | completion | status）。
+// 描述符 entries 约定：request_id、key_id、model、kind（input | cached | output | completion | status | estimated）。
 // completion 的 cost 恒为 1，不计入 token，只表示"该请求已有响应"：上游报错或客户端中途断开时
 // token 用量全为 0，靠它把请求与请求阶段的 check 区分开。status 的 cost 为上游响应状态码
 // （default(response.code, 200)：流式结算的 CEL 上下文没有 response，而网关只对 2xx 响应走流式结算），
 // 账本据此区分上游报错（4xx/5xx，按 0 结算）与流在最后的 usage chunk 前被中断（2xx 却没有用量）。
+// estimated 的 cost 为 1 表示用量由网关估算（llm.usageEstimated，需要 provider 开启 tokenize）。
 // 网关不看 amend 的返回值；结算失败时返回 ERROR 只为在网关 trace 中留下痕迹。
 package ratelimit
 
@@ -94,16 +95,18 @@ type report struct {
 	model      string
 	tokenUsage pricing.TokenUsage
 	status     int
+	estimated  bool
 }
 
 func (r report) usageReport() ledger.UsageReport {
 	u := ledger.UsageReport{
-		RequestID:  r.requestID,
-		Channel:    Channel,
-		Model:      r.model,
-		TokenUsage: r.tokenUsage,
-		Status:     r.status,
-		Time:       time.Now(),
+		RequestID:      r.requestID,
+		Channel:        Channel,
+		Model:          r.model,
+		TokenUsage:     r.tokenUsage,
+		Status:         r.status,
+		UsageEstimated: r.estimated,
+		Time:           time.Now(),
 	}
 	if id, err := uuid.Parse(r.apiKeyID); err == nil {
 		u.APIKeyID = id
@@ -146,6 +149,8 @@ func groupByRequest(descriptors []*rlscommon.RateLimitDescriptor) []report {
 			r.tokenUsage.Output = n
 		case "status":
 			r.status = int(min(n, math.MaxInt32))
+		case "estimated":
+			r.estimated = n > 0
 		}
 	}
 

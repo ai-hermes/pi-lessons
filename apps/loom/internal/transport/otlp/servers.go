@@ -41,6 +41,7 @@ type AttributeNames struct {
 	APIKeyID         string
 	Account          string
 	Status           string // 响应状态码
+	UsageEstimated   string // 用量是否由网关估算
 }
 
 // LogsServer 实现 OTLP LogsService：解析 access log 并交给补账队列。
@@ -116,13 +117,14 @@ func (a AttributeNames) usageReport(
 			Cached: values.int(a.CachedTokens),
 			Output: values.int(a.OutputTokens),
 		},
-		Provider:     values.str(a.Provider),
-		Route:        values.str(a.Route),
-		AgentGateway: values.str(a.AgentGateway),
-		Status:       int(values.int(a.Status)),
-		Time:         recordTime(record),
-		TraceID:      hexID(record.GetTraceId(), 16),
-		SpanID:       hexID(record.GetSpanId(), 8),
+		Provider:       values.str(a.Provider),
+		Route:          values.str(a.Route),
+		AgentGateway:   values.str(a.AgentGateway),
+		Status:         int(values.int(a.Status)),
+		UsageEstimated: values.bool(a.UsageEstimated),
+		Time:           recordTime(record),
+		TraceID:        hexID(record.GetTraceId(), 16),
+		SpanID:         hexID(record.GetSpanId(), 8),
 	}
 	if report.Model == "" {
 		report.Model = values.str(a.LoomModel)
@@ -211,4 +213,15 @@ func (values attributeValues) float(name string) (float64, bool) {
 		return f, err == nil
 	}
 	return 0, false
+}
+
+func (values attributeValues) bool(name string) bool {
+	switch value := values[name].(type) {
+	case bool:
+		return value
+	case string:
+		b, _ := strconv.ParseBool(value)
+		return b
+	}
+	return false
 }

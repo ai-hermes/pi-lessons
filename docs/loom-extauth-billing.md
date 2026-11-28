@@ -331,6 +331,7 @@ kubectl -n loom scale deploy/loom --replicas=0
 - 现象：配置了 TPM 后请求总是 `429 api_key/tpm` 或 `account/tpm`。先查 `tpm` 是否小于单次预扣估值（`reserve_tokens` 的输入 + 输出，默认 2,048）；准入按估值计入，上限小于估值时任何请求都无法通过。
 - 现象：`in_flight` 长时间不归零、并发名额被占满。先查是否有未结算的预扣（`reservations` 表）；正常情况下 RLS 在响应结束时结算，两条用量通道都没送达时要等 `reservation_ttl`（15 分钟）由 reaper 释放。
 - 现象：某些用量明细的 token 全为 0，金额却等于预扣额，`billing_basis` 为 `reserve_estimate`。这是状态 2xx 却没有用量的响应（多为流式请求在最后的 usage chunk 前被客户端断开），按准入时的预扣估值计费，防止中途断开变成免费调用；`loom_ledger_incomplete_responses_total` 统计次数。如需按 0 结算，设 `ledger.incomplete_response: free`。
+- 现象：断流请求的 `billing_basis` 为 `gateway_estimate`。网关开启了 provider 级 `tokenize`（需要支持流式用量估算的网关版本），按请求与已转发内容计数补上了用量，按估算的 token 计价；未开启时为 `reserve_estimate`。开启 tokenize 会让每个请求多一次计数，压测吞吐约降 15%。
 - 现象：结算报 `no partition of relation "usage_events" found for row`。先查告警 `LoomMaintenanceFailing` / `LoomMaintenanceStale` 与指标 `loom_maintenance_runs_total{task="partitions"}`；分区维护连续失败超过提前量（3 个月）才会出现。处理：修复后执行 `POST /v1/admin/maintenance`。
 - 现象：用量汇总比明细多。`usage_daily` 永久保留，明细超过保留期后被删除，汇总仍包含这些日子，属正常；核对单笔时只能在明细保留期内进行。
 - 现象：某模型只改了 PG `model_pricing` 表但价格没变。先查 `GET /v1/pricing` 的 `pg` 段；PG 兜底有 `pricing_ttl`（30s）正缓存，管理 API 写入会主动清缓存，直接改库需等缓存过期。
