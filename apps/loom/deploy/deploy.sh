@@ -7,7 +7,8 @@
 #   single  单实例 Deployment loom-postgres（开发演示）
 #   cnpg    CloudNativePG 集群 loom-pg（一主两从 + Barman Cloud 备份）；需先执行一次 deploy/cnpg/install.sh 安装平台组件。
 # 不指定时沿用集群里的现有形态（都没有时用 single）。切换形态会删除另一种形态的数据库及其数据（cnpg 连同 minio 里的备份）。
-# 用法：deploy/deploy.sh [--fresh] [--tag TAG] [--host HOST] [--pg single|cnpg]
+# --gateway-image 指定 loom-gateway 数据面镜像（registry/repository:tag），用于验证网关的新版本或 fork 构建。
+# 用法：deploy/deploy.sh [--fresh] [--tag TAG] [--host HOST] [--pg single|cnpg] [--gateway-image IMAGE]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -15,12 +16,14 @@ HOST="${DEPLOY_HOST:-192.168.16.62}"
 TAG="$(git rev-parse --short HEAD 2>/dev/null || echo local)-$(date +%Y%m%d%H%M%S)"
 FRESH=0
 PG="${LOOM_PG:-}"
+GATEWAY_IMAGE="${LOOM_GATEWAY_IMAGE:-cr.agentgateway.dev/agentgateway:v1.7.0}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --fresh) FRESH=1 ;;
     --tag) TAG="$2"; shift ;;
     --host) HOST="$2"; shift ;;
     --pg) PG="$2"; shift ;;
+    --gateway-image) GATEWAY_IMAGE="$2"; shift ;;
     *) echo "unknown arg $1" >&2; exit 1 ;;
   esac
   shift
@@ -34,6 +37,10 @@ case "$PG" in
   *) echo "--pg must be single or cnpg, got $PG" >&2; exit 1 ;;
 esac
 REMOTE_DIR=/opt/agentgateway/loom
+# registry/repository:tag → 三段，填进 AgentgatewayParameters.spec.image
+GATEWAY_IMAGE_TAG="${GATEWAY_IMAGE##*:}"
+GATEWAY_IMAGE_REPOSITORY="${GATEWAY_IMAGE%:*}"; GATEWAY_IMAGE_REPOSITORY="${GATEWAY_IMAGE_REPOSITORY##*/}"
+GATEWAY_IMAGE_REGISTRY="${GATEWAY_IMAGE%/*}"
 KIND_CLUSTER=agentgateway
 VERSION="$(git describe --tags --always 2>/dev/null || echo dev)"
 
@@ -68,7 +75,8 @@ ssh "${HOST}" "export PATH=/opt/agentgateway/k8s/bin:\$PATH; set -e; cd ${REMOTE
   kubectl -n loom create configmap loom-pricing --from-file=pricing.yaml=configs/pricing.yaml --dry-run=client -o yaml | kubectl apply -f -
   kubectl -n loom create configmap loom-catalog --from-file=catalog.json=build/catalog.json --dry-run=client -o yaml | kubectl apply -f -
   kubectl -n loom create configmap loom-seed --from-file=seed.yaml=configs/seed.yaml --dry-run=client -o yaml | kubectl apply -f -
-  kubectl apply -f k8s/01-gateway.yaml
+  sed -e \"s#GATEWAY_IMAGE_REGISTRY#${GATEWAY_IMAGE_REGISTRY}#; s#GATEWAY_IMAGE_REPOSITORY#${GATEWAY_IMAGE_REPOSITORY}#; s#GATEWAY_IMAGE_TAG#${GATEWAY_IMAGE_TAG}#\" \
+    k8s/01-gateway.yaml | kubectl apply -f -
   if [ ${PG} = cnpg ]; then
     sed 's#@loom-postgres:5432#@loom-pg-rw:5432#' k8s/03-secret.yaml | kubectl apply -f -
     kubectl apply -f cnpg/manifests/minio.yaml

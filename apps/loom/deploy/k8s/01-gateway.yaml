@@ -28,9 +28,9 @@ metadata:
   namespace: loom
 spec:
   image:
-    registry: cr.agentgateway.dev
-    repository: agentgateway
-    tag: v1.7.0
+    registry: GATEWAY_IMAGE_REGISTRY      # deploy.sh --gateway-image 替换；默认 cr.agentgateway.dev/agentgateway:v1.7.0
+    repository: GATEWAY_IMAGE_REPOSITORY
+    tag: GATEWAY_IMAGE_TAG
     pullPolicy: IfNotPresent
   service:
     spec:

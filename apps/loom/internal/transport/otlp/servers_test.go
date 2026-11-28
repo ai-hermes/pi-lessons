@@ -24,6 +24,7 @@ var testAttributeNames = AttributeNames{
 	APIKeyID:         "loom.key.id",
 	Account:          "loom.client.id",
 	Status:           "http.status",
+	UsageEstimated:   "agw.ai.usage.estimated",
 }
 
 func kv(key string, v any) *commonpb.KeyValue {
@@ -35,6 +36,8 @@ func kv(key string, v any) *commonpb.KeyValue {
 		value = &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: x}}
 	case float64:
 		value = &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: x}}
+	case bool:
+		value = &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: x}}
 	}
 	return &commonpb.KeyValue{Key: key, Value: value}
 }
@@ -55,11 +58,13 @@ func TestAccessLogToUsageReport(t *testing.T) {
 			kv("loom.key.id", "11111111-2222-3333-4444-555555555555"),
 			kv("protocol", "llm"),
 			kv("http.status", int64(200)),
+			kv("agw.ai.usage.estimated", true),
 		},
 	}
 
 	u, protocol := testAttributeNames.usageReport(record, nil)
 	assert.Equal(t, 200, u.Status)
+	assert.True(t, u.UsageEstimated)
 
 	assert.Equal(t, "llm", protocol)
 	assert.Equal(t, Channel, u.Channel)

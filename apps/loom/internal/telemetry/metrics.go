@@ -34,7 +34,7 @@ type Metrics struct {
 	ReservationsOpen     prometheus.Gauge
 	ReservationsExpired  prometheus.Counter
 	ReserveCompensations *prometheus.CounterVec // {result}
-	IncompleteResponses  *prometheus.CounterVec // {model}
+	IncompleteResponses  *prometheus.CounterVec // {model, basis}
 	CostMismatch         *prometheus.CounterVec // {model}
 
 	// throttle
@@ -154,8 +154,9 @@ func NewMetrics(version, commit string) *Metrics {
 		),
 		IncompleteResponses: counterVec(
 			"loom_ledger_incomplete_responses_total",
-			"Responses with a 2xx status but no usage (stream cut before its final chunk), settled at the reserve estimate.",
-			"model",
+			"Streams cut before their final usage chunk; basis=gateway_estimate (gateway counted the tokens) "+
+				"or reserve_estimate (no usage at all, charged the reserve estimate).",
+			"model", "basis",
 		),
 		ReserveCompensations: counterVec(
 			"loom_ledger_reserve_compensations_total",

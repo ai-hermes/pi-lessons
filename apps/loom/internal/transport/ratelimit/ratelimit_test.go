@@ -132,11 +132,32 @@ func TestAmendCarriesTheUpstreamStatus(t *testing.T) {
 			descriptor("req-1", "", "output", 0),
 			descriptor("req-1", "", "completion", 1),
 			descriptor("req-1", "", "status", 200),
+			descriptor("req-1", "", "estimated", 0),
 		},
 	})
 
 	require.NoError(t, err)
 	require.Len(t, settler.got, 1)
 	assert.Equal(t, 200, settler.got[0].Status, "a 2xx response without usage is recognisable at settlement")
+	assert.False(t, settler.got[0].UsageEstimated)
 	assert.Equal(t, pricing.TokenUsage{}, settler.got[0].TokenUsage)
+}
+
+func TestAmendCarriesTheGatewayEstimateFlag(t *testing.T) {
+	settler := &fakeSettler{}
+	_, err := newServer(settler).ShouldRateLimit(context.Background(), &rlsv3.RateLimitRequest{
+		Domain: "loom-billing",
+		Descriptors: []*rlscommon.RateLimitDescriptor{
+			descriptor("req-1", "", "input", 20),
+			descriptor("req-1", "", "output", 3),
+			descriptor("req-1", "", "completion", 1),
+			descriptor("req-1", "", "status", 200),
+			descriptor("req-1", "", "estimated", 1),
+		},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, settler.got, 1)
+	assert.True(t, settler.got[0].UsageEstimated)
+	assert.Equal(t, pricing.TokenUsage{Input: 20, Output: 3}, settler.got[0].TokenUsage)
 }

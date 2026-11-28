@@ -173,6 +173,7 @@ type OTLPAttributeNames struct {
 	APIKeyID         string `koanf:"key_id"`
 	Account          string `koanf:"account"`
 	Status           string `koanf:"status"`
+	UsageEstimated   string `koanf:"usage_estimated"`
 }
 
 // Admin 管理 API。
@@ -266,20 +267,21 @@ func defaults() map[string]any {
 		"otlp": map[string]any{
 			"queue_size": 4096, "batch_size": 200, "flush_interval": "2s",
 			"attributes": map[string]any{
-				"input_tokens":  "gen_ai.usage.input_tokens",
-				"output_tokens": "gen_ai.usage.output_tokens",
-				"cached_tokens": "gen_ai.usage.cache_read.input_tokens",
-				"gateway_cost":  "agw.ai.usage.cost.total",
-				"model":         "gen_ai.request.model",
-				"loom_model":    "loom.model",
-				"provider":      "gen_ai.provider.name",
-				"protocol":      "protocol",
-				"route":         "route",
-				"gateway":       "gateway",
-				"request_id":    "loom.request.id",
-				"key_id":        "loom.key.id",
-				"account":       "loom.client.id",
-				"status":        "http.status",
+				"input_tokens":    "gen_ai.usage.input_tokens",
+				"output_tokens":   "gen_ai.usage.output_tokens",
+				"cached_tokens":   "gen_ai.usage.cache_read.input_tokens",
+				"gateway_cost":    "agw.ai.usage.cost.total",
+				"model":           "gen_ai.request.model",
+				"loom_model":      "loom.model",
+				"provider":        "gen_ai.provider.name",
+				"protocol":        "protocol",
+				"route":           "route",
+				"gateway":         "gateway",
+				"request_id":      "loom.request.id",
+				"key_id":          "loom.key.id",
+				"account":         "loom.client.id",
+				"status":          "http.status",
+				"usage_estimated": "agw.ai.usage.estimated",
 			},
 		},
 		"admin": map[string]any{"key_prefix": "loom-"},

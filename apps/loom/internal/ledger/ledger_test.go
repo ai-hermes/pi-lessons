@@ -261,7 +261,7 @@ func TestIncompleteResponseIsChargedAtTheReserveEstimate(t *testing.T) {
 
 	assert.Equal(t, int64(3_072_000), used, "a stream cut before its usage chunk costs the reserve estimate")
 	assert.Equal(t, store.BillingByReserveEstimate, event.BillingBasis)
-	incomplete := testutil.ToFloat64(f.metrics.IncompleteResponses.WithLabelValues("lab-model"))
+	incomplete := testutil.ToFloat64(f.metrics.IncompleteResponses.WithLabelValues("lab-model", "reserve_estimate"))
 	assert.InDelta(t, 1, incomplete, 0)
 }
 
@@ -293,4 +293,33 @@ func TestIncompleteResponsePolicyFree(t *testing.T) {
 
 	assert.Zero(t, used)
 	assert.Equal(t, store.BillingByUsage, event.BillingBasis)
+}
+
+func TestGatewayEstimatedUsageIsBilledByTokens(t *testing.T) {
+	f := newFixture(t)
+	unitPrice, err := f.prices.Lookup(context.Background(), "lab-model", "default")
+	require.NoError(t, err)
+	_, err = f.ledger.ReserveQuota(context.Background(), ReserveRequest{APIKey: f.apiKey, UnitPrice: unitPrice, RequestID: "req-cut"})
+	require.NoError(t, err)
+
+	_, err = f.ledger.Settle(context.Background(), UsageReport{
+		RequestID:      "req-cut",
+		APIKeyID:       f.apiKey.ID,
+		Model:          "lab-model",
+		TokenUsage:     pricing.TokenUsage{Input: 20, Output: 3},
+		Status:         200,
+		UsageEstimated: true,
+		Channel:        "test",
+	})
+
+	require.NoError(t, err)
+	apiKey, err := f.st.GetAPIKey(context.Background(), f.apiKey.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(26_000), apiKey.QuotaUsed, "the gateway's count is priced like reported usage, not the reserve")
+	events, err := f.st.ListUsage(context.Background(), &f.apiKey.ID, nil, 1)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.Equal(t, store.BillingByGatewayEstimate, events[0].BillingBasis)
+	estimated := testutil.ToFloat64(f.metrics.IncompleteResponses.WithLabelValues("lab-model", "gateway_estimate"))
+	assert.InDelta(t, 1, estimated, 0)
 }

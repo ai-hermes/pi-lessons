@@ -111,6 +111,14 @@ spec:
           - {name: model, expression: 'request.headers["x-loom-model"]'}
           - {name: kind, expression: '"status"'}
           cost: 'default(response.code, 200)'
+        # 用量是否由网关估算（provider 开启 tokenize 时，流在 usage chunk 前中断由网关计数补上）；旧版网关没有该字段，按 0
+        - unit: Tokens
+          entries:
+          - {name: request_id, expression: 'request.headers["x-loom-request-id"]'}
+          - {name: key_id, expression: 'request.headers["x-loom-key-id"]'}
+          - {name: model, expression: 'request.headers["x-loom-model"]'}
+          - {name: kind, expression: '"estimated"'}
+          cost: 'default(llm.usageEstimated, false) ? 1 : 0'
     # 上游 429/5xx 重试 4 次，100ms backoff
     retry:
       attempts: 4
